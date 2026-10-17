@@ -77,6 +77,30 @@ describe("loader", () => {
     await expect(loadScenario(missing)).rejects.toThrow(/absent\.yaml/);
   });
 
+  it("rejects YAML files that fail to parse and reports the file path", async () => {
+    const dir = await makeScenarioDir("loader-bad-yaml");
+    const filePath = path.join(dir, "syntax.yaml");
+    // Genuinely broken YAML: tab indentation, unbalanced flow mapping,
+    // and a duplicate mapping inside a sequence. The yaml parser will raise
+    // a YAMLParseError before we ever call the schema validator.
+    await fs.writeFile(
+      filePath,
+      [
+        "id: broken",
+        "app: { bundleId: x",
+        "actions:",
+        "\t- id: step",
+        "    type: wait",
+        "  - id: dup",
+        "    id: override",
+        "    type: wait",
+        "    durationMs: 100",
+      ].join("\n"),
+      "utf8",
+    );
+    await expect(loadScenario(filePath)).rejects.toThrow(/syntax\.yaml/);
+  });
+
   it("lists scenario files sorted lexicographically", async () => {
     const dir = await makeScenarioDir("loader-list");
     await fs.writeFile(path.join(dir, "zeta.yaml"), `${validActionFragment("zeta")}\n`, "utf8");
