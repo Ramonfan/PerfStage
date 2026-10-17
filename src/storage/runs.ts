@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -14,6 +15,13 @@ import { TestRun, testRunSchema } from "../model/test-run.js";
 const RUN_FILE_NAME = "run.json";
 const LOCK_FILE_NAME = ".finalize.lock";
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+/**
+ * A lock file left behind by an earlier crashed finalize is recoverable
+ * after this many milliseconds. Lock files younger than this are assumed
+ * to belong to a live concurrent call and keep the call from
+ * acquiring.
+ */
+const STALE_LOCK_AGE_MS = 5 * 60_000;
 
 export type RunStatus = TestRun["status"];
 
@@ -161,46 +169,76 @@ function lockPathOf(rootDir: string, runId: string): string {
 
 /**
  * Try to acquire the per-run finalize lock. Uses `open(path, "wx")` so the
- * atomic create-or-fail semantics are provided by the OS. Stale lock files
- * from crashed prior processes are tolerated by checking their age in the
- * caller, but the default behavior is fail-fast.
+ * atomic create-or-fail semantics are provided by the OS. If a stale
+ * lock from a previously crashed call is detected (older than
+ * `STALE_LOCK_AGE_MS`), it is removed and the lock is retried once.
  */
 async function acquireFinalizeLock(
   lockPath: string,
 ): Promise<{ release: () => Promise<void>; acquired: true } | { acquired: false }> {
-  try {
-    const handle = await open(lockPath, "wx", 0o600);
-    await handle.writeFile(
-      JSON.stringify(
-        {
-          pid: process.pid,
-          acquiredAt: new Date().toISOString(),
+  const tryAcquire = async (): Promise<
+    | { acquired: true; release: () => Promise<void> }
+    | { acquired: false }
+  > => {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      await handle.writeFile(
+        JSON.stringify(
+          {
+            pid: process.pid,
+            acquiredAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+        { encoding: "utf8" },
+      );
+      await handle.close();
+      return {
+        acquired: true,
+        release: async () => {
+          try {
+            await rm(lockPath, { force: true });
+          } catch {
+            // Best-effort release; if the file is gone the holder is
+            // already past finalize.
+          }
         },
-        null,
-        2,
-      ),
-      { encoding: "utf8" },
-    );
-    await handle.close();
-    return {
-      acquired: true,
-      release: async () => {
-        try {
-          await rm(lockPath, { force: true });
-        } catch {
-          // Best-effort release; lock TTL covers stuck processes.
-        }
-      },
-    };
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error as NodeJS.ErrnoException).code === "EEXIST"
-    ) {
-      return { acquired: false };
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === "EEXIST"
+      ) {
+        return { acquired: false };
+      }
+      throw error;
     }
-    throw error;
+  };
+
+  const first = await tryAcquire();
+  if (first.acquired) return first;
+
+  // EEXIST: maybe the existing lock is stale (left over from a crashed
+  // finalize). Probe its mtime; if it is older than the staleness
+  // threshold we remove it and retry once. If the retry still fails
+  // the caller is treated as genuinely concurrent.
+  let stale = false;
+  try {
+    const info = await stat(lockPath);
+    const ageMs = Date.now() - info.mtimeMs;
+    if (Number.isFinite(ageMs) && ageMs > STALE_LOCK_AGE_MS) {
+      stale = true;
+      await rm(lockPath, { force: true });
+    }
+  } catch {
+    // No info: leave for the retry to either succeed or report
+    // concurrency.
   }
+  if (!stale) {
+    return { acquired: false };
+  }
+  return tryAcquire();
 }
 
 /**

@@ -158,7 +158,7 @@ describe("interactive contract (offline e2e)", () => {
           { name: "cpu", value: 20, unit: "%", verdict: "pass" },
           { name: "memory", value: 200, unit: "MB", verdict: "pass" },
         ],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
           {
             kind: "deviceLog",

@@ -196,6 +196,8 @@ export function normalizeDiagnostics(
   startedAt: string,
   endedAt: string,
 ): DiagnosticEvidence {
+  const hasLogEvidence =
+    typeof input.logText === "string" || typeof input.logPath === "string";
   const logs: LogEvidence = input.logQueryError
     ? {
         path: input.logPath,
@@ -206,18 +208,35 @@ export function normalizeDiagnostics(
         filters: input.logFilters,
         categories: UNKNOWN_CATEGORIES,
       }
-    : {
-        path: input.logPath,
-        text: input.logText,
-        lineCount: countLines(input.logText),
-        status: "available",
-        filters: input.logFilters,
-        categories: scanCategories(input.logText),
-      };
+    : hasLogEvidence
+      ? {
+          path: input.logPath,
+          text: input.logText,
+          lineCount: countLines(input.logText),
+          status: "available",
+          filters: input.logFilters,
+          categories: scanCategories(input.logText),
+        }
+      : {
+          // The caller never supplied log text or path AND did not
+          // report an explicit collection error. The conservative
+          // reading is that logs were not requested / collected, so we
+          // must NOT silently grade this as clean — we report them as
+          // unavailable and let `classifyDiagnosticImpact` translate
+          // this into a `partial` outcome downstream.
+          status: "unavailable",
+          error: "log diagnostics were not supplied",
+          path: undefined,
+          text: undefined,
+          lineCount: 0,
+          categories: UNKNOWN_CATEGORIES,
+        };
 
   const beforeIds = input.crashIdsBefore ?? [];
   const afterIds = input.crashIdsAfter ?? [];
   const reports = input.crashReports ?? [];
+  const hasCrashEvidence =
+    beforeIds.length > 0 || afterIds.length > 0 || reports.length > 0;
 
   const crashes: CrashEvidence = input.crashQueryError
     ? {
@@ -231,24 +250,45 @@ export function normalizeDiagnostics(
         after: afterIds,
         newIds: [],
       }
-    : {
-        status: "available",
-        reports,
-        before: beforeIds,
-        after: afterIds,
-        newIds: diffCrashIds(beforeIds, afterIds),
-      };
+    : hasCrashEvidence
+      ? {
+          status: "available",
+          reports,
+          before: beforeIds,
+          after: afterIds,
+          newIds: diffCrashIds(beforeIds, afterIds),
+        }
+      : {
+          // Same conservative rule as logs: no data ⇒ unavailable, not
+          // a clean PASS.
+          status: "unavailable",
+          error: "crash diagnostics were not supplied",
+          reports: [],
+          before: [],
+          after: [],
+          newIds: [],
+        };
 
+  const lifecycleEvents = input.lifecycle ?? [];
+  const hasLifecycleEvidence = lifecycleEvents.length > 0;
   const lifecycle: LifecycleEvidence = input.lifecycleQueryError
     ? {
         status: "unavailable",
         error: input.lifecycleQueryError,
-        events: input.lifecycle ?? [],
+        events: lifecycleEvents,
       }
-    : {
-        status: "available",
-        events: input.lifecycle ?? [],
-      };
+    : hasLifecycleEvidence
+      ? {
+          status: "available",
+          events: lifecycleEvents,
+        }
+      : {
+          // Lifecycle evidence was not supplied — report unavailable
+          // rather than treat the absence as a clean run.
+          status: "unavailable",
+          error: "lifecycle diagnostics were not supplied",
+          events: [],
+        };
 
   return {
     startedAt,
@@ -298,10 +338,33 @@ export function classifyDiagnosticImpact(
     reasons.push("lifecycle-evidence-unavailable");
   } else {
     for (const event of evidence.lifecycle.events) {
-      if (event.kind === "device_disconnect") {
+      // `device_disconnect` and an explicit app crash are hard failures:
+      // either the device disappeared mid-test or the app died.
+      if (
+        event.kind === "device_disconnect" ||
+        event.kind === "app_exit"
+      ) {
         failure = true;
-        reasons.push("device-disconnect");
+        reasons.push(
+          event.kind === "device_disconnect"
+            ? "device-disconnect"
+            : "app-exit",
+        );
         break;
+      }
+      // `springboard` and `system_alert` are stability warnings: the app
+      // lost foreground or hit an OS-level dialog, so we cannot be sure
+      // the metrics captured the intended scenario.
+      if (
+        event.kind === "springboard" ||
+        event.kind === "system_alert"
+      ) {
+        warning = true;
+        reasons.push(
+          event.kind === "springboard"
+            ? "app-backgrounded"
+            : "system-alert",
+        );
       }
     }
   }

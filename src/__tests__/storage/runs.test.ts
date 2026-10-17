@@ -103,6 +103,33 @@ describe("createRunStore", () => {
     }
   });
 
+  it("tryFinalize recovers from a stale lock left behind by a previous crashed call", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    await store.create(buildRun());
+    // Plant a synthetic "lock" file but backdate its mtime to >5 min
+    // ago so the recovery helper recognises it as stale.
+    const lockPath = join(root, "run-1", ".finalize.lock");
+    await writeFile(lockPath, "synthetic stale lock\n", "utf8");
+    const past = new Date(Date.now() - 6 * 60_000);
+    const { utimes } = await import("node:fs/promises");
+    await utimes(lockPath, past, past);
+
+    // After recovery, finalize should succeed without returning the
+    // `concurrent` outcome.
+    const outcome = await store.tryFinalize("run-1", {
+      mutate: (current) => ({ ...current, status: "completed" }),
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind === "ok") {
+      expect(outcome.run.status).toBe("completed");
+    }
+    // The lock is now gone because the recovery path replaced it with
+    // a fresh lock and the eventual release deleted it.
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   it("read rejects unknown run ids", async () => {
     const root = await makeRoot();
     const store = createRunStore(root);

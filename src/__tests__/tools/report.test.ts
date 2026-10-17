@@ -69,8 +69,10 @@ describe("finalize_performance_test", () => {
           { name: "memory", value: 187, unit: "MB", verdict: "pass" },
         ],
         diagnostics: {
-          crashIdsBefore: [],
-          crashIdsAfter: [],
+          logText: "everything is fine",
+          crashIdsBefore: ["pre-existing"],
+          crashIdsAfter: ["pre-existing"],
+          lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }],
         },
         notes: "no issues",
       },
@@ -171,7 +173,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
     if (isToolError(first)) throw new Error(first.error);
@@ -227,7 +229,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
           {
             kind: "deviceLog",
@@ -297,7 +299,7 @@ describe("finalize_performance_test", () => {
           { name: "cpu", value: 25, unit: "%", verdict: "pass" },
           { name: "memory", value: 187, unit: "MB", verdict: "pass" },
         ],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
     if (isToolError(result)) throw new Error(result.error);
@@ -384,7 +386,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
           {
             kind: "deviceLog",
@@ -486,7 +488,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
           {
             kind: "deviceLog",
@@ -553,7 +555,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
           { kind: "deviceLog", sourcePath: deviceLog, relativePath: "logs/device.log" },
           { kind: "crashReport", sourcePath: crashReport, relativePath: "logs/crash.ips" },
@@ -615,7 +617,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       }),
       harness.call("finalize_performance_test", {
         runId: prepared.runId,
@@ -630,7 +632,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       }),
     ]);
     const successes = [first, second].filter((r) => !isToolError(r));
@@ -661,7 +663,7 @@ describe("finalize_performance_test", () => {
         ],
         // Only hitches is provided; cpu/memory are missing. hitches fails its threshold.
         metrics: [{ name: "hitches", value: 7, verdict: "fail" }],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
     if (isToolError(result)) throw new Error(result.error);
@@ -693,7 +695,7 @@ describe("finalize_performance_test", () => {
           { name: "cpu", value: 20, unit: "%", verdict: "pass" },
           { name: "memory", value: 200, unit: "MB", verdict: "pass" },
         ],
-        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
     if (isToolError(result)) throw new Error(result.error);
@@ -747,5 +749,163 @@ describe("finalize_performance_test", () => {
     );
     expect(result.status).toBe("failed");
     expect(json.status).toBe("failed");
+  });
+
+  it("never leaks absolute source paths through report.json or report.md", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const externalDir = join(harness.root, "absolute-source");
+    await mkdir(externalDir, { recursive: true });
+    const absoluteSourcePath = join(externalDir, "device.log");
+    await writeFile(absoluteSourcePath, "absolute only\n", "utf8");
+    // No copy is requested, but the caller still hands us an absolute
+    // path through diagnostics.logPath. The persistent report must
+    // omit it entirely.
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: {
+          crashIdsBefore: ["pre-existing"],
+          crashIdsAfter: ["pre-existing"],
+          lifecycle: [
+            { kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" },
+          ],
+          logPath: absoluteSourcePath,
+        },
+        evidencePaths: [
+          {
+            kind: "deviceLog",
+            sourcePath: absoluteSourcePath,
+            relativePath: "logs/device.log",
+          },
+        ],
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const reportJsonText = await readFile(
+      join(harness.root, "runs", prepared.runId, "report.json"),
+      "utf8",
+    );
+    const reportJson = JSON.parse(reportJsonText);
+    const md = await readFile(
+      join(harness.root, "runs", prepared.runId, "report.md"),
+      "utf8",
+    );
+    expect(reportJsonText).not.toContain(absoluteSourcePath);
+    expect(md).not.toContain(absoluteSourcePath);
+    // The run-relative copy value must win.
+    expect(reportJson.evidencePaths.deviceLog).toBe("logs/device.log");
+  });
+
+  it("preserves metric tracePath and unknown metric extras through finalize", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          {
+            name: "hitches",
+            instrument: "Animation Hitches",
+            tracePath: "traces/hitches.trace",
+            result: { raw: { count: 3 }, instruments: ["x"] },
+            threshold: { warn: 5, fail: 10 },
+            verdict: "pass",
+            customField: "preserve-me",
+          } as Record<string, unknown> & {
+            name: string;
+            value?: unknown;
+            verdict?: string;
+          },
+        ],
+        diagnostics: {
+          logText: "everything is fine",
+          crashIdsBefore: ["pre-existing"],
+          crashIdsAfter: ["pre-existing"],
+          lifecycle: [
+            { kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" },
+          ],
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const runOnDisk = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "run.json"),
+        "utf8",
+      ),
+    );
+    const metric = runOnDisk.metrics.find(
+      (m: { name: string }) => m.name === "hitches",
+    );
+    expect(metric.tracePath).toBe("traces/hitches.trace");
+    expect(metric.result).toEqual({
+      raw: { count: 3 },
+      instruments: ["x"],
+    });
+    expect(metric.customField).toBe("preserve-me");
+  });
+
+  it("preserves an explicitly requested partial status (no coercion to completed)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "partial",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: {
+          logText: "everything is fine",
+          crashIdsBefore: ["pre-existing"],
+          crashIdsAfter: ["pre-existing"],
+          lifecycle: [
+            { kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" },
+          ],
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(result.status).toBe("partial");
   });
 });

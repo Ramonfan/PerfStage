@@ -56,7 +56,7 @@ const diagnosticOverridesSchema = z
 
 const adHocPlanSchema = z
   .object({
-    source: z.enum(["ad_hoc", "scenario", "schedule", "regression"]).optional(),
+    source: z.enum(["ad_hoc", "scenario"]).optional(),
     id: z.string().optional(),
     name: z.string().optional(),
     app: z.object({ bundleId: z.string().min(1) }).passthrough(),
@@ -69,7 +69,7 @@ const adHocPlanSchema = z
     analysisFocus: z.array(z.string()).optional(),
     warmup: z.array(z.unknown()).optional(),
     preconditions: z.array(z.unknown()).optional(),
-    execution: z.enum(["interactive", "automated", "headless"]).optional(),
+    execution: z.enum(["interactive", "unattended"]).optional(),
     repetitions: z.number().int().positive().optional(),
     diagnostics: diagnosticOverridesSchema.optional(),
     notes: z.string().optional(),
@@ -87,7 +87,7 @@ export const prepareInputSchema = z
     scenarioId: z.string().min(1).optional(),
     adHocPlan: adHocPlanSchema.optional(),
     device: deviceTargetSchema,
-    execution: z.enum(["interactive", "automated", "headless"]).optional(),
+    execution: z.enum(["interactive", "unattended"]).optional(),
     metricOverrides: z.array(metricRequestSchema).optional(),
     analysisFocus: z
       .array(z.enum(["jank", "startup", "memory", "battery", "network", "general"]))

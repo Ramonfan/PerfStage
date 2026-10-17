@@ -28,7 +28,7 @@ const scenarioInputSchema = z
         const partial = val as { id?: string; [k: string]: unknown };
         return { ...partial, id: partial.id ?? "any" };
       }),
-    execution: z.enum(["interactive", "automated", "headless"]).optional(),
+    execution: z.enum(["interactive", "unattended"]).optional(),
     preconditions: preconditionInputSchema.optional(),
     warmup: z.array(warmupActionSchema).optional(),
     actions: z.array(z.unknown()).min(1),

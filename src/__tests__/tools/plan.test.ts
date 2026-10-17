@@ -154,12 +154,44 @@ describe("prepare_performance_test", () => {
           ],
         },
         device: { id: "device-1", name: "Ra iPhone" },
-        execution: "automated",
+        execution: "unattended",
       },
     );
     if (isToolError(result)) throw new Error("expected success");
     expect(result.runId).toEqual(expect.any(String));
-    expect(result.execution).toBe("automated");
+    expect(result.execution).toBe("unattended");
+  });
+
+  it("rejects unsupported execution modes (rejects rather than rewrites)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const result = await harness.call("prepare_performance_test", {
+      scenarioId: "community-home-scroll",
+      device: { id: "device-1" },
+      execution: "automated",
+    });
+    expect(isToolError(result)).toBe(true);
+    expect((result as { error: string }).error).toMatch(
+      /execution|automated|invalid/i,
+    );
+  });
+
+  it("rejects unsupported plan sources (rejects rather than rewrites)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const result = await harness.call("prepare_performance_test", {
+      adHocPlan: {
+        source: "schedule",
+        app: { bundleId: "com.example.app" },
+        device: { id: "any" },
+        actions: [
+          { id: "a", type: "wait", durationMs: 100 },
+        ],
+      },
+      device: { id: "device-1" },
+    });
+    expect(isToolError(result)).toBe(true);
+    expect((result as { error: string }).error).toMatch(
+      /source|schedule|invalid/i,
+    );
   });
 
   it("returns next steps that name the requested metric instruments", async () => {

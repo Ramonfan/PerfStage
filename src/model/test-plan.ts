@@ -76,11 +76,7 @@ export const deviceTargetSchema = z.object({
   modelIdentifier: z.string().optional(),
 });
 
-export const executionModeSchema = z.enum([
-  "interactive",
-  "automated",
-  "headless",
-]);
+export const executionModeSchema = z.enum(["interactive", "unattended"]);
 export type ExecutionMode = z.infer<typeof executionModeSchema>;
 
 export const preconditionSchema = z
@@ -120,7 +116,7 @@ const defaultMetrics: MetricRequest[] = [
 export const testPlanSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().optional(),
-  source: z.enum(["ad_hoc", "scenario", "schedule", "regression"]),
+  source: z.enum(["ad_hoc", "scenario"]),
   app: appTargetSchema,
   device: deviceTargetSchema,
   execution: executionModeSchema.default("interactive"),

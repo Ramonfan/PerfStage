@@ -149,12 +149,12 @@ describe("classifyDiagnosticImpact", () => {
     expect(impact.reasons).toContain("memory-warning");
   });
 
-  it("reports no impact when diagnostics are clean", () => {
+  it("reports no impact when diagnostics are clean and fully supplied", () => {
     const evidence = normalizeDiagnostics(
       {
         logText: "everything is fine",
-        crashIdsBefore: [],
-        crashIdsAfter: [],
+        crashIdsBefore: ["pre-existing"],
+        crashIdsAfter: ["pre-existing"],
         lifecycle: [
           {
             kind: "foreground",
@@ -168,5 +168,53 @@ describe("classifyDiagnosticImpact", () => {
     const impact = classifyDiagnosticImpact(evidence);
     expect(impact.severity).toBe("none");
     expect(impact.reasons).toEqual([]);
+  });
+
+  it("marks logs/crashes/lifecycle as unavailable when nothing is supplied", () => {
+    const evidence = normalizeDiagnostics(
+      {},
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.logs.status).toBe("unavailable");
+    expect(evidence.crashes.status).toBe("unavailable");
+    expect(evidence.lifecycle.status).toBe("unavailable");
+    const impact = classifyDiagnosticImpact(evidence);
+    expect(impact.severity).toBe("warning");
+    expect(impact.reasons).toEqual(
+      expect.arrayContaining([
+        "log-evidence-unavailable",
+        "crash-detection-unavailable",
+        "lifecycle-evidence-unavailable",
+      ]),
+    );
+  });
+
+  it("upgrades springboard and system_alert lifecycle events to warning; app_exit to failure", () => {
+    const cases = [
+      { kind: "springboard" as const, severity: "warning" as const, code: "app-backgrounded" },
+      { kind: "system_alert" as const, severity: "warning" as const, code: "system-alert" },
+      { kind: "app_exit" as const, severity: "failure" as const, code: "app-exit" },
+    ];
+    for (const c of cases) {
+      const evidence = normalizeDiagnostics(
+        {
+          logText: "noop",
+          crashIdsBefore: [],
+          crashIdsAfter: [],
+          lifecycle: [
+            {
+              kind: c.kind,
+              occurredAt: "2026-10-17T00:00:30.000Z",
+            },
+          ],
+        },
+        "2026-10-17T00:00:00.000Z",
+        "2026-10-17T00:01:00.000Z",
+      );
+      const impact = classifyDiagnosticImpact(evidence);
+      expect(impact.severity).toBe(c.severity);
+      expect(impact.reasons).toContain(c.code);
+    }
   });
 });

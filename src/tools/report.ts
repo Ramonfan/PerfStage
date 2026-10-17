@@ -1,7 +1,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import { posix } from "node:path";
-import { z } from "zod";
-import {
+import { z } from "zod";import {
   normalizeDiagnostics,
   classifyDiagnosticImpact,
   crashReportSchema,
@@ -133,6 +132,36 @@ const TERMINAL_STATUSES: ReadonlySet<TestRun["status"]> = new Set([
   "failed",
   "cancelled",
 ]);
+
+/**
+ * Test whether `path` looks safe to embed in a run-relative evidence
+ * reference. Anything that begins with a POSIX `/`, has a Windows drive
+ * letter, or contains a parent reference (`..`) is rejected so the
+ * persisted / rendered reports never leak the absolute paths the caller
+ * may have supplied in their `sourcePath`.
+ */
+function isSafeRunRelative(path: string): boolean {
+  if (typeof path !== "string" || path.length === 0) return false;
+  if (path.startsWith("/")) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(path)) return false;
+  if (path.includes("..")) return false;
+  // Disallow any segment that still carries a backslash — that would
+  // indicate the caller forgot to translate Windows separators.
+  if (path.includes("\\")) return false;
+  return true;
+}
+
+function sanitizeEvidencePaths(
+  map: Record<string, string | undefined>,
+): ReportEvidencePaths {
+  const out: ReportEvidencePaths = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (typeof value === "string" && isSafeRunRelative(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
 
 function isError(
   value: HandlerResult,
@@ -307,10 +336,28 @@ export async function finalizePerformanceTest(
       : {}),
   };
 
-  // First pass: copy evidence outside the lock so a long copy cannot block
-  // other readers. We capture the resulting run-relative paths in
-  // `copiedEvidenceMap` (and `copiedByKind` for list evidence) and feed
-  // them into the closure.
+  // Guard first: refuse to copy any evidence until we have confirmed the
+  // run exists and has not already reached a terminal status. This keeps
+  // a missing/terminal run from accruing orphan evidence files on disk.
+  try {
+    const existing = await options.runStore.read(input.runId);
+    if (TERMINAL_STATUSES.has(existing.status)) {
+      return {
+        error: `Run ${input.runId} already reached terminal status (${existing.status}); refusing to copy or finalize evidence.`,
+      };
+    }
+  } catch (error) {
+    return {
+      error: `Run ${input.runId} does not exist: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  // Copy phase: now that we know the run is valid and startable, copy
+  // each requested evidence file into the run directory. The source
+  // paths are never persisted; only the run-relative return values of
+  // `runStore.copyEvidence` flow downstream.
   for (const evidence of pendingEvidence) {
     try {
       const rel = await options.runStore.copyEvidence(
@@ -357,6 +404,22 @@ export async function finalizePerformanceTest(
         startedAt,
         endedAt,
       );
+      // Sanitize any absolute log path that may have been supplied via
+      // `diagnostics.logPath` so it cannot leak into the persisted
+      // `report.json` / `report.md`. The diagnostic evidence object
+      // surfaces `path` for downstream callers; if it points outside
+      // the run directory we drop it rather than echoing an unsafe
+      // string. The `logs.categories`, line count, and status are
+      // preserved.
+      if (
+        typeof evidence.logs.path === "string" &&
+        !isSafeRunRelative(evidence.logs.path)
+      ) {
+        evidence.logs = {
+          ...evidence.logs,
+          path: undefined,
+        };
+      }
       derivedEvidence = evidence;
       const impact = classifyDiagnosticImpact(evidence);
       derivedImpact = impact;
@@ -413,6 +476,23 @@ export async function finalizePerformanceTest(
           threshold: metric.threshold,
           verdict: metric.verdict,
           measuredAt: metric.measuredAt,
+          // Preserve any extra fields (notably `tracePath`, `instrument`,
+          // and the unknown `result.raw` payload) verbatim so the
+          // persisted run record never silently drops metric metadata
+          // the caller collected via instruments-mcp-server.
+          ...Object.fromEntries(
+            Object.entries(metric).filter(
+              ([key]) =>
+                ![
+                  "name",
+                  "value",
+                  "unit",
+                  "threshold",
+                  "verdict",
+                  "measuredAt",
+                ].includes(key),
+            ),
+          ),
         })),
         evidence: newEvidence,
         notes: input.notes ?? current.notes,
@@ -443,9 +523,11 @@ export async function finalizePerformanceTest(
       // `diagnostics.logPath`) we fall back to that value so the
       // interactive-contract e2e test, which only passes a log path,
       // still finds `reportJson.evidencePaths.deviceLog` populated.
-      const reportMap: ReportEvidencePaths = {
-        ...(typeof input.diagnostics.logPath === "string" &&
-        input.diagnostics.logPath.length > 0
+      // Each candidate is filtered through `sanitizeEvidencePaths` so
+      // absolute paths or paths containing parent references cannot
+      // leak into either `report.json` or `report.md`.
+      const rawMap = {
+        ...(typeof input.diagnostics.logPath === "string"
           ? { deviceLog: input.diagnostics.logPath }
           : {}),
         ...(persisted.evidence.deviceLogPath !== undefined
@@ -462,6 +544,7 @@ export async function finalizePerformanceTest(
           : {}),
         ...copiedEvidenceMap,
       };
+      const reportMap = sanitizeEvidencePaths(rawMap);
 
       const jsonReport = buildJsonReport(persisted, derivedEvidence!, {
         plan,
