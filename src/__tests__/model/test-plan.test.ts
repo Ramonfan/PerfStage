@@ -30,4 +30,29 @@ describe("testPlanSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("preserves an unknown metric name and extra fields for forward compatibility", () => {
+    const plan = testPlanSchema.parse({
+      source: "ad_hoc",
+      app: { bundleId: "com.example.app" },
+      device: { id: "device-1" },
+      actions: [
+        { id: "scroll-1", type: "swipe", direction: "up", distance: 500 },
+      ],
+      metrics: [
+        {
+          name: "experimental_gpu_spike",
+          instrument: "metal-frame-collector",
+          tracePath: "/traces/gpu.trace",
+          extraField: "should survive",
+        },
+      ],
+    });
+    expect(plan.metrics[0]?.name).toBe("experimental_gpu_spike");
+    expect(plan.metrics[0]?.instrument).toBe("metal-frame-collector");
+    expect(plan.metrics[0]?.tracePath).toBe("/traces/gpu.trace");
+    expect(
+      (plan.metrics[0] as Record<string, unknown>)["extraField"],
+    ).toBe("should survive");
+  });
 });

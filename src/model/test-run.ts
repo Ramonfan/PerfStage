@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { TestAction } from "./test-plan.js";
+import { actionSchema, metricThresholdSchema } from "./test-plan.js";
 
 export const runStatusSchema = z.enum([
   "prepared",
@@ -41,9 +41,7 @@ export function transitionRunStatus(
   }
   const allowed = LEGAL_TRANSITIONS.get(current);
   if (!allowed || !allowed.has(next)) {
-    throw new Error(
-      `Illegal status transition: "${current}" -> "${next}".`,
-    );
+    throw new Error(`Illegal status transition: "${current}" -> "${next}".`);
   }
   return next;
 }
@@ -58,7 +56,9 @@ export type ActionOutcome = z.infer<typeof actionOutcomeSchema>;
 
 export const actionRecordSchema = z.object({
   actionId: z.string().min(1),
-  action: actionSchema(z.any()).optional(),
+  // Runtime-validated against the canonical actionSchema so stored runs can
+  // never drift from the plan's action grammar.
+  action: actionSchema.optional(),
   outcome: actionOutcomeSchema,
   attempts: z.number().int().nonnegative().default(1),
   startedAt: z.string().datetime(),
@@ -69,23 +69,12 @@ export const actionRecordSchema = z.object({
 });
 export type ActionRecord = z.infer<typeof actionRecordSchema>;
 
-// Helper to keep ActionRecord loosely typed (it mirrors TestAction but is stored alongside runs)
-function actionSchema(_placeholder: unknown) {
-  return z.custom<TestAction>(() => true);
-}
-
 export const metricResultSchema = z
   .object({
     name: z.string().min(1),
     value: z.unknown().optional(),
     unit: z.string().optional(),
-    threshold: z
-      .object({
-        warn: z.number().optional(),
-        fail: z.number().optional(),
-      })
-      .strict()
-      .optional(),
+    threshold: metricThresholdSchema.optional(),
     verdict: z.enum(["pass", "warn", "fail", "skipped"]).optional(),
     measuredAt: z.string().datetime().optional(),
   })
@@ -127,10 +116,7 @@ export const testRunSchema = z.object({
   currentRepetition: z.number().int().nonnegative().default(0),
   actions: z.array(actionRecordSchema).default([]),
   metrics: z.array(metricResultSchema).default([]),
-  evidence: diagnosticEvidenceSchema.default({
-    screenshotPaths: [],
-    traceArchivePaths: [],
-  }),
+  evidence: diagnosticEvidenceSchema.prefault({}),
   lifecycle: z.array(appLifecycleEventSchema).default([]),
   error: z.string().optional(),
   notes: z.string().optional(),
