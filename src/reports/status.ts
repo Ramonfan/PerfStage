@@ -10,6 +10,16 @@ export interface FinalStatusInput {
 }
 
 /**
+ * Compatibility alias for the historical name used by sibling test
+ * files after the cherry-pick that brought the partial-preservation
+ * rule into this branch. New callers should prefer `FinalStatusInput`;
+ * the alias exists only so the merge does not silently rename a
+ * type that downstream consumers depend on.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface StatusDerivationInput extends FinalStatusInput {}
+
+/**
  * Resolve the final status of a performance test run using a single, documented
  * precedence rule:
  *
