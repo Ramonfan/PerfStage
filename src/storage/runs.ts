@@ -1,8 +1,10 @@
 import {
   copyFile,
+  link,
   mkdir,
   readFile,
   rename,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -111,8 +113,54 @@ async function writeAtomic(targetPath: string, data: string): Promise<void> {
   const { dir, name } = parse(targetPath);
   const tempName = `.${name}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   const tempPath = join(dir, tempName);
-  await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
-  await rename(tempPath, targetPath);
+  try {
+    await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    // Best-effort cleanup of the staging file before rethrowing.
+    await safeUnlink(tempPath);
+    throw error;
+  }
+}
+
+/**
+ * Atomically place a UTF-8 file at `targetPath` only if it does not already
+ * exist. The content is staged in a sibling temp file and then moved into
+ * place with `link(2)` + `unlink(2)`: `link(2)` is atomic on POSIX (and Windows
+ * for files on the same volume) and fails with EEXIST if the target is
+ * already there, so concurrent callers cannot overwrite an existing run.
+ */
+async function writeExclusive(
+  targetPath: string,
+  data: string,
+): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  const { dir, name } = parse(targetPath);
+  const tempName = `.${name}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  const tempPath = join(dir, tempName);
+  try {
+    await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
+    // link(2) is atomic; EEXIST means another writer beat us to it.
+    await link(tempPath, targetPath);
+    await unlink(tempPath);
+  } catch (error) {
+    await safeUnlink(tempPath);
+    throw error;
+  }
+}
+
+async function safeUnlink(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      return;
+    }
+    throw error;
+  }
 }
 
 export function createRunStore(rootDir: string): RunStore {
@@ -126,35 +174,29 @@ export function createRunStore(rootDir: string): RunStore {
     await writeAtomic(runFilePath(rootDir, validated.id), json);
   }
 
+  async function createNew(run: TestRun): Promise<string> {
+    const validated = testRunSchema.parse(run);
+    const runId = assertSafeRunId(validated.id);
+    const dir = runDirectoryOf(rootDir, runId);
+    await mkdir(dir, { recursive: true });
+    const json = JSON.stringify(validated, null, 2);
+    try {
+      await writeExclusive(runFilePath(rootDir, runId), json);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === "EEXIST"
+      ) {
+        throw new Error(`Run "${runId}" already exists.`);
+      }
+      throw error;
+    }
+    return runId;
+  }
+
   return {
     async create(run: TestRun): Promise<string> {
-      const validated = testRunSchema.parse(run);
-      const runId = assertSafeRunId(validated.id);
-      const dir = runDirectoryOf(rootDir, runId);
-      await mkdir(dir, { recursive: true });
-      // Detect existing runs so we never silently overwrite them.
-      try {
-        await readFile(runFilePath(rootDir, runId), "utf8");
-        throw new Error(`Run "${runId}" already exists.`);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          /already exists/.test(error.message)
-        ) {
-          throw error;
-        }
-        if (
-          error instanceof Error &&
-          // Node reports missing files via Error with code "ENOENT".
-          (error as NodeJS.ErrnoException).code === "ENOENT"
-        ) {
-          // Expected — fall through and write the new run.
-        } else {
-          throw error;
-        }
-      }
-      await persist(validated);
-      return runId;
+      return createNew(run);
     },
 
     async read(runId: string): Promise<TestRun> {
