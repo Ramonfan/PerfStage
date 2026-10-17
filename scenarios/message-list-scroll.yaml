@@ -1,0 +1,33 @@
+id: message-list-scroll
+name: 消息列表来回滚动
+app:
+  bundleId: com.nndev.im
+device: {}
+preconditions:
+  foregroundBundleId: com.nndev.im
+  accessibilityText: 消息
+warmup:
+  - id: open-message-tab
+    type: tap
+    target: 消息
+    waitAfterMs: 1500
+actions:
+  - id: scroll-up-1
+    type: swipe
+    direction: up
+    distance: 700
+    durationMs: 500
+    waitAfterMs: 1500
+  - id: scroll-down-1
+    type: swipe
+    direction: down
+    distance: 700
+    durationMs: 500
+    waitAfterMs: 1500
+metrics:
+  - name: hitches
+    instrument: Animation Hitches
+  - name: cpu
+    instrument: Time Profiler
+  - name: memory
+    instrument: Allocations

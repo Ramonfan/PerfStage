@@ -49,16 +49,27 @@ export const metricRequestSchema = z
 
 export type MetricRequest = z.infer<typeof metricRequestSchema>;
 
-export const diagnosticSettingsSchema = z.object({
-  collectDeviceLogs: z.boolean().default(true),
-  collectCrashes: z.boolean().default(true),
-  lifecycleSampling: z.boolean().default(true),
-  includedLogSubsystems: z.array(z.string()).default([]),
-  includedLogCategories: z.array(z.string()).default([]),
-  excludedLogSubsystems: z.array(z.string()).default([]),
-  networkCapture: z.boolean().default(false),
-  screenshotOnFailure: z.boolean().default(true),
-});
+export const diagnosticSettingsSchema = z
+  .object({
+    collectDeviceLogs: z.boolean().default(true),
+    collectCrashes: z.boolean().default(true),
+    lifecycleSampling: z.boolean().default(true),
+    includedLogSubsystems: z.array(z.string()).default([]),
+    includedLogCategories: z.array(z.string()).default([]),
+    excludedLogSubsystems: z.array(z.string()).default([]),
+    networkCapture: z.boolean().default(false),
+    screenshotOnFailure: z.boolean().default(true),
+  })
+  .default({
+    collectDeviceLogs: true,
+    collectCrashes: true,
+    lifecycleSampling: true,
+    includedLogSubsystems: [],
+    includedLogCategories: [],
+    excludedLogSubsystems: [],
+    networkCapture: false,
+    screenshotOnFailure: true,
+  });
 
 export type DiagnosticSettings = z.infer<typeof diagnosticSettingsSchema>;
 
@@ -90,10 +101,16 @@ export const preconditionSchema = z
   })
   .strict();
 
-export const warmupSchema = z.object({
-  iterations: z.number().int().nonnegative().default(0),
-  actionIds: z.array(z.string()).default([]),
+export const warmupActionSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("tap"),
+  target: z.string().min(1),
+  waitAfterMs: z.number().int().nonnegative().default(500),
 });
+export type WarmupAction = z.infer<typeof warmupActionSchema>;
+
+export const warmupSchema = z.array(warmupActionSchema).default([]);
+export type Warmup = z.infer<typeof warmupSchema>;
 
 export const analysisFocusSchema = z.enum([
   "jank",
@@ -119,12 +136,12 @@ export const testPlanSchema = z.object({
   device: deviceTargetSchema,
   execution: executionModeSchema.default("interactive"),
   preconditions: z.array(preconditionSchema).default([]),
-  warmup: warmupSchema.prefault({}),
+  warmup: warmupSchema,
   actions: z.array(actionSchema).min(1),
   metrics: z.array(metricRequestSchema).default(defaultMetrics),
   analysisFocus: z.array(analysisFocusSchema).default([]),
   repetitions: z.number().int().positive().default(1),
-  diagnostics: diagnosticSettingsSchema.prefault({}),
+  diagnostics: diagnosticSettingsSchema,
   createdAt: z.string().datetime().optional(),
   notes: z.string().optional(),
 });
