@@ -1,4 +1,4 @@
-import type { JsonReport, ReportEvidencePath, ReportFinding } from "./json.js";
+import type { JsonReport, ReportFinding } from "./json.js";
 import type { DiagnosticEvidence, LogCategories } from "../diagnostics/normalize.js";
 
 const UNKNOWN = "未知";
@@ -108,11 +108,12 @@ function renderActionSection(report: JsonReport): string {
 }
 
 function renderEvidence(report: JsonReport): string {
-  if (report.evidencePaths.length === 0) {
+  const entries = Object.entries(report.evidencePaths);
+  if (entries.length === 0) {
     return "- 未提供额外证据。";
   }
-  return report.evidencePaths
-    .map((entry: ReportEvidencePath) => `- ${entry.kind}: ${entry.relativePath}`)
+  return entries
+    .map(([key, path]: [string, string]) => `- ${key}: ${path}`)
     .join("\n");
 }
 

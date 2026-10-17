@@ -13,7 +13,7 @@ import { deriveFinalStatus } from "../reports/status.js";
 import {
   buildJsonReport,
   type JsonReport,
-  type ReportEvidencePath,
+  type ReportEvidencePaths,
   type ReportFinding,
 } from "../reports/json.js";
 import { renderMarkdownReport } from "../reports/markdown.js";
@@ -106,7 +106,13 @@ export interface FinalizePerformanceTestResult {
   planPath: string;
   jsonPath: string;
   markdownPath: string;
-  evidencePaths: ReportEvidencePath[];
+  /**
+   * Map of evidence-kind → run-relative POSIX path. `deviceLog` is the
+   * primary entry; the same map is embedded in `report.json` under
+   * `evidencePaths` so the e2e contract
+   * `reportJson.evidencePaths.deviceLog` remains a string.
+   */
+  evidencePaths: ReportEvidencePaths;
   findings: ReportFinding[];
   diagnostics: DiagnosticEvidence;
   /** Concise summary suitable for surfacing in the Claude tool result. */
@@ -181,7 +187,7 @@ function buildSummary(
   result: {
     runId: string;
     status: TestRun["status"];
-    evidencePaths: ReportEvidencePath[];
+    evidencePaths: ReportEvidencePaths;
     findings: ReportFinding[];
     diagnostics: DiagnosticEvidence;
   },
@@ -193,6 +199,7 @@ function buildSummary(
   const failureReasons = result.findings
     .filter((f) => f.severity === "failure")
     .map((f) => f.code);
+  const evidenceCount = Object.keys(result.evidencePaths).length;
   if (hasNewCrash) {
     return `Run ${result.runId} ended at ${result.status}: new crash detected during the run.`;
   }
@@ -203,7 +210,7 @@ function buildSummary(
     return `Run ${result.runId} ended at ${result.status}: diagnostics incomplete (${result.findings.length} caveats).`;
   }
   if (result.status === "completed") {
-    return `Run ${result.runId} completed cleanly with ${result.evidencePaths.length} piece(s) of evidence saved.`;
+    return `Run ${result.runId} completed cleanly with ${evidenceCount} piece(s) of evidence saved.`;
   }
   return `Run ${result.runId} ended at ${result.status}.`;
 }
@@ -241,7 +248,29 @@ export async function finalizePerformanceTest(
     sourcePath: string;
     relativePath: string;
   }> = input.evidencePaths ?? [];
-  const copiedEvidence: ReportEvidencePath[] = [];
+  /**
+   * Cumulative run-relative evidence paths keyed by evidence kind. Also
+   * stores per-index entries for screenshot_<n> / traceArchive_<n> so the
+   * same map shape can describe list evidence faithfully. The map is
+   * what gets embedded in the JSON report (matching the e2e contract
+   * `reportJson.evidencePaths.deviceLog`).
+   */
+  const copiedEvidenceMap: ReportEvidencePaths = {};
+  /**
+   * Per-kind list of run-relative paths. Used internally while building
+   * the `updatedRun.evidence` update — list-valued evidence in
+   * `TestRun.evidence` (screenshotPaths, traceArchivePaths) still uses
+   * parallel arrays, so we keep both views.
+   */
+  const copiedByKind: Record<string, string[]> = {};
+  const pushCopy = (kind: string, rel: string): void => {
+    copiedEvidenceMap[kind] = rel;
+    if (kind === "screenshot" || kind === "traceArchive") {
+      const list = copiedByKind[kind] ?? [];
+      list.push(rel);
+      copiedByKind[kind] = list;
+    }
+  };
   const diagnosticInput: DiagnosticInput = {
     ...(input.diagnostics.logText !== undefined
       ? { logText: input.diagnostics.logText }
@@ -277,7 +306,8 @@ export async function finalizePerformanceTest(
 
   // First pass: copy evidence outside the lock so a long copy cannot block
   // other readers. We capture the resulting run-relative paths in
-  // `copiedEvidence` and feed them into the closure.
+  // `copiedEvidenceMap` (and `copiedByKind` for list evidence) and feed
+  // them into the closure.
   for (const evidence of pendingEvidence) {
     try {
       const rel = await options.runStore.copyEvidence(
@@ -285,10 +315,7 @@ export async function finalizePerformanceTest(
         evidence.sourcePath,
         evidence.relativePath,
       );
-      copiedEvidence.push({
-        kind: evidence.kind,
-        relativePath: rel,
-      });
+      pushCopy(evidence.kind, rel);
     } catch (error) {
       return {
         error: `复制证据 ${evidence.kind} 失败：${
@@ -303,7 +330,7 @@ export async function finalizePerformanceTest(
   // its derived run-relative location (when it was just copied) or omit it
   // entirely when no copy happened, leaving the absolute path out of any
   // persisted run state.
-  const copiedLog = copiedEvidence.find((e) => e.kind === "deviceLog");
+  const copiedLogRel = copiedEvidenceMap.deviceLog;
 
   let derivedStatus: TestRun["status"] = "completed";
   let derivedImpact: ReturnType<typeof classifyDiagnosticImpact> = {
@@ -352,28 +379,20 @@ export async function finalizePerformanceTest(
         ...current.evidence,
         screenshotPaths: [
           ...(current.evidence.screenshotPaths ?? []),
-          ...copiedEvidence
-            .filter((e) => e.kind === "screenshot")
-            .map((e) => e.relativePath),
+          ...(copiedByKind.screenshot ?? []),
         ],
         traceArchivePaths: [
           ...(current.evidence.traceArchivePaths ?? []),
-          ...copiedEvidence
-            .filter((e) => e.kind === "traceArchive")
-            .map((e) => e.relativePath),
+          ...(copiedByKind.traceArchive ?? []),
         ],
       };
-      const crashCopy = copiedEvidence.find((e) => e.kind === "crashReport");
-      if (crashCopy) newEvidence.crashReportPath = crashCopy.relativePath;
-      const networkCopy = copiedEvidence.find(
-        (e) => e.kind === "networkCapture",
-      );
-      if (networkCopy) newEvidence.networkCapturePath = networkCopy.relativePath;
-      const lifecycleCopy = copiedEvidence.find(
-        (e) => e.kind === "lifecycleTrace",
-      );
-      if (lifecycleCopy) newEvidence.lifecycleTracePath = lifecycleCopy.relativePath;
-      if (copiedLog) newEvidence.deviceLogPath = copiedLog.relativePath;
+      const crashCopy = copiedEvidenceMap.crashReport;
+      if (crashCopy) newEvidence.crashReportPath = crashCopy;
+      const networkCopy = copiedEvidenceMap.networkCapture;
+      if (networkCopy) newEvidence.networkCapturePath = networkCopy;
+      const lifecycleCopy = copiedEvidenceMap.lifecycleTrace;
+      if (lifecycleCopy) newEvidence.lifecycleTracePath = lifecycleCopy;
+      if (copiedLogRel) newEvidence.deviceLogPath = copiedLogRel;
 
       const updated: TestRun = {
         ...current,
@@ -414,13 +433,26 @@ export async function finalizePerformanceTest(
       });
       derivedFindings = findings;
 
+      const reportMap: ReportEvidencePaths = {
+        ...(persisted.evidence.deviceLogPath !== undefined
+          ? { deviceLog: persisted.evidence.deviceLogPath }
+          : {}),
+        ...(persisted.evidence.crashReportPath !== undefined
+          ? { crashReport: persisted.evidence.crashReportPath }
+          : {}),
+        ...(persisted.evidence.networkCapturePath !== undefined
+          ? { networkCapture: persisted.evidence.networkCapturePath }
+          : {}),
+        ...(persisted.evidence.lifecycleTracePath !== undefined
+          ? { lifecycleTrace: persisted.evidence.lifecycleTracePath }
+          : {}),
+        ...copiedEvidenceMap,
+      };
+
       const jsonReport = buildJsonReport(persisted, derivedEvidence!, {
         plan,
         findings,
-        evidencePaths: [
-          { kind: "deviceLog", relativePath: persisted.evidence.deviceLogPath ?? "" },
-          ...copiedEvidence,
-        ].filter((entry) => Boolean(entry.relativePath)),
+        evidencePaths: reportMap,
       });
       derivedJsonReport = jsonReport;
 
@@ -468,7 +500,7 @@ export async function finalizePerformanceTest(
     planPath: posix.join("plan.json"),
     jsonPath: posix.join("report.json"),
     markdownPath: posix.join("report.md"),
-    evidencePaths: copiedEvidence,
+    evidencePaths: copiedEvidenceMap,
     findings: derivedFindings,
     diagnostics: derivedEvidence!,
   };

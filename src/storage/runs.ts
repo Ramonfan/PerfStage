@@ -234,28 +234,33 @@ export function createRunStore(rootDir: string): RunStore {
       const runId = assertSafeRunId(validated.id);
       const dir = runDirectoryOf(rootDir, runId);
       await mkdir(dir, { recursive: true });
-      // Detect existing runs so we never silently overwrite them.
+      // Atomic exclusive create via `open(path, "wx")`. Concurrent
+      // callers all create the directory but only one wins the race to
+      // become the original writer; the others observe `EEXIST` and
+      // surface a clear "already exists" error. This replaces the older
+      // readFile-then-persist pattern which had a TOCTOU race where
+      // three concurrent writers could each win, persist a run.json, and
+      // quietly overwrite each other.
+      const target = runFilePath(rootDir, runId);
       try {
-        await readFile(runFilePath(rootDir, runId), "utf8");
-        throw new Error(`Run "${runId}" already exists.`);
+        const handle = await open(target, "wx", 0o600);
+        try {
+          await handle.writeFile(
+            JSON.stringify(validated, null, 2),
+            { encoding: "utf8" },
+          );
+        } finally {
+          await handle.close();
+        }
       } catch (error) {
         if (
           error instanceof Error &&
-          /already exists/.test(error.message)
+          (error as NodeJS.ErrnoException).code === "EEXIST"
         ) {
-          throw error;
+          throw new Error(`Run "${runId}" already exists.`);
         }
-        if (
-          error instanceof Error &&
-          // Node reports missing files via Error with code "ENOENT".
-          (error as NodeJS.ErrnoException).code === "ENOENT"
-        ) {
-          // Expected — fall through and write the new run.
-        } else {
-          throw error;
-        }
+        throw error;
       }
-      await persist(validated);
       return runId;
     },
 

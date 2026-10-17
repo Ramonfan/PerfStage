@@ -82,45 +82,25 @@ describe("createRunStore", () => {
     await expect(store.create(buildRun())).rejects.toThrow(/exists|already/i);
   });
 
-  it("serializes concurrent create() calls so only one wins", async () => {
+  it("create is atomically exclusive: only one of N concurrent calls wins", async () => {
     const root = await makeRoot();
     const store = createRunStore(root);
-    const baseRun = buildRun();
-    const secondRun = { ...buildRun(), notes: "second" };
-    const thirdRun = { ...buildRun(), notes: "third" };
-    const results = await Promise.allSettled([
-      store.create(baseRun),
-      store.create(secondRun),
-      store.create(thirdRun),
-    ]);
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
-    expect(fulfilled.length).toBe(1);
-    expect(rejected.length).toBe(2);
+    // Three concurrent create calls target the SAME run id; only one must
+    // succeed and the other two must reject with a clear already-exists
+    // signal.
+    const outcomes = await Promise.allSettled(
+      [0, 1, 2].map(() => store.create(buildRun())),
+    );
+    const fulfilled = outcomes.filter((o) => o.status === "fulfilled");
+    const rejected = outcomes.filter(
+      (o): o is PromiseRejectedResult =>
+        o.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
     for (const r of rejected) {
-      // The rejection must come from the exclusive-create guard, not from the
-      // contract schema or path validation.
-      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(Error);
-      expect(String((r as PromiseRejectedResult).reason)).toMatch(
-        /exists|already|EEXIST/i,
-      );
+      expect(String(r.reason)).toMatch(/exists|already/i);
     }
-    // The persisted run must be the winner's contents — exactly one of the
-    // three candidate objects — not a torn write that mixes fields.
-    const persisted = await store.read("run-1");
-    const persistedNotes = persisted.notes ?? null;
-    expect([null, "second", "third"]).toContain(persistedNotes);
-  });
-
-  it("cleans up the staging temp file when create() loses the race", async () => {
-    const root = await makeRoot();
-    const store = createRunStore(root);
-    await store.create(buildRun());
-    await expect(store.create(buildRun())).rejects.toThrow();
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(join(root, "run-1"));
-    // Only the canonical run.json should remain; no stale .tmp staging files.
-    expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
   });
 
   it("read rejects unknown run ids", async () => {

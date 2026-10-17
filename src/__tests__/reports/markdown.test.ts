@@ -141,7 +141,7 @@ function makeReport(overrides: Partial<JsonReport> = {}): JsonReport {
     diagnostics: makeDiagnostics(),
     findings: [],
     status: "completed",
-    evidencePaths: [{ kind: "deviceLog", relativePath: "logs/device.log" }],
+    evidencePaths: { deviceLog: "logs/device.log" },
     generatedAt: "2026-10-17T00:02:00.000Z",
     ...overrides,
   };

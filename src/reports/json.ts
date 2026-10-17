@@ -42,6 +42,16 @@ export interface ReportFinding {
   message: string;
 }
 
+/**
+ * Mapping from evidence kind (e.g. `deviceLog`, `crashReport`,
+ * `networkCapture`, `screenshot`, `traceArchive`) to its **run-relative**
+ * POSIX path. The accompanying Task-8 contract guarantees that
+ * `reportJson.evidencePaths.deviceLog` is a string, never an array or
+ * object, and never contains an absolute source path. Helpers that need a
+ * richer shape can call `evidencePathsArray(report)` to expand this map.
+ */
+export type ReportEvidencePaths = Record<string, string>;
+
 export interface ReportEvidencePath {
   /** Kind of evidence, e.g. `deviceLog`, `screenshot`, `crashReport`. */
   kind: string;
@@ -52,9 +62,9 @@ export interface ReportEvidencePath {
 export interface JsonReport {
   run: TestRun;
   /**
-   * The resolved plan. The minimal 2-arg `buildJsonReport` derives a stub
-   * from the run; callers that need the full plan (e.g. to render bundle id
-   * and actions) should hydrate this field via the prepare tool layer.
+   * The resolved plan. The minimal 2-arg `buildJsonReport` cannot resolve
+   * the plan on its own (no filesystem dependency), so the tool layer
+   * supplies it via `BuildJsonReportOptions.plan`.
    */
   plan: TestPlan | null;
   actions: ReportAction[];
@@ -62,8 +72,23 @@ export interface JsonReport {
   diagnostics: DiagnosticEvidence;
   findings: ReportFinding[];
   status: TestRun["status"];
-  evidencePaths: ReportEvidencePath[];
+  /**
+   * Map of evidence-kind → run-relative POSIX path. Always includes
+   * `deviceLog` when a device log was supplied and copied into the run
+   * directory; absent entries are simply omitted from the map.
+   */
+  evidencePaths: ReportEvidencePaths;
   generatedAt: string;
+}
+
+export function evidencePathsArray(
+  map: ReportEvidencePaths | undefined,
+): ReportEvidencePath[] {
+  if (!map) return [];
+  return Object.entries(map).map(([kind, relativePath]) => ({
+    kind,
+    relativePath,
+  }));
 }
 
 function toReportMetric(metric: MetricResult): ReportMetric {
@@ -91,38 +116,29 @@ function toReportAction(action: ActionRecord): ReportAction {
   };
 }
 
-function deriveEvidencePaths(run: TestRun): ReportEvidencePath[] {
+function deriveEvidencePathMap(run: TestRun): ReportEvidencePaths {
   const evidence = run.evidence;
-  const paths: ReportEvidencePath[] = [];
+  const paths: ReportEvidencePaths = {};
   if (typeof evidence.deviceLogPath === "string") {
-    paths.push({ kind: "deviceLog", relativePath: evidence.deviceLogPath });
+    paths.deviceLog = evidence.deviceLogPath;
   }
   if (typeof evidence.crashReportPath === "string") {
-    paths.push({
-      kind: "crashReport",
-      relativePath: evidence.crashReportPath,
-    });
+    paths.crashReport = evidence.crashReportPath;
   }
   if (typeof evidence.networkCapturePath === "string") {
-    paths.push({
-      kind: "networkCapture",
-      relativePath: evidence.networkCapturePath,
-    });
+    paths.networkCapture = evidence.networkCapturePath;
   }
   if (typeof evidence.lifecycleTracePath === "string") {
-    paths.push({
-      kind: "lifecycleTrace",
-      relativePath: evidence.lifecycleTracePath,
-    });
+    paths.lifecycleTrace = evidence.lifecycleTracePath;
   }
-  for (const p of evidence.screenshotPaths ?? []) {
+  for (const [i, p] of (evidence.screenshotPaths ?? []).entries()) {
     if (typeof p === "string") {
-      paths.push({ kind: "screenshot", relativePath: p });
+      paths[`screenshot_${i}`] = p;
     }
   }
-  for (const p of evidence.traceArchivePaths ?? []) {
+  for (const [i, p] of (evidence.traceArchivePaths ?? []).entries()) {
     if (typeof p === "string") {
-      paths.push({ kind: "traceArchive", relativePath: p });
+      paths[`traceArchive_${i}`] = p;
     }
   }
   return paths;
@@ -145,6 +161,9 @@ export function buildJsonReport(
 ): JsonReport {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
   const callerPlan = options.plan ?? null;
+  const evidencePaths: ReportEvidencePaths = options.evidencePaths
+    ? { ...options.evidencePaths }
+    : deriveEvidencePathMap(run);
   return {
     run: {
       ...run,
@@ -156,9 +175,7 @@ export function buildJsonReport(
     diagnostics,
     findings: options.findings ? [...options.findings] : [],
     status: run.status,
-    evidencePaths: options.evidencePaths
-      ? options.evidencePaths.map((p) => ({ ...p }))
-      : deriveEvidencePaths(run),
+    evidencePaths,
     generatedAt,
   };
 }
@@ -180,8 +197,8 @@ export interface BuildJsonReportOptions {
    */
   findings?: ReportFinding[];
   /**
-   * Inject run-relative evidence paths. When omitted, the report falls
-   * back to whatever `run.evidence` exposes (also run-relative).
+   * Inject run-relative evidence paths as a kind→path map. When
+   * omitted, the report falls back to whatever `run.evidence` exposes.
    */
-  evidencePaths?: ReportEvidencePath[];
+  evidencePaths?: ReportEvidencePaths;
 }
