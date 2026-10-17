@@ -908,4 +908,75 @@ describe("finalize_performance_test", () => {
     if (isToolError(result)) throw new Error(result.error);
     expect(result.status).toBe("partial");
   });
+
+  it("preserves an explicitly requested partial status even when a new crash is detected (no coercion to failed)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "partial",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [],
+        diagnostics: {
+          logText: "jetsam killing process NN",
+          crashIdsBefore: [],
+          crashIdsAfter: ["crash-1"],
+          crashReports: [{ id: "crash-1" }],
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(result.status).toBe("partial");
+  });
+
+  it.each(["prepared", "running"])(
+    "rejects finalize requestedStatus %s with a structured tool error (no coercion)",
+    async (nonTerminal) => {
+      if (!harness) throw new Error("harness not initialized");
+      const prepared = await prepareCommunity(harness);
+      const result = await harness.call("finalize_performance_test", {
+        runId: prepared.runId,
+        requestedStatus: nonTerminal,
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: {
+          logText: "everything is fine",
+          crashIdsBefore: ["pre-existing"],
+          crashIdsAfter: ["pre-existing"],
+          lifecycle: [
+            { kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" },
+          ],
+        },
+      });
+      expect(isToolError(result)).toBe(true);
+      expect((result as { error: string }).error).toMatch(
+        new RegExp(nonTerminal, "i"),
+      );
+      expect((result as { error: string }).error).toMatch(
+        /terminal|invalid|complete|partial|failed/i,
+      );
+    },
+  );
 });

@@ -270,6 +270,19 @@ export async function finalizePerformanceTest(
   }
   const input = parsed.data;
 
+  // Reject prepared/running requests outright. `finalize` is only
+  // meaningful for terminal outcomes: the run state must already be
+  // non-terminal in `runStore.tryFinalize` (the call would return
+  // `terminal`/`missing`), so accepting a `prepared`/`running`
+  // `requestedStatus` here would silently coerce a non-final value
+  // into a terminal status. Instead we surface a clear tool error
+  // and require the caller to choose a terminal status.
+  if (input.requestedStatus === "prepared" || input.requestedStatus === "running") {
+    return {
+      error: `finalize_performance_test refuses requestedStatus "${input.requestedStatus}"; supply a terminal status (completed, partial, failed, invalid, or cancelled).`,
+    };
+  }
+
   const plan = await loadStoredPlan(options, input.runId);
 
   // Build the mutator closure inside the constant block so the
