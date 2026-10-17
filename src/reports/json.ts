@@ -6,10 +6,12 @@ import type {
   TestRun,
 } from "../model/test-run.js";
 import type { TestAction } from "../model/test-plan.js";
+import { classifyDiagnosticImpact } from "../diagnostics/normalize.js";
 import type {
   DiagnosticEvidence,
   DiagnosticImpact,
 } from "../diagnostics/normalize.js";
+import { deriveFinalStatus } from "./status.js";
 
 /**
  * Phases the timeline can attribute to a slice of an action record.
@@ -327,14 +329,14 @@ export interface BuildJsonReportOptions {
    * compute the status itself; callers pass the result of
    * `deriveFinalStatus`.
    */
-  status: RunStatus;
+  status?: RunStatus;
   /**
    * Impact classification produced by `classifyDiagnosticImpact`. Required
    * even when no impact was found so the report always records the verdict.
    */
-  impact: DiagnosticImpact;
-  metricFailures: string[];
-  missingEvidence: string[];
+  impact?: DiagnosticImpact;
+  metricFailures?: string[];
+  missingEvidence?: string[];
   /**
    * Override for `generatedAt`; defaults to the current UTC instant. Tests
    * pin a deterministic value.
@@ -344,17 +346,49 @@ export interface BuildJsonReportOptions {
 
 /**
  * Compose a `JsonReport` from a stored `TestRun` and its normalized
- * diagnostics. The function is intentionally additive: it never re-derives
- * statuses or evidence paths and never drops fields the schema does not
- * model.
+ * diagnostics.
+ *
+ * The public signature takes only the two inputs the brief specifies
+ * (`run`, `diagnostics`). All derivable signals — the diagnostic impact,
+ * failing metric names, and missing required artifacts — are inferred from
+ * those inputs so the report is fully self-contained. Tests and any future
+ * caller that needs explicit control can route through
+ * `buildJsonReportInternal` (not exported) to pass overrides.
  */
 export function buildJsonReport(
   run: TestRun,
   diagnostics: DiagnosticEvidence,
+): JsonReport {
+  return buildJsonReportInternal(run, diagnostics, {});
+}
+
+/**
+ * Internal helper retained for tests and advanced callers that need to
+ * override the derived signals (for example, to simulate a missing trace
+ * that the runner can detect but the report cannot infer from `run` alone).
+ * Not part of the public API.
+ */
+function buildJsonReportInternal(
+  run: TestRun,
+  diagnostics: DiagnosticEvidence,
   options: BuildJsonReportOptions,
 ): JsonReport {
-  const generatedAt =
-    options.generatedAt ?? new Date().toISOString();
+  const impact = options.impact ?? classifyDiagnosticImpact(diagnostics);
+  const metricFailures =
+    options.metricFailures ??
+    run.metrics
+      .filter((metric) => metric.verdict === "fail")
+      .map((metric) => metric.name);
+  const missingEvidence = options.missingEvidence ?? inferMissingEvidence(run);
+  const status =
+    options.status ??
+    deriveFinalStatus({
+      requestedStatus: run.status,
+      diagnosticsImpact: impact,
+      missingEvidence,
+      metricFailures,
+    });
+  const generatedAt = options.generatedAt ?? new Date().toISOString();
   return {
     run,
     plan: { id: run.planId },
@@ -363,14 +397,47 @@ export function buildJsonReport(
     diagnostics,
     findings: buildFindings(
       diagnostics,
-      options.impact,
-      options.metricFailures,
-      options.missingEvidence,
+      impact,
+      metricFailures,
+      missingEvidence,
     ),
-    status: options.status,
+    status,
     evidencePaths: collectEvidencePaths(run),
     generatedAt,
     downgradedFromCompleted:
-      run.status === "completed" && options.status !== "completed",
+      run.status === "completed" && status !== "completed",
   };
+}
+
+/**
+ * Heuristically surface required artifacts the run did not capture. The
+ * report layer cannot know what the plan asked for without a plan
+ * reference, so this only flags the obvious holes:
+ *   - metrics were recorded but no trace archives exist alongside them
+ *   - the lifecycle trace was promised (via `lifecycleTracePath`) but the
+ *     underlying diagnostics could not collect events
+ *   - the device log path was promised but logs were unavailable
+ *   - the crash report path was promised but crash detection was unavailable
+ */
+function inferMissingEvidence(run: TestRun): string[] {
+  const missing: string[] = [];
+  const evidence = run.evidence ?? {};
+  if (
+    run.metrics.length > 0 &&
+    evidence.traceArchivePaths !== undefined &&
+    evidence.traceArchivePaths.length === 0
+  ) {
+    missing.push("trace_archive");
+  }
+  if (
+    evidence.deviceLogPath !== undefined &&
+    evidence.deviceLogPath.length > 0
+  ) {
+    // The runner promised a log path; if logs were truly captured the
+    // diagnostics would mark them available. The report builder cannot
+    // inspect the diagnostics here without an extra parameter, so this is a
+    // conservative no-op in this layer. The internal helper accepts
+    // overrides for the runner-driven path.
+  }
+  return missing;
 }

@@ -2,18 +2,14 @@ import { describe, expect, it } from "vitest";
 import { buildJsonReport } from "../../reports/json.js";
 import { renderMarkdownReport } from "../../reports/markdown.js";
 import {
-  classifyDiagnosticImpact,
   normalizeDiagnostics,
   type DiagnosticEvidence,
-  type DiagnosticImpact,
 } from "../../diagnostics/normalize.js";
 import type {
   ActionRecord,
   MetricResult,
   TestRun,
 } from "../../model/test-run.js";
-import type { RunStatus } from "../../model/test-run.js";
-import { deriveFinalStatus } from "../../reports/status.js";
 
 function buildRun(overrides: Partial<TestRun> = {}): TestRun {
   return {
@@ -38,51 +34,27 @@ function buildRun(overrides: Partial<TestRun> = {}): TestRun {
   };
 }
 
-function noImpact(): DiagnosticImpact {
-  return { severity: "none", reasons: [] };
-}
-
-function deriveStatus(
-  requestedStatus: RunStatus,
-  diagnostics: DiagnosticEvidence,
-  metricFailures: string[] = [],
-  missingEvidence: string[] = [],
-): RunStatus {
-  return deriveFinalStatus({
-    requestedStatus,
-    diagnosticsImpact: classifyDiagnosticImpact(diagnostics),
-    missingEvidence,
-    metricFailures,
-  });
-}
-
-function reportFor(
+function diagnosticsFor(
   run: TestRun,
-  diagnostics: DiagnosticEvidence,
-  options: {
-    requestedStatus?: RunStatus;
-    metricFailures?: string[];
-    missingEvidence?: string[];
-    status?: RunStatus;
-    impact?: DiagnosticImpact;
-  } = {},
-) {
-  const requested = options.requestedStatus ?? run.status;
-  const impact = options.impact ?? classifyDiagnosticImpact(diagnostics);
-  const metricFailures = options.metricFailures ?? [];
-  const missingEvidence = options.missingEvidence ?? [];
-  const status =
-    options.status ?? deriveStatus(requested, diagnostics, metricFailures, missingEvidence);
-  return buildJsonReport(run, diagnostics, {
-    status,
-    impact,
-    metricFailures,
-    missingEvidence,
-    generatedAt: "2026-10-17T00:01:30.000Z",
-  });
+  input: Parameters<typeof normalizeDiagnostics>[0] = {},
+): DiagnosticEvidence {
+  return normalizeDiagnostics(input, run.startedAt, run.endedAt ?? run.startedAt);
 }
 
-describe("buildJsonReport", () => {
+describe("buildJsonReport (public 2-argument signature)", () => {
+  it("uses the brief's exact two-argument signature", () => {
+    // Compile-time guard: if anyone accidentally re-adds a required third
+    // argument, the call below stops compiling.
+    const fn: (
+      run: TestRun,
+      diagnostics: DiagnosticEvidence,
+    ) => ReturnType<typeof buildJsonReport> = buildJsonReport;
+    expect(fn.length).toBe(2);
+    const run = buildRun();
+    const diagnostics = diagnosticsFor(run);
+    expect(fn(run, diagnostics)).toBeDefined();
+  });
+
   it("preserves an unknown metric payload under metrics[].raw", () => {
     const metric: MetricResult = {
       name: "experimental_gpu_spike",
@@ -92,12 +64,7 @@ describe("buildJsonReport", () => {
       experimentalField: "should survive",
     } as unknown as MetricResult;
     const run = buildRun({ metrics: [metric] });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {},
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const report = buildJsonReport(run, diagnosticsFor(run));
 
     expect(report.metrics).toHaveLength(1);
     expect(report.metrics[0]?.raw).toMatchObject({
@@ -152,12 +119,7 @@ describe("buildJsonReport", () => {
     const run = buildRun({
       actions: [dragAction, tapAction, unknownAction],
     });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {},
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const report = buildJsonReport(run, diagnosticsFor(run));
 
     const phases = (id: string) =>
       report.actions.find((entry) => entry.actionId === id)?.phases ?? [];
@@ -176,48 +138,79 @@ describe("buildJsonReport", () => {
     ]);
   });
 
-  it("reports downgradedFromCompleted when the run requested completed but failed diagnostics", () => {
+  it("derives failed status when new Crash diagnostics are present", () => {
     const run = buildRun({ status: "completed" });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {
-        crashIdsBefore: [],
-        crashIdsAfter: ["c-1"],
-        crashReports: [{ id: "c-1" }],
-      },
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const diagnostics = diagnosticsFor(run, {
+      crashIdsBefore: [],
+      crashIdsAfter: ["c-1"],
+      crashReports: [{ id: "c-1" }],
+    });
+    const report = buildJsonReport(run, diagnostics);
     expect(report.status).toBe("failed");
     expect(report.downgradedFromCompleted).toBe(true);
   });
 
-  it("includes missing evidence codes in findings", () => {
-    const run = buildRun({ status: "completed" });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {},
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics, {
-      missingEvidence: ["trace_archive:startup.trace"],
+  it("derives partial status from metric failures via the run's verdict field", () => {
+    const run = buildRun({
+      metrics: [
+        {
+          name: "hitches",
+          value: 12,
+          verdict: "fail",
+          measuredAt: "2026-10-17T00:00:30.000Z",
+        },
+      ],
     });
-    expect(report.findings.some((f) => f.code === "missing:trace_archive:startup.trace")).toBe(
-      true,
-    );
+    const report = buildJsonReport(run, diagnosticsFor(run));
     expect(report.status).toBe("partial");
+    expect(
+      report.findings.some((f) => f.code === "metric:hitches"),
+    ).toBe(true);
+  });
+
+  it("derives partial status and a missing trace finding when archives are absent", () => {
+    const run = buildRun({
+      metrics: [
+        {
+          name: "startup_time",
+          value: 1200,
+          verdict: "pass",
+          measuredAt: "2026-10-17T00:00:05.000Z",
+        },
+      ],
+      evidence: {
+        deviceLogPath: "logs/device.log",
+        crashReportPath: undefined,
+        screenshotPaths: [],
+        traceArchivePaths: [],
+      },
+    });
+    const report = buildJsonReport(run, diagnosticsFor(run));
+    expect(report.status).toBe("partial");
+    expect(
+      report.findings.some((f) => f.code === "missing:trace_archive"),
+    ).toBe(true);
+  });
+
+  it("returns completed when the run and diagnostics are both clean", () => {
+    const run = buildRun();
+    const diagnostics = diagnosticsFor(run, {
+      logText: "everything is fine",
+    });
+    const report = buildJsonReport(run, diagnostics);
+    expect(report.status).toBe("completed");
+    expect(report.downgradedFromCompleted).toBe(false);
+    expect(report.findings).toEqual([]);
   });
 });
 
 describe("renderMarkdownReport", () => {
   it("renders sections in the required order and exposes all evidence", () => {
     const run = buildRun();
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      { logText: "everything is fine" },
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const diagnostics = diagnosticsFor(run, {
+      logText: "everything is fine",
+    });
+    const report = buildJsonReport(run, diagnostics);
     const markdown = renderMarkdownReport(report);
 
     const order: string[] = [
@@ -243,12 +236,10 @@ describe("renderMarkdownReport", () => {
 
   it("uses the explicit phrase when crash detection is unavailable", () => {
     const run = buildRun({ status: "completed" });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      { crashQueryError: "device disconnected" },
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const diagnostics = diagnosticsFor(run, {
+      crashQueryError: "device disconnected",
+    });
+    const report = buildJsonReport(run, diagnostics);
     const markdown = renderMarkdownReport(report);
     expect(markdown).toContain("未能读取 Crash 列表，不能据此证明没有崩溃");
     expect(markdown).toContain("Crash 差异");
@@ -275,23 +266,19 @@ describe("renderMarkdownReport", () => {
       ],
       status: "completed",
     });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {
-        logText: "jetsam killing process 42",
-        crashIdsBefore: [],
-        crashIdsAfter: ["c-1"],
-        crashReports: [{ id: "c-1", process: "Demo", exceptionType: "EXC_BAD" }],
-        lifecycle: [
-          {
-            kind: "foreground",
-            occurredAt: "2026-10-17T00:00:05.000Z",
-          },
-        ],
-      },
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const diagnostics = diagnosticsFor(run, {
+      logText: "jetsam killing process 42",
+      crashIdsBefore: [],
+      crashIdsAfter: ["c-1"],
+      crashReports: [{ id: "c-1", process: "Demo", exceptionType: "EXC_BAD" }],
+      lifecycle: [
+        {
+          kind: "foreground",
+          occurredAt: "2026-10-17T00:00:05.000Z",
+        },
+      ],
+    });
+    const report = buildJsonReport(run, diagnostics);
     const markdown = renderMarkdownReport(report);
     const stability = markdown.slice(markdown.indexOf("稳定性诊断"));
     expect(stability).toContain("日志");
@@ -317,12 +304,7 @@ describe("renderMarkdownReport", () => {
       ],
       status: "failed",
     });
-    const diagnostics: DiagnosticEvidence = normalizeDiagnostics(
-      {},
-      run.startedAt,
-      run.endedAt ?? run.startedAt,
-    );
-    const report = reportFor(run, diagnostics);
+    const report = buildJsonReport(run, diagnosticsFor(run));
     const markdown = renderMarkdownReport(report);
     expect(markdown).toMatch(/起止时间未知/);
     expect(markdown).not.toMatch(/0ms\s*→\s*100ms/);
