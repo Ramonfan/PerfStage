@@ -1,14 +1,46 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { join } from "node:path";
+import { registerTools } from "./tools/index.js";
+import { createRunStore } from "./storage/runs.js";
 
-export function createServer(): Server {
-  return new Server(
+const SCENARIO_DIR = process.env.PERFORMANCE_TEST_SCENARIO_DIR ?? "scenarios";
+const RUNS_DIR = process.env.PERFORMANCE_TEST_RUNS_DIR ?? "runs";
+
+/**
+ * Build a fresh MCP server with all performance-test tools registered.
+ *
+ * `scenarioDir` and the runs directory are configurable through environment
+ * variables so the server can be pointed at test fixtures without code edits.
+ * Diagnostics and tests are kept off of stdout; only the JSON-RPC stream is
+ * emitted there. Everything else goes to stderr or the file system.
+ */
+export function createServer(): McpServer {
+  const server = new McpServer(
     { name: "performance-test-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
+  registerTools(server, {
+    scenarioDir: SCENARIO_DIR,
+    runStore: createRunStore(RUNS_DIR),
+    now: () => new Date(),
+    runsRoot: RUNS_DIR,
+  });
+  return server;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = createServer();
+  const scenarioDir = join(process.cwd(), SCENARIO_DIR);
+  const runsDir = join(process.cwd(), RUNS_DIR);
+  const server = new McpServer(
+    { name: "performance-test-mcp", version: "0.1.0" },
+    { capabilities: { tools: {} } },
+  );
+  registerTools(server, {
+    scenarioDir,
+    runStore: createRunStore(runsDir),
+    now: () => new Date(),
+    runsRoot: runsDir,
+  });
   await server.connect(new StdioServerTransport());
 }
