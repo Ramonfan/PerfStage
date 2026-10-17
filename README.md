@@ -4,6 +4,17 @@ Local orchestration helper for iOS performance experiments. It reads the current
 
 This is intentionally a personal-use tool, not a test-management platform.
 
+## Local setup
+
+```bash
+npm install
+npm test
+npm run build
+npm start
+```
+
+Device operations remain Claude-orchestrated.
+
 ## Current status
 
 Design approved; implementation plan pending.
