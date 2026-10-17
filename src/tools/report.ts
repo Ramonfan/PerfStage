@@ -12,7 +12,9 @@ import {
 import { deriveFinalStatus } from "../reports/status.js";
 import {
   buildJsonReport,
+  evidencePathsArray,
   type JsonReport,
+  type ReportEvidencePath,
   type ReportEvidencePaths,
   type ReportFinding,
 } from "../reports/json.js";
@@ -107,12 +109,13 @@ export interface FinalizePerformanceTestResult {
   jsonPath: string;
   markdownPath: string;
   /**
-   * Map of evidence-kind → run-relative POSIX path. `deviceLog` is the
-   * primary entry; the same map is embedded in `report.json` under
-   * `evidencePaths` so the e2e contract
-   * `reportJson.evidencePaths.deviceLog` remains a string.
+   * Array of copied evidence descriptors so callers can use
+   * `result.evidencePaths.map(...)`. The same evidence is embedded in
+   * `report.json` under `evidencePaths` as a kind → path **map** so
+   * `reportJson.evidencePaths.deviceLog` remains the contract that
+   * downstream consumers (Task 8 e2e tests) rely on.
    */
-  evidencePaths: ReportEvidencePaths;
+  evidencePaths: ReportEvidencePath[];
   findings: ReportFinding[];
   diagnostics: DiagnosticEvidence;
   /** Concise summary suitable for surfacing in the Claude tool result. */
@@ -187,7 +190,7 @@ function buildSummary(
   result: {
     runId: string;
     status: TestRun["status"];
-    evidencePaths: ReportEvidencePaths;
+    evidencePaths: ReportEvidencePath[];
     findings: ReportFinding[];
     diagnostics: DiagnosticEvidence;
   },
@@ -199,7 +202,7 @@ function buildSummary(
   const failureReasons = result.findings
     .filter((f) => f.severity === "failure")
     .map((f) => f.code);
-  const evidenceCount = Object.keys(result.evidencePaths).length;
+  const evidenceCount = result.evidencePaths.length;
   if (hasNewCrash) {
     return `Run ${result.runId} ended at ${result.status}: new crash detected during the run.`;
   }
@@ -500,7 +503,7 @@ export async function finalizePerformanceTest(
     planPath: posix.join("plan.json"),
     jsonPath: posix.join("report.json"),
     markdownPath: posix.join("report.md"),
-    evidencePaths: copiedEvidenceMap,
+    evidencePaths: evidencePathsArray(copiedEvidenceMap),
     findings: derivedFindings,
     diagnostics: derivedEvidence!,
   };

@@ -239,7 +239,9 @@ describe("finalize_performance_test", () => {
     );
     if (isToolError(result)) throw new Error(result.error);
     expect(result.evidencePaths).toEqual(
-      expect.objectContaining({ deviceLog: "logs/device.log" }),
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "deviceLog", relativePath: "logs/device.log" }),
+      ]),
     );
     const copied = await readFile(
       join(harness.root, "runs", prepared.runId, "logs", "device.log"),
@@ -393,10 +395,14 @@ describe("finalize_performance_test", () => {
       },
     );
     if (isToolError(result)) throw new Error(result.error);
-    // The tool's own result exposes evidencePaths as a kind→path map.
-    expect(typeof result.evidencePaths.deviceLog).toBe("string");
-    expect(result.evidencePaths.deviceLog).toBe("logs/device.log");
-    // The persisted report.json keeps the same shape; downstream consumers
+    // The tool's own result exposes evidencePaths as an array of copied
+    // descriptors so callers can use `result.evidencePaths.map(...)`.
+    expect(Array.isArray(result.evidencePaths)).toBe(true);
+    const deviceLogEntry = result.evidencePaths.find(
+      (e) => e.kind === "deviceLog",
+    );
+    expect(deviceLogEntry?.relativePath).toBe("logs/device.log");
+    // The persisted report.json keeps the map shape; downstream consumers
     // (Task 8 e2e tests) read `reportJson.evidencePaths.deviceLog` as a
     // string.
     const jsonReport = JSON.parse(
@@ -409,6 +415,73 @@ describe("finalize_performance_test", () => {
     expect(typeof jsonReport.evidencePaths.deviceLog).toBe("string");
     expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
     expect(jsonReport.evidencePaths.deviceLog.startsWith("/")).toBe(false);
+  });
+
+  it("finalize result exposes an array of descriptors and report.json exposes a map (dual contract)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const externalDir = join(harness.root, "dual-contract");
+    await mkdir(externalDir, { recursive: true });
+    const deviceLog = join(externalDir, "device.log");
+    const crashReport = join(externalDir, "crash.ips");
+    await writeFile(deviceLog, "log\n", "utf8");
+    await writeFile(crashReport, "crash\n", "utf8");
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        evidencePaths: [
+          { kind: "deviceLog", sourcePath: deviceLog, relativePath: "logs/device.log" },
+          { kind: "crashReport", sourcePath: crashReport, relativePath: "logs/crash.ips" },
+        ],
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+
+    // Contract 1: finalize tool result is an ARRAY of copied descriptors
+    // so consumers can call `result.evidencePaths.map(...)`.
+    expect(Array.isArray(result.evidencePaths)).toBe(true);
+    const kinds = result.evidencePaths.map((e) => e.kind).sort();
+    expect(kinds).toEqual(["crashReport", "deviceLog"]);
+    const devicesFromArray = result.evidencePaths.map(
+      (e) => e.relativePath,
+    );
+    expect(devicesFromArray).toEqual(
+      expect.arrayContaining(["logs/device.log", "logs/crash.ips"]),
+    );
+
+    // Contract 2: report.json keeps the kind→path MAP shape with each
+    // value being a run-relative string. No entry leaks the absolute
+    // source path passed to copyEvidence.
+    const jsonReport = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(typeof jsonReport.evidencePaths).toBe("object");
+    expect(Array.isArray(jsonReport.evidencePaths)).toBe(false);
+    expect(typeof jsonReport.evidencePaths.deviceLog).toBe("string");
+    expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
+    expect(typeof jsonReport.evidencePaths.crashReport).toBe("string");
+    expect(jsonReport.evidencePaths.crashReport).toBe("logs/crash.ips");
+    // Absolute paths never appear in either surface.
+    expect(JSON.stringify(jsonReport.evidencePaths)).not.toContain(
+      externalDir,
+    );
+    expect(JSON.stringify(result.evidencePaths)).not.toContain(externalDir);
   });
 
   it("refuses concurrent finalize calls: only one can persist state", async () => {
