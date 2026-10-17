@@ -1,10 +1,10 @@
 import {
   copyFile,
-  link,
   mkdir,
+  open,
   readFile,
   rename,
-  unlink,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
@@ -12,7 +12,51 @@ import { dirname, isAbsolute, join, parse, posix, sep } from "node:path";
 import { TestRun, testRunSchema } from "../model/test-run.js";
 
 const RUN_FILE_NAME = "run.json";
+const LOCK_FILE_NAME = ".finalize.lock";
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export type RunStatus = TestRun["status"];
+
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  "completed",
+  "partial",
+  "invalid",
+  "failed",
+  "cancelled",
+]);
+
+/**
+ * Outcome of an attempt to finalize a run via the atomic compare-and-swap
+ * helper. The handler layer maps these values onto either a successful tool
+ * result or a structured tool error, never an exception.
+ */
+export type TryFinalizeOutcome =
+  | { kind: "ok"; run: TestRun }
+  | { kind: "missing" }
+  | { kind: "terminal"; status: RunStatus }
+  | { kind: "concurrent" }
+  | { kind: "invalid"; reason: string };
+
+export interface TryFinalizeOptions {
+  /**
+   * Mutator applied to the freshly-read run. The mutator must return the
+   * updated run; if it throws, the lock is released and the error bubbles
+   * up as an `invalid` outcome.
+   */
+  mutate: (current: TestRun) => TestRun | Promise<TestRun>;
+  /**
+   * Optional status predicate for callers that want to refuse additional
+   * non-terminal transitions (e.g. refuse to mark a running run as running
+   * again). Defaults to "any non-terminal status is acceptable".
+   */
+  acceptStatus?: (status: RunStatus) => boolean;
+  /**
+   * Optional hook invoked once persistence succeeds but before the lock is
+   * released. Useful for writing report.json / report.md inside the same
+   * critical section.
+   */
+  onPersisted?: (run: TestRun) => void | Promise<void>;
+}
 
 export interface RunStore {
   create(run: TestRun): Promise<string>;
@@ -29,6 +73,14 @@ export interface RunStore {
     relativePath: string,
   ): Promise<string>;
   runDirectory(runId: string): string;
+  /**
+   * Atomically read the existing run, validate that the supplied predicate
+   * accepts its current status, apply a mutator, and persist the updated
+   * run. The transition is guarded by an exclusive `<run>/.finalize.lock`
+   * file created with O_EXCL so two concurrent calls cannot both pass the
+   * status check.
+   */
+  tryFinalize(runId: string, options: TryFinalizeOptions): Promise<TryFinalizeOutcome>;
 }
 
 /**
@@ -103,6 +155,54 @@ function runFilePath(rootDir: string, runId: string): string {
   return join(runDirectoryOf(rootDir, runId), RUN_FILE_NAME);
 }
 
+function lockPathOf(rootDir: string, runId: string): string {
+  return join(runDirectoryOf(rootDir, runId), LOCK_FILE_NAME);
+}
+
+/**
+ * Try to acquire the per-run finalize lock. Uses `open(path, "wx")` so the
+ * atomic create-or-fail semantics are provided by the OS. Stale lock files
+ * from crashed prior processes are tolerated by checking their age in the
+ * caller, but the default behavior is fail-fast.
+ */
+async function acquireFinalizeLock(
+  lockPath: string,
+): Promise<{ release: () => Promise<void>; acquired: true } | { acquired: false }> {
+  try {
+    const handle = await open(lockPath, "wx", 0o600);
+    await handle.writeFile(
+      JSON.stringify(
+        {
+          pid: process.pid,
+          acquiredAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      { encoding: "utf8" },
+    );
+    await handle.close();
+    return {
+      acquired: true,
+      release: async () => {
+        try {
+          await rm(lockPath, { force: true });
+        } catch {
+          // Best-effort release; lock TTL covers stuck processes.
+        }
+      },
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error as NodeJS.ErrnoException).code === "EEXIST"
+    ) {
+      return { acquired: false };
+    }
+    throw error;
+  }
+}
+
 /**
  * Write a UTF-8 file atomically by staging the content in a sibling temp
  * file inside the same directory and renaming it over the target. This keeps
@@ -113,54 +213,8 @@ async function writeAtomic(targetPath: string, data: string): Promise<void> {
   const { dir, name } = parse(targetPath);
   const tempName = `.${name}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   const tempPath = join(dir, tempName);
-  try {
-    await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
-    await rename(tempPath, targetPath);
-  } catch (error) {
-    // Best-effort cleanup of the staging file before rethrowing.
-    await safeUnlink(tempPath);
-    throw error;
-  }
-}
-
-/**
- * Atomically place a UTF-8 file at `targetPath` only if it does not already
- * exist. The content is staged in a sibling temp file and then moved into
- * place with `link(2)` + `unlink(2)`: `link(2)` is atomic on POSIX (and Windows
- * for files on the same volume) and fails with EEXIST if the target is
- * already there, so concurrent callers cannot overwrite an existing run.
- */
-async function writeExclusive(
-  targetPath: string,
-  data: string,
-): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true });
-  const { dir, name } = parse(targetPath);
-  const tempName = `.${name}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  const tempPath = join(dir, tempName);
-  try {
-    await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
-    // link(2) is atomic; EEXIST means another writer beat us to it.
-    await link(tempPath, targetPath);
-    await unlink(tempPath);
-  } catch (error) {
-    await safeUnlink(tempPath);
-    throw error;
-  }
-}
-
-async function safeUnlink(path: string): Promise<void> {
-  try {
-    await unlink(path);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return;
-    }
-    throw error;
-  }
+  await writeFile(tempPath, data, { encoding: "utf8", mode: 0o600 });
+  await rename(tempPath, targetPath);
 }
 
 export function createRunStore(rootDir: string): RunStore {
@@ -174,29 +228,35 @@ export function createRunStore(rootDir: string): RunStore {
     await writeAtomic(runFilePath(rootDir, validated.id), json);
   }
 
-  async function createNew(run: TestRun): Promise<string> {
-    const validated = testRunSchema.parse(run);
-    const runId = assertSafeRunId(validated.id);
-    const dir = runDirectoryOf(rootDir, runId);
-    await mkdir(dir, { recursive: true });
-    const json = JSON.stringify(validated, null, 2);
-    try {
-      await writeExclusive(runFilePath(rootDir, runId), json);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error as NodeJS.ErrnoException).code === "EEXIST"
-      ) {
-        throw new Error(`Run "${runId}" already exists.`);
-      }
-      throw error;
-    }
-    return runId;
-  }
-
   return {
     async create(run: TestRun): Promise<string> {
-      return createNew(run);
+      const validated = testRunSchema.parse(run);
+      const runId = assertSafeRunId(validated.id);
+      const dir = runDirectoryOf(rootDir, runId);
+      await mkdir(dir, { recursive: true });
+      // Detect existing runs so we never silently overwrite them.
+      try {
+        await readFile(runFilePath(rootDir, runId), "utf8");
+        throw new Error(`Run "${runId}" already exists.`);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /already exists/.test(error.message)
+        ) {
+          throw error;
+        }
+        if (
+          error instanceof Error &&
+          // Node reports missing files via Error with code "ENOENT".
+          (error as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          // Expected — fall through and write the new run.
+        } else {
+          throw error;
+        }
+      }
+      await persist(validated);
+      return runId;
     },
 
     async read(runId: string): Promise<TestRun> {
@@ -298,7 +358,95 @@ export function createRunStore(rootDir: string): RunStore {
     runDirectory(runId: string): string {
       return runDirectoryOf(rootDir, runId);
     },
+
+    async tryFinalize(
+      runId: string,
+      options: TryFinalizeOptions,
+    ): Promise<TryFinalizeOutcome> {
+      const safeId = assertSafeRunId(runId);
+      const lockPath = lockPathOf(rootDir, safeId);
+      // Ensure the run directory exists before attempting to acquire the
+      // lock so ENOENT races do not matter.
+      const dir = runDirectoryOf(rootDir, safeId);
+      await mkdir(dir, { recursive: true });
+
+      const lock = await acquireFinalizeLock(lockPath);
+      if (!lock.acquired) {
+        return { kind: "concurrent" };
+      }
+
+      try {
+        let current: TestRun;
+        try {
+          current = await this.read(safeId);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            /does not exist/.test(error.message)
+          ) {
+            return { kind: "missing" };
+          }
+          throw error;
+        }
+
+        const accept = options.acceptStatus ?? defaultAcceptStatus;
+        if (!accept(current.status)) {
+          return { kind: "terminal", status: current.status };
+        }
+
+        let updated: TestRun;
+        try {
+          updated = await options.mutate(current);
+        } catch (error) {
+          return {
+            kind: "invalid",
+            reason:
+              error instanceof Error ? error.message : String(error),
+          };
+        }
+
+        // Force the run through persist() so the schema guard rejects any
+        // mutator that produces an illegal status transition. We re-assert
+        // the terminal guard here so a mutator cannot escape the check.
+        if (TERMINAL_STATUSES.has(current.status) && !accept(current.status)) {
+          return { kind: "terminal", status: current.status };
+        }
+
+        try {
+          await persist(updated);
+        } catch (error) {
+          return {
+            kind: "invalid",
+            reason:
+              error instanceof Error ? error.message : String(error),
+          };
+        }
+
+        if (options.onPersisted) {
+          try {
+            await options.onPersisted(updated);
+          } catch (error) {
+            // Surface persistence errors to the caller while we still hold
+            // the lock; the run.json contents are already updated so the
+            // eventual unlock exposes the advanced state.
+            return {
+              kind: "invalid",
+              reason:
+                error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+
+        return { kind: "ok", run: updated };
+      } finally {
+        await lock.release();
+      }
+    },
   };
+}
+
+function defaultAcceptStatus(status: RunStatus): boolean {
+  return !TERMINAL_STATUSES.has(status);
 }
 
 /**

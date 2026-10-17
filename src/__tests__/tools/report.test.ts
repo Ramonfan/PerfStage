@@ -274,4 +274,244 @@ describe("finalize_performance_test", () => {
     if (isToolError(result)) throw new Error(result.error);
     expect(result.status).toBe("partial");
   });
+
+  it("includes a concise summary string in the response", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 25, unit: "%", verdict: "pass" },
+          { name: "memory", value: 187, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(typeof result.summary).toBe("string");
+    expect(result.summary.length).toBeGreaterThan(0);
+    expect(result.summary).toContain(prepared.runId);
+    expect(result.summary).toContain("completed");
+  });
+
+  it("stores evidence as run-relative paths and does not leak absolute diagnostics.logPath", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const externalDir = join(harness.root, "external-evidence");
+    await mkdir(externalDir, { recursive: true });
+    const externalLog = join(externalDir, "device.log");
+    await writeFile(externalLog, "noise\n", "utf8");
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [],
+        diagnostics: {
+          crashIdsBefore: [],
+          crashIdsAfter: [],
+          logPath: "/should/not/leak/absolute.log",
+        },
+        evidencePaths: [
+          {
+            kind: "deviceLog",
+            sourcePath: externalLog,
+            relativePath: "logs/device.log",
+          },
+        ],
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const finalRun = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "run.json"),
+        "utf8",
+      ),
+    ) as { evidence: { deviceLogPath?: string } };
+    expect(finalRun.evidence.deviceLogPath).toBe("logs/device.log");
+    expect(finalRun.evidence.deviceLogPath?.startsWith("/")).toBe(false);
+    const jsonReport = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    const dlRefs = JSON.stringify(jsonReport.evidencePaths);
+    expect(dlRefs).not.toContain("/should/not/leak");
+  });
+
+  it("refuses concurrent finalize calls: only one can persist state", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    // Spawn two finalize calls in parallel. At most one may succeed; if
+    // both succeed, the lock failed.
+    const [first, second] = await Promise.all([
+      harness.call<FinalizePerformanceTestResult>("finalize_performance_test", {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+      }),
+      harness.call("finalize_performance_test", {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+      }),
+    ]);
+    const successes = [first, second].filter((r) => !isToolError(r));
+    const errors = [first, second].filter(isToolError);
+    // Exactly one must win; the other must surface a structured error.
+    expect(successes).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+    const errorMessage = (errors[0] as { error: string }).error;
+    expect(errorMessage).toMatch(/concurrent|terminal|already/i);
+  });
+
+  it("includes findings for metric failures and missing evidence with severity and code", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        // Only hitches is provided; cpu/memory are missing. hitches fails its threshold.
+        metrics: [{ name: "hitches", value: 7, verdict: "fail" }],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const codes = result.findings.map((f) => f.code);
+    expect(codes).toEqual(expect.arrayContaining(["metric:cpu", "metric:memory", "metric:hitches"]));
+    const hitchesFinding = result.findings.find((f) => f.code === "metric:hitches");
+    expect(hitchesFinding?.severity).toBe("failure");
+  });
+
+  it("agrees with report.json on the final status (regression)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const json = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    // The status returned to Claude and the status persisted in
+    // report.json must agree, with no hidden partial-classification drift.
+    expect(json.status).toBe(result.status);
+    expect(json.status).toBe("completed");
+  });
+
+  it("agrees with report.json on the failed status when diagnostics detect new crash", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: {
+          crashIdsBefore: [],
+          crashIdsAfter: ["crash-1"],
+          crashReports: [{ id: "crash-1" }],
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const json = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(result.status).toBe("failed");
+    expect(json.status).toBe("failed");
+  });
 });

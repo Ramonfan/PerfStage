@@ -1,53 +1,45 @@
-import { existsSync } from "node:fs";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { posix } from "node:path";
 import { z } from "zod";
 import {
   normalizeDiagnostics,
   classifyDiagnosticImpact,
+  crashReportSchema,
+  lifecycleEventSchema,
   type DiagnosticEvidence,
   type DiagnosticInput,
 } from "../diagnostics/normalize.js";
 import { deriveFinalStatus } from "../reports/status.js";
-import { buildJsonReport, type JsonReport, type ReportFinding } from "../reports/json.js";
+import {
+  buildJsonReport,
+  type JsonReport,
+  type ReportEvidencePath,
+  type ReportFinding,
+} from "../reports/json.js";
 import { renderMarkdownReport } from "../reports/markdown.js";
 import {
   type TestRun,
   type ActionRecord,
   runStatusSchema,
+  actionRecordSchema,
 } from "../model/test-run.js";
 import type { TestPlan } from "../model/test-plan.js";
 import type { RegisterOptions } from "./index.js";
+import {
+  deriveFindings,
+  deriveMissingMetricEvidence,
+  deriveMetricFailures,
+} from "../reports/findings.js";
 
-const actionRecordSchema = z
+const evidencePathInputSchema = z
   .object({
-    actionId: z.string().min(1),
-    action: z.unknown().optional(),
-    outcome: z.enum(["executed", "skipped", "failed", "timeout"]),
-    attempts: z.number().int().nonnegative().default(1),
-    startedAt: z.string().datetime(),
-    endedAt: z.string().datetime().nullable().optional(),
-    durationMs: z.number().nonnegative().optional(),
-    error: z.string().optional(),
-    notes: z.string().optional(),
+    kind: z.string().min(1),
+    sourcePath: z.string().min(1),
+    relativePath: z.string().min(1),
   })
-  .passthrough();
+  .strict();
 
-const metricResultSchema = z
-  .object({
-    name: z.string().min(1),
-    value: z.unknown().optional(),
-    unit: z.string().optional(),
-    threshold: z
-      .object({ warn: z.number().optional(), fail: z.number().optional() })
-      .strict()
-      .optional(),
-    verdict: z.enum(["pass", "warn", "fail", "skipped"]).optional(),
-    measuredAt: z.string().datetime().optional(),
-  })
-  .passthrough();
-
-const diagnosticInputSchema = z
+const finalizeDiagnosticsSchema = z
   .object({
     logText: z.string().optional(),
     logPath: z.string().optional(),
@@ -59,47 +51,52 @@ const diagnosticInputSchema = z
       .optional(),
     crashIdsBefore: z.array(z.string()).optional(),
     crashIdsAfter: z.array(z.string()).optional(),
-    crashReports: z.array(z.unknown()).optional(),
-    lifecycle: z.array(z.unknown()).optional(),
+    crashReports: z.array(crashReportSchema).optional(),
+    lifecycle: z.array(lifecycleEventSchema).optional(),
     crashQueryError: z.string().optional(),
     logQueryError: z.string().optional(),
     lifecycleQueryError: z.string().optional(),
   })
   .passthrough();
 
-const evidencePathSchema = z
-  .object({
-    kind: z.string().min(1),
-    sourcePath: z.string().min(1),
-    relativePath: z.string().min(1),
-  })
-  .strict();
-
 /**
- * Input shape for `finalize_performance_test`. The handler returns a structured
- * tool error when the run is missing or has already reached a terminal status
- * so existing evidence is never overwritten.
+ * Input shape for `finalize_performance_test`. The handler returns a
+ * structured tool error when the run is missing, has already reached a
+ * terminal status, or is currently being finalized by another caller.
  */
 export const finalizeInputSchema = z
   .object({
     runId: z.string().min(1),
     requestedStatus: runStatusSchema,
     actions: z.array(actionRecordSchema).default([]),
-    metrics: z.array(metricResultSchema).default([]),
-    diagnostics: diagnosticInputSchema.default({}),
-    evidencePaths: z.array(evidencePathSchema).optional(),
+    metrics: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            value: z.unknown().optional(),
+            unit: z.string().optional(),
+            threshold: z
+              .object({
+                warn: z.number().optional(),
+                fail: z.number().optional(),
+              })
+              .strict()
+              .optional(),
+            verdict: z.enum(["pass", "warn", "fail", "skipped"]).optional(),
+            measuredAt: z.string().datetime().optional(),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    diagnostics: finalizeDiagnosticsSchema.default({}),
+    evidencePaths: z.array(evidencePathInputSchema).optional(),
     notes: z.string().optional(),
   })
   .strict();
 
 export interface FinalizePerformanceTestError {
   error: string;
-}
-
-export interface FinalizeEvidencePath {
-  kind: string;
-  sourcePath?: string;
-  relativePath: string;
 }
 
 export interface FinalizePerformanceTestResult {
@@ -109,16 +106,18 @@ export interface FinalizePerformanceTestResult {
   planPath: string;
   jsonPath: string;
   markdownPath: string;
-  evidencePaths: FinalizeEvidencePath[];
+  evidencePaths: ReportEvidencePath[];
   findings: ReportFinding[];
   diagnostics: DiagnosticEvidence;
+  /** Concise summary suitable for surfacing in the Claude tool result. */
+  summary: string;
 }
 
 type HandlerResult =
   | FinalizePerformanceTestResult
   | FinalizePerformanceTestError;
 
-const TERMINAL_STATUSES = new Set<TestRun["status"]>([
+const TERMINAL_STATUSES: ReadonlySet<TestRun["status"]> = new Set([
   "completed",
   "partial",
   "invalid",
@@ -126,42 +125,44 @@ const TERMINAL_STATUSES = new Set<TestRun["status"]>([
   "cancelled",
 ]);
 
-function isError(value: HandlerResult): value is FinalizePerformanceTestError {
+function isError(
+  value: HandlerResult,
+): value is FinalizePerformanceTestError {
   return typeof (value as { error?: unknown }).error === "string";
 }
 
 async function loadStoredPlan(
   options: RegisterOptions,
   runId: string,
-): Promise<TestPlan | undefined> {
+): Promise<TestPlan | null> {
   const planRel = "plan.json";
   const planAbs = posix.join(options.runStore.runDirectory(runId), planRel);
   if (!existsSync(planAbs)) {
-    return undefined;
+    return null;
   }
   try {
     const text = await fs.readFile(planAbs, "utf8");
-    const parsed = JSON.parse(text) as TestPlan;
-    return parsed;
+    return JSON.parse(text) as TestPlan;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
-function isRunStartable(status: TestRun["status"]): boolean {
-  return !TERMINAL_STATUSES.has(status);
-}
-
+/**
+ * Resolve the canonical action reference from the plan so the persisted
+ * action record always carries the validated, defaulted action shape
+ * rather than free-form `z.unknown` blobs.
+ */
 function pickAction(
   action: z.infer<typeof actionRecordSchema>,
-  plan: TestPlan | undefined,
+  plan: TestPlan | null,
 ): ActionRecord {
   const planAction = plan?.actions.find((a) => a.id === action.actionId);
   return {
     actionId: action.actionId,
     ...(planAction !== undefined ? { action: planAction } : {}),
     outcome: action.outcome,
-    attempts: action.attempts ?? 1,
+    attempts: action.attempts,
     startedAt: action.startedAt,
     endedAt: action.endedAt ?? null,
     durationMs: action.durationMs,
@@ -170,64 +171,51 @@ function pickAction(
   };
 }
 
-function deriveMissingEvidence(
-  plan: TestPlan | undefined,
-  metrics: z.infer<typeof metricResultSchema>[],
-): string[] {
-  const missing: string[] = [];
-  if (plan) {
-    const collected = new Set(metrics.map((metric) => metric.name));
-    for (const requested of plan.metrics) {
-      if (!collected.has(requested.name)) {
-        missing.push(`metric:${requested.name}`);
-      }
-    }
+/**
+ * Build a one-sentence, human-readable summary that the tool surfaces to
+ * Claude. It always identifies the run id, the final status, and the most
+ * notable stability signal (new crash, jetsam/watchdog, missing evidence,
+ * unavailable diagnostics, or simply "clean").
+ */
+function buildSummary(
+  result: {
+    runId: string;
+    status: TestRun["status"];
+    evidencePaths: ReportEvidencePath[];
+    findings: ReportFinding[];
+    diagnostics: DiagnosticEvidence;
+  },
+): string {
+  const hasNewCrash = result.findings.some((f) => f.code === "new-crash");
+  const hasUnavailableDiagnostics = result.findings.some((f) =>
+    f.code.endsWith("-unavailable"),
+  );
+  const failureReasons = result.findings
+    .filter((f) => f.severity === "failure")
+    .map((f) => f.code);
+  if (hasNewCrash) {
+    return `Run ${result.runId} ended at ${result.status}: new crash detected during the run.`;
   }
-  return missing;
-}
-
-function deriveMetricFailures(
-  metrics: z.infer<typeof metricResultSchema>[],
-): string[] {
-  return metrics
-    .filter((metric) => metric.verdict === "fail")
-    .map((metric) => metric.name);
-}
-
-function deriveFindings(
-  status: TestRun["status"],
-  impact: ReturnType<typeof classifyDiagnosticImpact>,
-  requestedStatus: TestRun["status"],
-  downgradedFromCompleted: boolean,
-): ReportFinding[] {
-  const findings: ReportFinding[] = [];
-  const diagnosticSeverity: ReportFinding["severity"] =
-    impact.severity === "failure" ? "failure" : "warning";
-  for (const reason of impact.reasons) {
-    findings.push({
-      severity: diagnosticSeverity,
-      code: reason,
-      message: reason,
-    });
+  if (failureReasons.length > 0) {
+    return `Run ${result.runId} ended at ${result.status} due to: ${failureReasons.join(", ")}.`;
   }
-  if (downgradedFromCompleted && requestedStatus === "completed") {
-    findings.push({
-      severity: "warning",
-      code: "status-downgrade",
-      message: `最终状态由 completed 降级为 ${status}。`,
-    });
+  if (hasUnavailableDiagnostics) {
+    return `Run ${result.runId} ended at ${result.status}: diagnostics incomplete (${result.findings.length} caveats).`;
   }
-  return findings;
+  if (result.status === "completed") {
+    return `Run ${result.runId} completed cleanly with ${result.evidencePaths.length} piece(s) of evidence saved.`;
+  }
+  return `Run ${result.runId} ended at ${result.status}.`;
 }
 
 /**
  * Shared handler for both the production MCP tool and the test harness.
  *
- * The handler is intentionally conservative: it refuses to overwrite a run
- * that has already reached a terminal status, performs evidence copying via
- * the safe run store, writes the JSON and Markdown reports through helpers
- * provided by the reports layer, and returns POSIX-style paths relative to
- * the run directory.
+ * Concurrency safety: persistence of `run.json` (and the on-persist hook
+ * used to write report.json / report.md) is fenced by an exclusive lock
+ * file inside the run directory. Concurrent `finalize` calls cannot both
+ * pass the prepared-status check: the loser observes `concurrent` and
+ * returns a structured tool error.
  */
 export async function finalizePerformanceTest(
   rawInput: unknown,
@@ -243,44 +231,64 @@ export async function finalizePerformanceTest(
   }
   const input = parsed.data;
 
-  let existing: TestRun;
-  try {
-    existing = await options.runStore.read(input.runId);
-  } catch (error) {
-    return {
-      error: `运行 ${input.runId} 不存在：${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
-
-  if (!isRunStartable(existing.status)) {
-    return {
-      error: `Run ${input.runId} already reached terminal status (${existing.status}); refusing to overwrite evidence.`,
-    };
-  }
-
   const plan = await loadStoredPlan(options, input.runId);
 
-  const actionRecords: ActionRecord[] = input.actions.map((action) =>
-    pickAction(action, plan),
-  );
+  // Build the mutator closure inside the constant block so the
+  // transition rules apply uniformly regardless of which caller reaches it
+  // first.
+  const pendingEvidence: Array<{
+    kind: string;
+    sourcePath: string;
+    relativePath: string;
+  }> = input.evidencePaths ?? [];
+  const copiedEvidence: ReportEvidencePath[] = [];
+  const diagnosticInput: DiagnosticInput = {
+    ...(input.diagnostics.logText !== undefined
+      ? { logText: input.diagnostics.logText }
+      : {}),
+    ...(input.diagnostics.logPath !== undefined
+      ? { logPath: input.diagnostics.logPath }
+      : {}),
+    ...(input.diagnostics.logFilters !== undefined
+      ? { logFilters: input.diagnostics.logFilters }
+      : {}),
+    ...(input.diagnostics.crashIdsBefore !== undefined
+      ? { crashIdsBefore: input.diagnostics.crashIdsBefore }
+      : {}),
+    ...(input.diagnostics.crashIdsAfter !== undefined
+      ? { crashIdsAfter: input.diagnostics.crashIdsAfter }
+      : {}),
+    ...(input.diagnostics.crashReports !== undefined
+      ? { crashReports: input.diagnostics.crashReports }
+      : {}),
+    ...(input.diagnostics.lifecycle !== undefined
+      ? { lifecycle: input.diagnostics.lifecycle }
+      : {}),
+    ...(input.diagnostics.crashQueryError !== undefined
+      ? { crashQueryError: input.diagnostics.crashQueryError }
+      : {}),
+    ...(input.diagnostics.logQueryError !== undefined
+      ? { logQueryError: input.diagnostics.logQueryError }
+      : {}),
+    ...(input.diagnostics.lifecycleQueryError !== undefined
+      ? { lifecycleQueryError: input.diagnostics.lifecycleQueryError }
+      : {}),
+  };
 
-  const evidenceCopied: FinalizeEvidencePath[] = [];
-  const copiedPaths: Record<string, string> = {};
-  for (const evidence of input.evidencePaths ?? []) {
+  // First pass: copy evidence outside the lock so a long copy cannot block
+  // other readers. We capture the resulting run-relative paths in
+  // `copiedEvidence` and feed them into the closure.
+  for (const evidence of pendingEvidence) {
     try {
       const rel = await options.runStore.copyEvidence(
         input.runId,
         evidence.sourcePath,
         evidence.relativePath,
       );
-      evidenceCopied.push({
+      copiedEvidence.push({
         kind: evidence.kind,
-        sourcePath: evidence.sourcePath,
         relativePath: rel,
       });
-      copiedPaths[evidence.kind] = rel;
     } catch (error) {
       return {
         error: `复制证据 ${evidence.kind} 失败：${
@@ -290,131 +298,184 @@ export async function finalizePerformanceTest(
     }
   }
 
-  // If the caller logs an explicit log path but didn't list it in
-  // evidencePaths, still record it for the report.
-  if (
-    typeof input.diagnostics.logPath === "string" &&
-    input.diagnostics.logPath.length > 0
-  ) {
-    copiedPaths.deviceLog = input.diagnostics.logPath;
-  }
+  // We deliberately do NOT leak the absolute `input.diagnostics.logPath`
+  // into updatedRun.evidence. If the caller supplied a device log we use
+  // its derived run-relative location (when it was just copied) or omit it
+  // entirely when no copy happened, leaving the absolute path out of any
+  // persisted run state.
+  const copiedLog = copiedEvidence.find((e) => e.kind === "deviceLog");
 
-  const startedAt = existing.startedAt;
-  const endedAt = options.now().toISOString();
-
-  const diagnosticInput: DiagnosticInput = {
-    logText: input.diagnostics.logText,
-    logPath: input.diagnostics.logPath,
-    logFilters: input.diagnostics.logFilters,
-    crashIdsBefore: input.diagnostics.crashIdsBefore,
-    crashIdsAfter: input.diagnostics.crashIdsAfter,
-    crashReports: (input.diagnostics.crashReports ?? []) as never,
-    lifecycle: (input.diagnostics.lifecycle ?? []) as never,
-    crashQueryError: input.diagnostics.crashQueryError,
-    logQueryError: input.diagnostics.logQueryError,
-    lifecycleQueryError: input.diagnostics.lifecycleQueryError,
+  let derivedStatus: TestRun["status"] = "completed";
+  let derivedImpact: ReturnType<typeof classifyDiagnosticImpact> = {
+    severity: "none",
+    reasons: [],
   };
-  const evidence: DiagnosticEvidence = normalizeDiagnostics(
-    diagnosticInput,
-    startedAt,
-    endedAt,
-  );
-  const impact = classifyDiagnosticImpact(evidence);
+  let derivedMissing: string[] = [];
+  let derivedFailures: string[] = [];
+  let derivedEvidence: DiagnosticEvidence | null = null;
+  let derivedFindings: ReportFinding[] = [];
+  let derivedUpdatedRun: TestRun | null = null;
+  let derivedMarkdown: string | null = null;
+  let derivedJsonReport: JsonReport | null = null;
 
-  const missing = deriveMissingEvidence(plan, input.metrics);
-  const failures = deriveMetricFailures(input.metrics);
+  const outcome = await options.runStore.tryFinalize(input.runId, {
+    mutate: async (current): Promise<TestRun> => {
+      const startedAt = current.startedAt;
+      const endedAt = options.now().toISOString();
+      const evidence: DiagnosticEvidence = normalizeDiagnostics(
+        diagnosticInput,
+        startedAt,
+        endedAt,
+      );
+      derivedEvidence = evidence;
+      const impact = classifyDiagnosticImpact(evidence);
+      derivedImpact = impact;
 
-  const status = deriveFinalStatus({
-    requestedStatus: input.requestedStatus,
-    diagnosticsImpact: impact,
-    missingEvidence: missing,
-    metricFailures: failures,
+      const missing = deriveMissingMetricEvidence(plan, input.metrics);
+      const failures = deriveMetricFailures(input.metrics);
+      derivedMissing = missing;
+      derivedFailures = failures;
+
+      const status = deriveFinalStatus({
+        requestedStatus: input.requestedStatus,
+        diagnosticsImpact: impact,
+        missingEvidence: missing,
+        metricFailures: failures,
+      });
+      derivedStatus = status;
+
+      const actionRecords: ActionRecord[] = input.actions.map((action) =>
+        pickAction(action, plan),
+      );
+
+      const newEvidence: TestRun["evidence"] = {
+        ...current.evidence,
+        screenshotPaths: [
+          ...(current.evidence.screenshotPaths ?? []),
+          ...copiedEvidence
+            .filter((e) => e.kind === "screenshot")
+            .map((e) => e.relativePath),
+        ],
+        traceArchivePaths: [
+          ...(current.evidence.traceArchivePaths ?? []),
+          ...copiedEvidence
+            .filter((e) => e.kind === "traceArchive")
+            .map((e) => e.relativePath),
+        ],
+      };
+      const crashCopy = copiedEvidence.find((e) => e.kind === "crashReport");
+      if (crashCopy) newEvidence.crashReportPath = crashCopy.relativePath;
+      const networkCopy = copiedEvidence.find(
+        (e) => e.kind === "networkCapture",
+      );
+      if (networkCopy) newEvidence.networkCapturePath = networkCopy.relativePath;
+      const lifecycleCopy = copiedEvidence.find(
+        (e) => e.kind === "lifecycleTrace",
+      );
+      if (lifecycleCopy) newEvidence.lifecycleTracePath = lifecycleCopy.relativePath;
+      if (copiedLog) newEvidence.deviceLogPath = copiedLog.relativePath;
+
+      const updated: TestRun = {
+        ...current,
+        status,
+        endedAt,
+        durationMs: Math.max(
+          0,
+          new Date(endedAt).getTime() - new Date(startedAt).getTime(),
+        ),
+        actions: actionRecords,
+        metrics: input.metrics.map((metric) => ({
+          name: metric.name,
+          value: metric.value,
+          unit: metric.unit,
+          threshold: metric.threshold,
+          verdict: metric.verdict,
+          measuredAt: metric.measuredAt,
+        })),
+        evidence: newEvidence,
+        notes: input.notes ?? current.notes,
+      };
+      derivedUpdatedRun = updated;
+      return updated;
+    },
+    acceptStatus: (status) => !TERMINAL_STATUSES.has(status),
+    onPersisted: async (persisted) => {
+      if (!derivedUpdatedRun || persisted.id !== derivedUpdatedRun.id) {
+        // Defensive — should never fire because the mutator and the hook
+        // share the same closure, but a type guard keeps us honest.
+        return;
+      }
+      const findings = deriveFindings({
+        diagnosticsImpact: derivedImpact,
+        missingEvidence: derivedMissing,
+        metricFailures: derivedFailures,
+        requestedStatus: input.requestedStatus,
+        finalStatus: derivedStatus,
+      });
+      derivedFindings = findings;
+
+      const jsonReport = buildJsonReport(persisted, derivedEvidence!, {
+        plan,
+        findings,
+        evidencePaths: [
+          { kind: "deviceLog", relativePath: persisted.evidence.deviceLogPath ?? "" },
+          ...copiedEvidence,
+        ].filter((entry) => Boolean(entry.relativePath)),
+      });
+      derivedJsonReport = jsonReport;
+
+      const markdown = renderMarkdownReport(jsonReport);
+      derivedMarkdown = markdown;
+
+      await options.runStore.writeText(
+        input.runId,
+        "report.json",
+        JSON.stringify(jsonReport, null, 2),
+      );
+      await options.runStore.writeText(input.runId, "report.md", markdown);
+    },
   });
 
-  const findings = deriveFindings(
-    status,
-    impact,
-    input.requestedStatus,
-    input.requestedStatus === "completed" && status !== "completed",
-  );
-
-  const updatedRun: TestRun = {
-    ...existing,
-    status,
-    endedAt,
-    durationMs: Math.max(
-      0,
-      new Date(endedAt).getTime() - new Date(startedAt).getTime(),
-    ),
-    actions: actionRecords,
-    metrics: input.metrics.map((metric) => ({
-      name: metric.name,
-      value: metric.value,
-      unit: metric.unit,
-      threshold: metric.threshold,
-      verdict: metric.verdict,
-      measuredAt: metric.measuredAt,
-    })),
-    evidence: {
-      ...existing.evidence,
-      ...(input.diagnostics.logPath !== undefined
-        ? { deviceLogPath: input.diagnostics.logPath }
-        : {}),
-      ...(input.diagnostics.logPath === undefined &&
-      evidenceCopied.find((e) => e.kind === "deviceLog") !== undefined
-        ? {}
-        : {}),
-    },
-    notes: input.notes ?? existing.notes,
-  };
-
-  try {
-    await options.runStore.write(updatedRun);
-  } catch (error) {
-    return {
-      error: `写入 run.json 失败：${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
+  if (outcome.kind !== "ok") {
+    switch (outcome.kind) {
+      case "missing":
+        return {
+          error: `Run ${input.runId} does not exist.`,
+        };
+      case "terminal":
+        return {
+          error: `Run ${input.runId} already reached terminal status (${outcome.status}); refusing to overwrite evidence.`,
+        };
+      case "concurrent":
+        return {
+          error: `Run ${input.runId} is being finalized concurrently by another call; please retry.`,
+        };
+      case "invalid":
+        return {
+          error: `Failed to finalize ${input.runId}: ${outcome.reason}`,
+        };
+      default:
+        return {
+          error: `Run ${input.runId} could not be finalized.`,
+        };
+    }
   }
 
-  const jsonReport: JsonReport = buildJsonReport(updatedRun, evidence);
-  const markdown = renderMarkdownReport(jsonReport);
-
-  try {
-    await options.runStore.writeText(
-      input.runId,
-      "report.json",
-      JSON.stringify(jsonReport, null, 2),
-    );
-  } catch (error) {
-    return {
-      error: `写入 report.json 失败：${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
-
-  try {
-    await options.runStore.writeText(input.runId, "report.md", markdown);
-  } catch (error) {
-    return {
-      error: `写入 report.md 失败：${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    };
-  }
-
-  return {
+  const result = {
     runId: input.runId,
-    status,
+    status: derivedStatus,
     runPath: posix.join("run.json"),
     planPath: posix.join("plan.json"),
     jsonPath: posix.join("report.json"),
     markdownPath: posix.join("report.md"),
-    evidencePaths: evidenceCopied,
-    findings,
-    diagnostics: evidence,
+    evidencePaths: copiedEvidence,
+    findings: derivedFindings,
+    diagnostics: derivedEvidence!,
+  };
+
+  return {
+    ...result,
+    summary: buildSummary(result),
   };
 }
 
