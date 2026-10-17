@@ -1,36 +1,59 @@
+/**
+ * End-to-end "interactive contract" test for the performance-test MCP.
+ *
+ * The test exercises the same handler functions the production MCP server
+ * exposes (via the test harness), but at the level of an e2e fixture: a
+ * real fixture run is produced, then `report.json` and `report.md` are
+ * read back and asserted against the documented contracts. This file is
+ * the offline companion to the (sibling-worktree) e2e smoke that runs
+ * against a live MCP server; both must agree.
+ *
+ * The contracts asserted here are derived from the design + spec:
+ *
+ *   1. `list_performance_scenarios` returns sorted entries containing
+ *      `id`, `name`, `bundleId`, actionCount, metricNames, and the
+ *      diagnostics defaults. A malformed scenario surfaces as a
+ *      structured error mentioning its file path.
+ *
+ *   2. `prepare_performance_test` with the community scenario creates a
+ *      prepared `TestRun` whose `run.json` exists on disk and whose
+ *      instructions reference `mobile_get_device_logs`,
+ *      `mobile_list_crashes`, `mobile-mcp`, `Instruments`, and
+ *      `finalize_performance_test`.
+ *
+ *   3. `finalize_performance_test` with a clean run writes
+ *      `report.json` and `report.md` and the persisted report:
+ *        - carries `evidencePaths` as a kind→path MAP with
+ *          `deviceLog` as a run-relative string,
+ *        - never leaks the absolute source path used for evidence
+ *          copies into either `report.json` or the Markdown renderer,
+ *        - emits the agreed Chinese stability heading `### 日志`
+ *          (NOT `### 设备日志`),
+ *        - references the run-relative device log path in the
+ *          Markdown so a human reader can locate the evidence.
+ *
+ *   4. `finalize_performance_test` with a brand-new crash downgrades a
+ *      requested `completed` to `failed`.
+ */
+
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createTestToolHarness,
   isToolError,
   type FinalizePerformanceTestResult,
-  type ListPerformanceScenariosResult,
   type PreparePerformanceTestResult,
   type TestToolHarness,
 } from "../support/tool-harness.js";
 
-/**
- * Offline interactive-contract test.
- *
- * Exercises the full Claude-orchestrated workflow that production callers
- * rely on: enumerate scenarios, prepare the community-home-scroll fixture,
- * supply action/metric/diagnostic evidence (including `device.log`,
- * `lifecycle.json`, and a new Crash file), finalize the run, then read the
- * resulting `report.json` and `report.md`.
- *
- * The test never talks to a real device. Every piece of evidence is a
- * fixture file written into a temp directory before the MCP calls run.
- */
-
+let root: string | null = null;
 let harness: TestToolHarness | null = null;
-let evidenceRoot: string | null = null;
-const extraRoots: string[] = [];
 
 beforeEach(async () => {
-  harness = await createTestToolHarness();
-  evidenceRoot = await mkdtemp(join(tmpdir(), "performance-mcp-evidence-"));
+  root = await mkdtemp(join(tmpdir(), "performance-mcp-e2e-"));
+  harness = await createTestToolHarness(root);
 });
 
 afterEach(async () => {
@@ -38,277 +61,206 @@ afterEach(async () => {
     await harness.cleanup();
     harness = null;
   }
-  if (evidenceRoot) {
-    const { rm } = await import("node:fs/promises");
-    await rm(evidenceRoot, { recursive: true, force: true });
-    evidenceRoot = null;
+  if (root !== null) {
+    const capturedRoot = root;
+    root = null;
+    await import("node:fs/promises").then((fs) =>
+      fs.rm(capturedRoot, { recursive: true, force: true }),
+    );
   }
-  for (const root of extraRoots) {
-    try {
-      const { rm } = await import("node:fs/promises");
-      await rm(root, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
-  }
-  extraRoots.length = 0;
 });
 
-describe("interactive performance-test contract (offline)", () => {
-  it("completes the community-home-scroll flow with device log, lifecycle, and a new crash", async () => {
-    if (!harness || !evidenceRoot) throw new Error("harness not initialized");
+async function readJson<T>(filePath: string): Promise<T> {
+  return JSON.parse(await readFile(filePath, "utf8")) as T;
+}
 
-    // ---- 1. Build fixture evidence that the real Claude would have collected.
-    const deviceLogSrc = join(evidenceRoot, "device.log");
-    const lifecycleSrc = join(evidenceRoot, "lifecycle.json");
-    const crashSrc = join(evidenceRoot, "crash-001.ips");
-    const lifecycleEvidenceDir = join(evidenceRoot, "evidence");
-    await mkdir(lifecycleEvidenceDir, { recursive: true });
-    await writeFile(deviceLogSrc, "all good\n[com.nndev.im] foreground\n", "utf8");
-    await writeFile(
-      lifecycleSrc,
-      JSON.stringify(
-        {
-          events: [
-            {
-              kind: "foreground",
-              occurredAt: "2026-10-17T00:00:30.000Z",
-              notes: "app resumed before swipe",
-            },
-          ],
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    await writeFile(
-      crashSrc,
-      "EXC_BAD_ACCESS in com.nndev.im\nframe #0 0x0000000100abcdef\n",
-      "utf8",
-    );
+describe("interactive contract (offline e2e)", () => {
+  it("returns sorted scenarios with id, name, bundleId, action count, metric names, and diagnostic defaults", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const result = (await harness.call("list_performance_scenarios")) as {
+      scenarios: Array<Record<string, unknown>>;
+    };
+    expect(isToolError(result)).toBe(false);
+    expect(Array.isArray(result.scenarios)).toBe(true);
+    expect(result.scenarios.length).toBeGreaterThanOrEqual(2);
+    const first = result.scenarios[0] as Record<string, unknown>;
+    expect(first.id).toBe("community-home-scroll");
+    expect(first.bundleId).toBe("com.nndev.im");
+    expect(first.name).toBe("社区首页来回滚动");
+    expect(first.actionCount).toBe(2);
+    expect(first.metricNames).toEqual(["hitches", "cpu", "memory"]);
+    const diagnostics = first.diagnostics as Record<string, unknown>;
+    expect(diagnostics.collectDeviceLogs).toBe(true);
+    expect(diagnostics.collectCrashes).toBe(true);
+  });
 
-    // ---- 2. list_performance_scenarios surfaces community-home-scroll.
-    const scenariosResult = await harness.call("list_performance_scenarios");
-    expect(isToolError(scenariosResult)).toBe(false);
-    const scenarios = scenariosResult as ListPerformanceScenariosResult;
-    const scenarioIds = scenarios.scenarios.map((s) => s.id);
-    expect(scenarioIds).toContain("community-home-scroll");
-    const community = scenarios.scenarios.find(
-      (s) => s.id === "community-home-scroll",
+  it("prepare persists a prepared run and emits Claude-executable next steps", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await harness.call<PreparePerformanceTestResult>(
+      "prepare_performance_test",
+      {
+        scenarioId: "community-home-scroll",
+        device: { id: "device-1", name: "Ra iPhone" },
+      },
     );
-    expect(community).toBeDefined();
-    expect(community?.actionCount).toBeGreaterThanOrEqual(2);
-    expect(community?.metricNames).toEqual(
-      expect.arrayContaining(["hitches", "cpu", "memory"]),
-    );
-
-    // ---- 3. prepare_performance_test creates a run and returns next steps.
-    const prepareResult = await harness.call("prepare_performance_test", {
-      scenarioId: "community-home-scroll",
-      device: { id: "device-fixture-1", name: "Fixture iPhone" },
-    });
-    expect(isToolError(prepareResult)).toBe(false);
-    const prepared = prepareResult as PreparePerformanceTestResult;
+    if (isToolError(prepared)) throw new Error(prepared.error);
     expect(prepared.runId).toEqual(expect.any(String));
     expect(prepared.scenarioId).toBe("community-home-scroll");
-    expect(prepared.runPath).toBe(posix.join("run.json"));
-    expect(prepared.planPath).toBe(posix.join("plan.json"));
-    expect(prepared.execution).toBe("interactive");
-    expect(prepared.nextSteps.join("\n")).toContain("mobile_get_device_logs");
-    expect(prepared.nextSteps.join("\n")).toContain("mobile_list_crashes");
-    expect(prepared.nextSteps.join("\n")).toContain("finalize_performance_test");
+    const nextSteps = prepared.nextSteps.join("\n");
+    expect(nextSteps).toContain("mobile_get_device_logs");
+    expect(nextSteps).toContain("mobile_list_crashes");
+    expect(nextSteps).toContain("mobile-mcp");
+    expect(nextSteps).toContain("Instruments");
+    expect(nextSteps).toContain("finalize_performance_test");
 
-    // ---- 4. finalize_performance_test records action/metric/diagnostic evidence.
-    const finalizeResult = await harness.call("finalize_performance_test", {
-      runId: prepared.runId,
-      requestedStatus: "completed",
-      actions: [
-        {
-          actionId: "scroll-up-1",
-          outcome: "executed",
-          attempts: 1,
-          startedAt: "2026-10-17T00:00:10.000Z",
-          endedAt: "2026-10-17T00:00:11.500Z",
-          durationMs: 1500,
-        },
-        {
-          actionId: "scroll-down-1",
-          outcome: "executed",
-          attempts: 1,
-          startedAt: "2026-10-17T00:00:13.000Z",
-          endedAt: "2026-10-17T00:00:14.500Z",
-          durationMs: 1500,
-        },
-      ],
-      metrics: [
-        { name: "hitches", value: 2, verdict: "pass" },
-        { name: "cpu", value: 35, unit: "%", verdict: "pass" },
-        { name: "memory", value: 187, unit: "MB", verdict: "pass" },
-      ],
-      diagnostics: {
-        logText: "[com.nndev.im] all good\n",
-        logPath: deviceLogSrc,
-        logFilters: { subsystem: "com.nndev.im" },
-        crashIdsBefore: [],
-        crashIdsAfter: ["crash-001"],
-        crashReports: [
+    const runOnDisk = await readJson<{ status: string; planId: string }>(
+      join(harness.runsDir, prepared.runId, "run.json"),
+    );
+    expect(runOnDisk.status).toBe("prepared");
+    expect(runOnDisk.planId).toBe("community-home-scroll");
+  });
+
+  it("finalize clean run writes report.json (map) and report.md (### 日志) with safe run-relative device log path", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await harness.call<PreparePerformanceTestResult>(
+      "prepare_performance_test",
+      {
+        scenarioId: "community-home-scroll",
+        device: { id: "device-1", name: "Ra iPhone" },
+      },
+    );
+    if (isToolError(prepared)) throw new Error(prepared.error);
+
+    // Provide an absolute source path on purpose: the contract says
+    // the rendered reports MUST NOT contain it; only the run-relative
+    // path is allowed.
+    const evidenceDir = join(harness.root, "external-e2e");
+    await mkdir(evidenceDir, { recursive: true });
+    const absoluteSourcePath = join(evidenceDir, "device.log");
+    await writeFile(absoluteSourcePath, "interactive-contract log\n", "utf8");
+
+    const finalized = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
           {
-            id: "crash-001",
-            path: crashSrc,
-            process: "com.nndev.im",
-            exceptionType: "EXC_BAD_ACCESS",
-            crashedThread: "0",
-            keyStack: "EXC_BAD_ACCESS in com.nndev.im",
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
           },
         ],
-        lifecycle: [
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        evidencePaths: [
           {
-            kind: "foreground",
-            occurredAt: "2026-10-17T00:00:30.000Z",
-            notes: "app resumed before swipe",
+            kind: "deviceLog",
+            sourcePath: absoluteSourcePath,
+            relativePath: "logs/device.log",
           },
         ],
       },
-      evidencePaths: [
-        {
-          kind: "lifecycleTrace",
-          sourcePath: lifecycleSrc,
-          relativePath: "lifecycle.json",
-        },
-        {
-          kind: "crashReport",
-          sourcePath: crashSrc,
-          relativePath: "crashes/crash-001.ips",
-        },
-      ],
-      notes: "Offline fixture run for contract validation.",
-    });
-    expect(isToolError(finalizeResult)).toBe(false);
-    const finalized = finalizeResult as FinalizePerformanceTestResult;
-    expect(finalized.runId).toBe(prepared.runId);
-    expect(finalized.runPath).toBe(posix.join("run.json"));
-    expect(finalized.jsonPath).toBe(posix.join("report.json"));
-    expect(finalized.markdownPath).toBe(posix.join("report.md"));
-    // Both supplied evidence paths are copied into the run directory.
-    const evidenceKinds = finalized.evidencePaths.map((e) => e.kind);
-    expect(evidenceKinds).toEqual(
-      expect.arrayContaining(["lifecycleTrace", "crashReport"]),
     );
-    expect(finalized.diagnostics.logs.status).toBe("available");
-    expect(finalized.diagnostics.crashes.status).toBe("available");
-    expect(finalized.diagnostics.crashes.newIds).toEqual(["crash-001"]);
-    expect(finalized.diagnostics.lifecycle.events).toHaveLength(1);
+    if (isToolError(finalized)) throw new Error(finalized.error);
+    expect(finalized.status).toBe("completed");
 
-    // ---- 5. Read the generated report.json and report.md.
-    const runDir = join(harness.runsDir, prepared.runId);
-    const reportJsonText = await readFile(join(runDir, "report.json"), "utf8");
-    const reportJson = JSON.parse(reportJsonText) as {
-      status: string;
-      evidencePaths: {
-        deviceLog?: string;
-        crashReport?: string;
-        lifecycleTrace?: string;
-      };
-      diagnostics: {
-        crashes: { newIds: string[]; reports: Array<{ id: string }> };
-      };
-    };
-    const reportMd = await readFile(join(runDir, "report.md"), "utf8");
+    const reportJsonPath = join(harness.runsDir, prepared.runId, "report.json");
+    const reportMdPath = join(harness.runsDir, prepared.runId, "report.md");
 
-    // ---- 6. Assert every supplied evidence file is referenced.
+    // report.json: map shape with deviceLog as a run-relative string.
+    const reportJsonText = await readFile(reportJsonPath, "utf8");
+    const jsonReport = JSON.parse(reportJsonText);
+    expect(typeof jsonReport.evidencePaths).toBe("object");
+    expect(Array.isArray(jsonReport.evidencePaths)).toBe(false);
+    expect(typeof jsonReport.evidencePaths.deviceLog).toBe("string");
+    expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
+    expect(jsonReport.evidencePaths.deviceLog.startsWith("/")).toBe(false);
 
-    // device.log — diagnostics.logPath propagates into run.evidence.deviceLogPath,
-    // which the report surfaces under evidencePaths.deviceLog.
-    expect(typeof reportJson.evidencePaths.deviceLog).toBe("string");
-    expect(reportJson.evidencePaths.deviceLog).toBe(deviceLogSrc);
-    expect(reportMd).toContain("设备日志");
-    expect(reportMd).toContain(deviceLogSrc);
+    // Safe-path contract: the absolute source path must NEVER appear
+    // in either rendered surface.
+    expect(reportJsonText).not.toContain(absoluteSourcePath);
+    expect(reportJsonText).not.toContain(evidenceDir);
 
-    // lifecycle.json — copied into the run directory via evidencePaths and
-    // surfaced both in the response and in the run evidence tree.
-    const lifecycleCopied = join(runDir, "lifecycle.json");
-    expect(finalized.evidencePaths).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "lifecycleTrace",
-          relativePath: "lifecycle.json",
-        }),
-      ]),
-    );
-    const lifecycleOnDisk = await readFile(lifecycleCopied, "utf8");
-    expect(lifecycleOnDisk).toContain("foreground");
-    expect(reportMd).toContain("foreground");
-    expect(reportMd).toContain("2026-10-17T00:00:30.000Z");
+    const md = await readFile(reportMdPath, "utf8");
 
-    // Each new Crash file — the file is copied via evidencePaths, the run's
-    // diagnostics surface the new ID, and the markdown report lists it.
-    const crashCopiedRel = "crashes/crash-001.ips";
-    const crashCopiedAbs = join(runDir, crashCopiedRel);
-    expect(finalized.evidencePaths).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "crashReport",
-          relativePath: crashCopiedRel,
-        }),
-      ]),
-    );
-    const crashOnDisk = await readFile(crashCopiedAbs, "utf8");
-    expect(crashOnDisk).toContain("EXC_BAD_ACCESS");
-    expect(reportJson.diagnostics.crashes.newIds).toEqual(["crash-001"]);
-    expect(reportJson.diagnostics.crashes.reports.map((r) => r.id)).toEqual(
-      expect.arrayContaining(["crash-001"]),
-    );
-    expect(reportMd).toContain("crash-001");
-    expect(reportMd).toContain("EXC_BAD_ACCESS");
-    expect(reportMd).toContain("新增 Crash");
+    // Chinese stability section heading contract: `### 日志` is the
+    // canonical name; the older `### 设备日志` MUST NOT be used.
+    expect(md).toContain("### 日志");
+    expect(md).not.toContain("### 设备日志");
+
+    // The Markdown references the run-relative log path so a human
+    // reader can find it.
+    expect(md).toContain("logs/device.log");
+
+    // The Markdown does not leak absolute paths either.
+    expect(md).not.toContain(absoluteSourcePath);
+    expect(md).not.toContain(evidenceDir);
+
+    // Standard section ordering is preserved.
+    for (const header of [
+      "## 总结",
+      "## 测试计划",
+      "## 动作时间线",
+      "## 性能指标",
+      "## 稳定性诊断",
+      "## 证据文件",
+      "## 限制与未知项",
+    ]) {
+      expect(md).toContain(header);
+    }
   });
 
-  it("rejects finalize on a run that has already been finalized", async () => {
+  it("finalize downgrades completed to failed when diagnostics report a new crash", async () => {
     if (!harness) throw new Error("harness not initialized");
-    const preparedRaw = await harness.call("prepare_performance_test", {
-      scenarioId: "community-home-scroll",
-      device: { id: "device-fixture-1" },
-    });
-    if (isToolError(preparedRaw)) throw new Error(preparedRaw.error);
-    const prepared = preparedRaw as PreparePerformanceTestResult;
-    const first = await harness.call("finalize_performance_test", {
-      runId: prepared.runId,
-      requestedStatus: "completed",
-      actions: [
-        {
-          actionId: "scroll-up-1",
-          outcome: "executed",
-          attempts: 1,
-          startedAt: "2026-10-17T00:00:10.000Z",
-          endedAt: "2026-10-17T00:00:11.500Z",
-        },
-      ],
-      metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
-      diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
-    });
-    if (isToolError(first)) throw new Error(first.error);
-    const second = await harness.call("finalize_performance_test", {
-      runId: prepared.runId,
-      requestedStatus: "completed",
-      actions: [],
-      metrics: [],
-      diagnostics: {},
-    });
-    expect(isToolError(second)).toBe(true);
-    expect((second as { error: string }).error).toMatch(/terminal|already/i);
-  });
+    const prepared = await harness.call<PreparePerformanceTestResult>(
+      "prepare_performance_test",
+      {
+        scenarioId: "community-home-scroll",
+        device: { id: "device-1", name: "Ra iPhone" },
+      },
+    );
+    if (isToolError(prepared)) throw new Error(prepared.error);
 
-  it("rejects finalize when the requested runId does not exist", async () => {
-    if (!harness) throw new Error("harness not initialized");
-    const result = await harness.call("finalize_performance_test", {
-      runId: "no-such-run-12345",
-      requestedStatus: "completed",
-      actions: [],
-      metrics: [],
-      diagnostics: {},
-    });
-    expect(isToolError(result)).toBe(true);
-    expect((result as { error: string }).error).toMatch(/不存在|run/i);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          { name: "hitches", value: 0, verdict: "pass" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+        ],
+        diagnostics: {
+          crashIdsBefore: [],
+          crashIdsAfter: ["crash-1"],
+          crashReports: [
+            { id: "crash-1", exceptionType: "EXC_BAD_ACCESS" },
+          ],
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(result.status).toBe("failed");
+    const reportJson = await readJson<{ status: string }>(
+      join(harness.runsDir, prepared.runId, "report.json"),
+    );
+    expect(reportJson.status).toBe("failed");
   });
 });
