@@ -417,6 +417,46 @@ describe("finalize_performance_test", () => {
     expect(jsonReport.evidencePaths.deviceLog.startsWith("/")).toBe(false);
   });
 
+  it("populates reportJson.evidencePaths.deviceLog from diagnostics.logPath when no copy is supplied", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    // No evidencePaths array supplied: the caller only passes the run-
+    // relative log path through `diagnostics.logPath`. The persisted
+    // report.json must still expose this as `evidencePaths.deviceLog`
+    // so interactive-contract consumers (Task 8 e2e) can find it.
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [],
+        diagnostics: {
+          crashIdsBefore: [],
+          crashIdsAfter: [],
+          logPath: "logs/device.log",
+        },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    const jsonReport = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(typeof jsonReport.evidencePaths.deviceLog).toBe("string");
+    expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
+  });
+
   it("finalize result exposes an array of descriptors and report.json exposes a map (dual contract)", async () => {
     if (!harness) throw new Error("harness not initialized");
     const prepared = await prepareCommunity(harness);

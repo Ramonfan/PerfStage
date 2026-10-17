@@ -436,7 +436,18 @@ export async function finalizePerformanceTest(
       });
       derivedFindings = findings;
 
+      // Build the report's evidencePaths map from any of the available
+      // sources, in priority order. A successful copy is always the
+      // preferred source because it is guaranteed run-relative. When no
+      // copy is made (i.e. the caller supplied a path directly through
+      // `diagnostics.logPath`) we fall back to that value so the
+      // interactive-contract e2e test, which only passes a log path,
+      // still finds `reportJson.evidencePaths.deviceLog` populated.
       const reportMap: ReportEvidencePaths = {
+        ...(typeof input.diagnostics.logPath === "string" &&
+        input.diagnostics.logPath.length > 0
+          ? { deviceLog: input.diagnostics.logPath }
+          : {}),
         ...(persisted.evidence.deviceLogPath !== undefined
           ? { deviceLog: persisted.evidence.deviceLogPath }
           : {}),
