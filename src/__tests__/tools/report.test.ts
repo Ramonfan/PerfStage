@@ -457,6 +457,78 @@ describe("finalize_performance_test", () => {
     expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
   });
 
+  it("offline interactive contract: report.json + report.md agree with the safe-path/e2e contract", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    // Supply an absolute source path on purpose — the safe-path contract
+    // is that it MUST NOT appear anywhere in the persisted or rendered
+    // reports, and the run-relative path is the only one allowed.
+    const externalDir = join(harness.root, "interactive-contract");
+    await mkdir(externalDir, { recursive: true });
+    const absoluteSourcePath = join(externalDir, "device.log");
+    await writeFile(
+      absoluteSourcePath,
+      "interactive contract device log\n",
+      "utf8",
+    );
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [],
+        diagnostics: { crashIdsBefore: [], crashIdsAfter: [] },
+        evidencePaths: [
+          {
+            kind: "deviceLog",
+            sourcePath: absoluteSourcePath,
+            relativePath: "logs/device.log",
+          },
+        ],
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+
+    // Contract A: report.json stays a MAP with deviceLog as a string.
+    const jsonReportText = await readFile(
+      join(harness.root, "runs", prepared.runId, "report.json"),
+      "utf8",
+    );
+    const jsonReport = JSON.parse(jsonReportText);
+    expect(typeof jsonReport.evidencePaths).toBe("object");
+    expect(Array.isArray(jsonReport.evidencePaths)).toBe(false);
+    expect(typeof jsonReport.evidencePaths.deviceLog).toBe("string");
+    expect(jsonReport.evidencePaths.deviceLog).toBe("logs/device.log");
+    expect(jsonReport.evidencePaths.deviceLog.startsWith("/")).toBe(false);
+
+    // Contract B: the absolute source path NEVER leaks into report.json.
+    expect(jsonReportText).not.toContain(externalDir);
+    expect(jsonReportText).not.toContain(absoluteSourcePath);
+
+    // Contract C: the rendered Markdown uses the agreed Chinese section
+    // heading `### 日志` (NOT a different name) and references the
+    // run-relative device log path so the human reader can locate it.
+    const md = await readFile(
+      join(harness.root, "runs", prepared.runId, "report.md"),
+      "utf8",
+    );
+    expect(md).toContain("### 日志");
+    expect(md).not.toContain("### 设备日志");
+    expect(md).toContain("logs/device.log");
+    // The absolute source path must not leak into the Markdown either.
+    expect(md).not.toContain(externalDir);
+    expect(md).not.toContain(absoluteSourcePath);
+  });
+
   it("finalize result exposes an array of descriptors and report.json exposes a map (dual contract)", async () => {
     if (!harness) throw new Error("harness not initialized");
     const prepared = await prepareCommunity(harness);
