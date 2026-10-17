@@ -201,15 +201,19 @@ function deriveFindings(
   downgradedFromCompleted: boolean,
 ): ReportFinding[] {
   const findings: ReportFinding[] = [];
+  const diagnosticSeverity: ReportFinding["severity"] =
+    impact.severity === "failure" ? "failure" : "warning";
   for (const reason of impact.reasons) {
     findings.push({
-      category: "diagnostics",
+      severity: diagnosticSeverity,
+      code: reason,
       message: reason,
     });
   }
   if (downgradedFromCompleted && requestedStatus === "completed") {
     findings.push({
-      category: "status-downgrade",
+      severity: "warning",
+      code: "status-downgrade",
       message: `最终状态由 completed 降级为 ${status}。`,
     });
   }
@@ -374,13 +378,7 @@ export async function finalizePerformanceTest(
     };
   }
 
-  const jsonReport: JsonReport = buildJsonReport(
-    updatedRun,
-    plan ?? ({} as TestPlan),
-    evidence,
-    findings,
-    copiedPaths,
-  );
+  const jsonReport: JsonReport = buildJsonReport(updatedRun, evidence);
   const markdown = renderMarkdownReport(jsonReport);
 
   try {
