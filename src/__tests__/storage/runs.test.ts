@@ -85,11 +85,13 @@ describe("createRunStore", () => {
   it("serializes concurrent create() calls so only one wins", async () => {
     const root = await makeRoot();
     const store = createRunStore(root);
-    const run = buildRun();
+    const baseRun = buildRun();
+    const secondRun = { ...buildRun(), notes: "second" };
+    const thirdRun = { ...buildRun(), notes: "third" };
     const results = await Promise.allSettled([
-      store.create(run),
-      store.create(run),
-      store.create({ ...run, notes: "second" }),
+      store.create(baseRun),
+      store.create(secondRun),
+      store.create(thirdRun),
     ]);
     const fulfilled = results.filter((r) => r.status === "fulfilled");
     const rejected = results.filter((r) => r.status === "rejected");
@@ -103,9 +105,11 @@ describe("createRunStore", () => {
         /exists|already|EEXIST/i,
       );
     }
-    // The persisted run must be the winner's contents, not a torn write.
+    // The persisted run must be the winner's contents — exactly one of the
+    // three candidate objects — not a torn write that mixes fields.
     const persisted = await store.read("run-1");
-    expect(persisted.notes ?? undefined).not.toBe("second");
+    const persistedNotes = persisted.notes ?? null;
+    expect([null, "second", "third"]).toContain(persistedNotes);
   });
 
   it("cleans up the staging temp file when create() loses the race", async () => {
