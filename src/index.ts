@@ -21,11 +21,13 @@ export function createServer(): McpServer {
     { name: "performance-test-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
+  const scenarioDir = resolve(process.cwd(), SCENARIO_DIR);
+  const runsDir = resolve(process.cwd(), RUNS_DIR);
   registerTools(server, {
-    scenarioDir: SCENARIO_DIR,
-    runStore: createRunStore(RUNS_DIR),
+    scenarioDir,
+    runStore: createRunStore(runsDir),
     now: () => new Date(),
-    runsRoot: RUNS_DIR,
+    runsRoot: runsDir,
   });
   return server;
 }
