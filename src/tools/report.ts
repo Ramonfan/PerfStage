@@ -173,8 +173,12 @@ async function loadStoredPlan(
   options: RegisterOptions,
   runId: string,
 ): Promise<TestPlan | null> {
+  if (!options.runStore) {
+    return null;
+  }
+  const runStore = options.runStore;
   const planRel = "plan.json";
-  const planAbs = posix.join(options.runStore.runDirectory(runId), planRel);
+  const planAbs = posix.join(runStore.runDirectory(runId), planRel);
   if (!existsSync(planAbs)) {
     return null;
   }
@@ -255,11 +259,24 @@ function buildSummary(
  * file inside the run directory. Concurrent `finalize` calls cannot both
  * pass the prepared-status check: the loser observes `concurrent` and
  * returns a structured tool error.
+ *
+ * Workspace safety: the handler refuses to copy evidence, write the
+ * report, or mkdir the run directory until the workspace manager has
+ * confirmed the run is owned by the current workspace AND the run
+ * directory passes the symlink-escape guard. Any failure short-circuits
+ * with a structured tool error before any side effect on disk.
  */
 export async function finalizePerformanceTest(
   rawInput: unknown,
   options: RegisterOptions,
 ): Promise<HandlerResult> {
+  if (!options.runStore) {
+    return {
+      error:
+        "finalize_performance_test 缺少工作区 runStore；请先调用 initialize_performance_workspace。",
+    };
+  }
+  const runStore = options.runStore;
   const parsed = finalizeInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
@@ -349,11 +366,27 @@ export async function finalizePerformanceTest(
       : {}),
   };
 
-  // Guard first: refuse to copy any evidence until we have confirmed the
-  // run exists and has not already reached a terminal status. This keeps
-  // a missing/terminal run from accruing orphan evidence files on disk.
+  // Guard first: confirm the run is owned by the current workspace and
+  // that the run directory path passes the symlink-escape guard before
+  // we copy any evidence or write any report file. Any failure here
+  // surfaces as a structured tool error and leaves the run directory
+  // untouched.
   try {
-    const existing = await options.runStore.read(input.runId);
+    await runStore.ensureSafeRun(input.runId);
+  } catch (error) {
+    return {
+      error: `Run ${input.runId} is not safe to finalize: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  // Guard second: refuse to copy any evidence until we have confirmed
+  // the run exists and has not already reached a terminal status. This
+  // keeps a missing/terminal run from accruing orphan evidence files on
+  // disk.
+  try {
+    const existing = await runStore.read(input.runId);
     if (TERMINAL_STATUSES.has(existing.status)) {
       return {
         error: `Run ${input.runId} already reached terminal status (${existing.status}); refusing to copy or finalize evidence.`,
@@ -373,7 +406,7 @@ export async function finalizePerformanceTest(
   // `runStore.copyEvidence` flow downstream.
   for (const evidence of pendingEvidence) {
     try {
-      const rel = await options.runStore.copyEvidence(
+      const rel = await runStore.copyEvidence(
         input.runId,
         evidence.sourcePath,
         evidence.relativePath,
@@ -408,7 +441,7 @@ export async function finalizePerformanceTest(
   let derivedMarkdown: string | null = null;
   let derivedJsonReport: JsonReport | null = null;
 
-  const outcome = await options.runStore.tryFinalize(input.runId, {
+  const outcome = await runStore.tryFinalize(input.runId, {
     mutate: async (current): Promise<TestRun> => {
       const startedAt = current.startedAt;
       const endedAt = options.now().toISOString();
@@ -569,12 +602,12 @@ export async function finalizePerformanceTest(
       const markdown = renderMarkdownReport(jsonReport);
       derivedMarkdown = markdown;
 
-      await options.runStore.writeText(
+      await runStore.writeText(
         input.runId,
         "report.json",
         JSON.stringify(jsonReport, null, 2),
       );
-      await options.runStore.writeText(input.runId, "report.md", markdown);
+      await runStore.writeText(input.runId, "report.md", markdown);
     },
   });
 

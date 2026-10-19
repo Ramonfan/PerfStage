@@ -38,16 +38,16 @@ import {
  * `workspaceManager`. {@link resolveReadyWorkspace} detects the missing
  * manager and uses the legacy paths verbatim.
  *
- * `scenarioDir` and `runStore` are typed as required because every
- * handler that does side effects (scenario loading, run creation,
- * evidence copying, report writing) assumes they are non-null. The
- * readiness guard fills them in from the workspace before the handler
- * is invoked; the harness layer is responsible for the same.
+ * `scenarioDir` and `runStore` are typed as optional because the
+ * production wiring only carries the workspace manager. The readiness
+ * guard fills them in from the workspace before the handler is invoked;
+ * the harness layer is responsible for the same. When the legacy
+ * fallback is used the harness must inject the fields directly.
  */
 export interface RegisterOptions {
   workspaceManager?: WorkspaceManager;
-  scenarioDir: string;
-  runStore: RunStore;
+  scenarioDir?: string;
+  runStore?: RunStore;
   now: () => Date;
   runsRoot?: string;
 }
@@ -93,7 +93,7 @@ export async function resolveReadyWorkspace(
       return {
         kind: "ready",
         scenarioDir: ready.paths.scenarioDirectory,
-        runStore: createRunStore(ready.paths.runsDirectory),
+        runStore: createRunStore(ready.paths.runsDirectory, ready.workspaceRoot),
         workspace: ready,
       };
     } catch (error) {
@@ -115,6 +115,27 @@ export async function resolveReadyWorkspace(
     kind: "error",
     error:
       "RegisterOptions must include workspaceManager (production) or scenarioDir+runStore (legacy tests).",
+  };
+}
+
+/**
+ * Assert that {@link ResolvedWorkspace} succeeded and return the typed
+ * `scenarioDir` / `runStore` pair. Used by every side-effecting handler
+ * after the readiness guard so the downstream code can treat the fields
+ * as non-null without optional chaining.
+ */
+export function unwrapReadyWorkspace(
+  resolved: ResolvedWorkspace,
+): { scenarioDir: string; runStore: RunStore; workspace: ReadyWorkspace | null } {
+  if (resolved.kind !== "ready") {
+    throw new Error(
+      `Internal error: expected ready workspace, got error "${resolved.error}".`,
+    );
+  }
+  return {
+    scenarioDir: resolved.scenarioDir,
+    runStore: resolved.runStore,
+    workspace: resolved.workspace,
   };
 }
 

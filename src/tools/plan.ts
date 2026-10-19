@@ -176,12 +176,13 @@ function planFromAdHoc(adHocPlan: z.infer<typeof adHocPlanSchema>): TestPlan {
   return result.data;
 }
 
-async function planFromScenario(scenarioId: string): Promise<TestPlan> {
-  const plans = await loadAllScenarios(
-    // The handler already knows the scenario directory; this is loaded via a
-    // dedicated function so the error message can reference the id.
-    processScenarios.scenarioDir ?? ".",
-  );
+async function planFromScenario(
+  scenarioDir: string,
+  scenarioId: string,
+): Promise<TestPlan> {
+  // The handler already knows the scenario directory; this is loaded via
+  // a dedicated function so the error message can reference the id.
+  const plans = await loadAllScenarios(scenarioDir);
   // Find the scenario whose top-level id matches the requested one.
   const match = plans.find(
     (plan) => (plan.id ?? plan.name) === scenarioId,
@@ -190,14 +191,6 @@ async function planFromScenario(scenarioId: string): Promise<TestPlan> {
     throw new Error(`未找到 id 为 "${scenarioId}" 的场景。`);
   }
   return match;
-}
-
-// Module-level helper to share the configured scenario directory without
-// forcing every helper to take options through their parameter list.
-const processScenarios: { scenarioDir?: string } = {};
-
-function setScenarioDir(directory: string) {
-  processScenarios.scenarioDir = directory;
 }
 
 function mergeMetricOverrides(
@@ -269,20 +262,6 @@ function buildNextSteps(
   ];
 }
 
-async function findScenarioById(
-  scenarioDir: string,
-  scenarioId: string,
-): Promise<TestPlan> {
-  const candidates = await loadAllScenarios(scenarioDir);
-  const match = candidates.find(
-    (plan) => (plan.id ?? plan.name) === scenarioId,
-  );
-  if (!match) {
-    throw new Error(`未找到 id 为 "${scenarioId}" 的场景。`);
-  }
-  return match;
-}
-
 async function readAdHocYaml(sourcePath: string): Promise<TestPlan> {
   let contents: string;
   try {
@@ -313,12 +292,28 @@ async function readAdHocYaml(sourcePath: string): Promise<TestPlan> {
  * The handler performs no device operation: it loads the YAML or accepts an
  * in-memory ad-hoc plan, applies CLI overrides, persists the prepared run and
  * the resolved plan, then returns ordered next steps for Claude to follow.
+ *
+ * The workspace context is required: every scenario lookup and every
+ * run-store call goes through the resolved `scenarioDir` / `runStore`
+ * provided by the readiness guard. No path defaults are read from the
+ * package installation.
  */
 export async function preparePerformanceTest(
   rawInput: unknown,
   options: RegisterOptions,
 ): Promise<HandlerResult> {
-  setScenarioDir(options.scenarioDir);
+  if (typeof options.scenarioDir !== "string" || options.scenarioDir.length === 0) {
+    return {
+      error:
+        "prepare_performance_test 缺少工作区 scenarioDirectory；请先调用 initialize_performance_workspace。",
+    };
+  }
+  if (!options.runStore) {
+    return {
+      error:
+        "prepare_performance_test 缺少工作区 runStore；请先调用 initialize_performance_workspace。",
+    };
+  }
   const parsed = prepareInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
@@ -332,7 +327,7 @@ export async function preparePerformanceTest(
   let basePlan: TestPlan;
   try {
     if (input.scenarioId !== undefined) {
-      basePlan = await findScenarioById(options.scenarioDir, input.scenarioId);
+      basePlan = await planFromScenario(options.scenarioDir, input.scenarioId);
     } else if (input.adHocPlan !== undefined) {
       basePlan = planFromAdHoc(input.adHocPlan);
     } else {

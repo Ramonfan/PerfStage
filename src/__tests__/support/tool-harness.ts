@@ -113,7 +113,7 @@ export async function createTestToolHarness(
   await writeFile(join(scenarioDir, "community-home-scroll.yaml"), COMMUNITY_YAML, "utf8");
   await writeFile(join(scenarioDir, "message-list-scroll.yaml"), MESSAGE_YAML, "utf8");
 
-  const runStore = createRunStore(runsDir);
+  const runStore = createRunStore(runsDir, root);
 
   const harness: TestToolHarness = {
     root,

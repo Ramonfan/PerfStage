@@ -64,7 +64,7 @@ export async function createWorkspaceToolHarness(
   const buildOptions = (): RegisterOptions => ({
     workspaceManager,
     scenarioDir: join(root, ".performance-test", "scenarios"),
-    runStore: createRunStore(join(root, ".performance-test", "runs")),
+    runStore: createRunStore(join(root, ".performance-test", "runs"), root),
     now: () => new Date(),
   });
 

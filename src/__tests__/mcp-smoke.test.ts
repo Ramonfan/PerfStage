@@ -49,7 +49,7 @@ describe("MCP server smoke", () => {
     registerTools(server, {
       workspaceManager,
       scenarioDir: join(root, "scenarios"),
-      runStore: createRunStore(join(root, "runs")),
+      runStore: createRunStore(join(root, "runs"), root),
       now: () => new Date(),
     });
     const client = new Client(
@@ -86,7 +86,7 @@ describe("MCP server smoke", () => {
     registerTools(server, {
       workspaceManager,
       scenarioDir: join(root, "scenarios"),
-      runStore: createRunStore(join(root, "runs")),
+      runStore: createRunStore(join(root, "runs"), root),
       now: () => new Date(),
     });
     const client = new Client(

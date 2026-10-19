@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registerTools } from "./tools/index.js";
 import { createWorkspaceManager } from "./workspace/manager.js";
-import { createRunStore } from "./storage/runs.js";
 
 /**
  * Build a fresh MCP server with all performance-test tools registered.
@@ -28,8 +27,6 @@ export function createServer(): McpServer {
   const workspaceManager = createWorkspaceManager(process.cwd());
   registerTools(server, {
     workspaceManager,
-    scenarioDir: process.cwd(),
-    runStore: createRunStore(process.cwd()),
     now: () => new Date(),
   });
   return server;
@@ -46,8 +43,6 @@ if (
   );
   registerTools(server, {
     workspaceManager,
-    scenarioDir: process.cwd(),
-    runStore: createRunStore(process.cwd()),
     now: () => new Date(),
   });
   await server.connect(new StdioServerTransport());

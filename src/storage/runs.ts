@@ -1,15 +1,26 @@
 import {
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, join, parse, posix, sep } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { TestRun, testRunSchema } from "../model/test-run.js";
 
 const RUN_FILE_NAME = "run.json";
@@ -82,11 +93,23 @@ export interface RunStore {
   ): Promise<string>;
   runDirectory(runId: string): string;
   /**
+   * Workspace-owned safety check. Confirms that the run directory exists
+   * (or would land) under the configured runs directory, that the runs
+   * directory itself sits under the workspace root, and that none of the
+   * existing parent path components are symlinks resolving outside the
+   * workspace boundary. Returns the absolute run directory on success;
+   * throws a structured error on any failure so the handler can surface
+   * it as a tool error before any side-effecting copy or write.
+   */
+  ensureSafeRun(runId: string): Promise<string>;
+  /**
    * Atomically read the existing run, validate that the supplied predicate
    * accepts its current status, apply a mutator, and persist the updated
    * run. The transition is guarded by an exclusive `<run>/.finalize.lock`
    * file created with O_EXCL so two concurrent calls cannot both pass the
-   * status check.
+   * status check. The run directory is created lazily only AFTER the
+   * existing run is confirmed present so unknown run ids cannot leave
+   * behind empty directories.
    */
   tryFinalize(runId: string, options: TryFinalizeOptions): Promise<TryFinalizeOutcome>;
 }
@@ -157,6 +180,89 @@ function toPosix(path: string): string {
 
 function runDirectoryOf(rootDir: string, runId: string): string {
   return toPosix(join(rootDir, assertSafeRunId(runId)));
+}
+
+/**
+ * Resolve a path into the workspace-rooted allowed region. Throws when
+ * the candidate lands outside the supplied workspace root. Used as a
+ * pre-flight check before any side-effecting call that could otherwise
+ * let a hostile caller escape the workspace boundary.
+ */
+function assertInsideWorkspace(
+  workspaceRoot: string,
+  candidate: string,
+  label: string,
+): string {
+  if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
+    throw new Error(`${label} requires a non-empty workspaceRoot.`);
+  }
+  const resolvedRoot = resolve(workspaceRoot);
+  const resolvedCandidate = resolve(candidate);
+  const rel = relative(resolvedRoot, resolvedCandidate);
+  const escapes =
+    rel === ".." ||
+    rel.startsWith(`..${sep}`) ||
+    rel.startsWith("../") ||
+    isAbsolute(rel);
+  if (escapes) {
+    throw new Error(
+      `${label} "${candidate}" is outside workspace root "${workspaceRoot}".`,
+    );
+  }
+  return resolvedCandidate;
+}
+
+/**
+ * Walk each existing path component from `parent` to `target` using
+ * `lstat`. If any component is a symbolic link, resolve it and confirm
+ * the resolved location still lives under `parent` — otherwise a hostile
+ * run could plant a symlink inside the run directory and trick the
+ * storage into writing bytes outside the workspace boundary.
+ */
+async function assertNoSymlinkEscapeBelow(
+  parent: string,
+  target: string,
+): Promise<void> {
+  const resolvedParent = resolve(parent);
+  const resolvedTarget = resolve(target);
+  const rel = relative(resolvedParent, resolvedTarget);
+  const segments = rel
+    .split(sep)
+    .filter((segment) => segment.length > 0 && segment !== ".");
+  let cursor = resolvedParent;
+  for (const segment of segments) {
+    cursor = join(cursor, segment);
+    let stats;
+    try {
+      stats = await lstat(cursor);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        // Final component (or any intermediate not-yet-created dir) is
+        // permitted; the caller will create it.
+        return;
+      }
+      throw error;
+    }
+    if (!stats.isSymbolicLink()) {
+      continue;
+    }
+    const resolvedLink = await realpath(cursor);
+    const relFromParent = relative(resolvedParent, resolvedLink);
+    const escapes =
+      relFromParent === ".." ||
+      relFromParent.startsWith(`..${sep}`) ||
+      relFromParent.startsWith("../") ||
+      isAbsolute(relFromParent);
+    if (escapes) {
+      throw new Error(
+        `Symlink at "${cursor}" resolves to "${resolvedLink}", which escapes the parent directory "${parent}".`,
+      );
+    }
+    cursor = resolvedLink;
+  }
 }
 
 function runFilePath(rootDir: string, runId: string): string {
@@ -255,22 +361,79 @@ async function writeAtomic(targetPath: string, data: string): Promise<void> {
   await rename(tempPath, targetPath);
 }
 
-export function createRunStore(rootDir: string): RunStore {
+/**
+ * Build a {@link RunStore} rooted at the supplied runs directory.
+ *
+ * When `workspaceRoot` is supplied, the store enforces two additional
+ * invariants that the production workspace manager already guarantees
+ * but legacy test harnesses may bypass:
+ *
+ *   1. `rootDir` must resolve to a location inside `workspaceRoot` so
+ *      no run can ever escape the project boundary, and
+ *   2. every existing parent path component from `workspaceRoot` to
+ *      `rootDir` must be free of symlinks that resolve outside the
+ *      workspace.
+ *
+ * The root directory is also required to exist by the time the first
+ * side-effecting call runs: `create()` and `write()` both `stat()` it
+ * first so a caller cannot accidentally materialize a stray directory at
+ * the package install path.
+ */
+export function createRunStore(
+  rootDir: string,
+  workspaceRoot?: string,
+): RunStore {
   if (typeof rootDir !== "string" || rootDir.length === 0) {
     throw new Error("rootDir must be a non-empty string.");
+  }
+  const resolvedRootDir = resolve(rootDir);
+  let resolvedWorkspaceRoot: string | undefined;
+  if (workspaceRoot !== undefined) {
+    resolvedWorkspaceRoot = resolve(workspaceRoot);
+    assertInsideWorkspace(
+      resolvedWorkspaceRoot,
+      resolvedRootDir,
+      "rootDir",
+    );
+  }
+
+  /**
+   * Guard that confirms the parent runs directory exists before any
+   * side-effecting run operation runs. The createRunStore contract is
+   * that the store only operates inside an existing runs directory; the
+   * workspace manager materializes this on `initialize`. Throws a
+   * structured error when the directory is missing so the caller can
+   * surface it as a tool error rather than silently materializing a
+   * stray path.
+   */
+  async function assertRunsDirReady(): Promise<void> {
+    try {
+      await stat(resolvedRootDir);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        throw new Error(
+          `Configured runs directory "${resolvedRootDir}" does not exist; initialize the workspace first.`,
+        );
+      }
+      throw error;
+    }
   }
 
   async function persist(run: TestRun): Promise<void> {
     const validated = testRunSchema.parse(run);
     const json = JSON.stringify(validated, null, 2);
-    await writeAtomic(runFilePath(rootDir, validated.id), json);
+    await writeAtomic(runFilePath(resolvedRootDir, validated.id), json);
   }
 
   return {
     async create(run: TestRun): Promise<string> {
       const validated = testRunSchema.parse(run);
       const runId = assertSafeRunId(validated.id);
-      const dir = runDirectoryOf(rootDir, runId);
+      await assertRunsDirReady();
+      const dir = runDirectoryOf(resolvedRootDir, runId);
       await mkdir(dir, { recursive: true });
       // Atomic exclusive create via `open(path, "wx")`. Concurrent
       // callers all create the directory but only one wins the race to
@@ -279,7 +442,7 @@ export function createRunStore(rootDir: string): RunStore {
       // readFile-then-persist pattern which had a TOCTOU race where
       // three concurrent writers could each win, persist a run.json, and
       // quietly overwrite each other.
-      const target = runFilePath(rootDir, runId);
+      const target = runFilePath(resolvedRootDir, runId);
       try {
         const handle = await open(target, "wx", 0o600);
         try {
@@ -306,7 +469,7 @@ export function createRunStore(rootDir: string): RunStore {
       const safeId = assertSafeRunId(runId);
       let raw: string;
       try {
-        raw = await readFile(runFilePath(rootDir, safeId), "utf8");
+        raw = await readFile(runFilePath(resolvedRootDir, safeId), "utf8");
       } catch (error) {
         if (
           error instanceof Error &&
@@ -336,9 +499,10 @@ export function createRunStore(rootDir: string): RunStore {
     async write(run: TestRun): Promise<void> {
       const validated = testRunSchema.parse(run);
       const safeId = assertSafeRunId(validated.id);
+      await assertRunsDirReady();
       // Confirm the run already exists before overwriting it.
       try {
-        await readFile(runFilePath(rootDir, safeId), "utf8");
+        await readFile(runFilePath(resolvedRootDir, safeId), "utf8");
       } catch (error) {
         if (
           error instanceof Error &&
@@ -358,7 +522,8 @@ export function createRunStore(rootDir: string): RunStore {
     ): Promise<string> {
       const safeId = assertSafeRunId(runId);
       const safeRelative = safeRelativePath(relativePath);
-      const dir = runDirectoryOf(rootDir, safeId);
+      await assertRunsDirReady();
+      const dir = runDirectoryOf(resolvedRootDir, safeId);
       await mkdir(dir, { recursive: true });
       const target = join(dir, safeRelative);
       // Defense in depth: ensure target is still inside the run directory.
@@ -368,6 +533,12 @@ export function createRunStore(rootDir: string): RunStore {
           `relativePath "${relativePath}" escapes the run directory.`,
         );
       }
+      // Reject symlinks in any existing parent path component. Final
+      // components that do not yet exist are permitted; only the parent
+      // chain is audited. A hostile run directory could otherwise plant
+      // `escape -> /etc` and trick the storage into writing outside the
+      // workspace.
+      await assertNoSymlinkEscapeBelow(dir, target);
       await mkdir(dirname(target), { recursive: true });
       await writeAtomic(target, content);
       return safeRelative;
@@ -383,7 +554,8 @@ export function createRunStore(rootDir: string): RunStore {
       if (typeof sourcePath !== "string" || sourcePath.length === 0) {
         throw new Error("sourcePath must be a non-empty string.");
       }
-      const dir = runDirectoryOf(rootDir, safeId);
+      await assertRunsDirReady();
+      const dir = runDirectoryOf(resolvedRootDir, safeId);
       await mkdir(dir, { recursive: true });
       const target = join(dir, safeRelative);
       const expectedPrefix = dir.endsWith(sep) ? dir : dir + sep;
@@ -392,6 +564,7 @@ export function createRunStore(rootDir: string): RunStore {
           `relativePath "${relativePath}" escapes the run directory.`,
         );
       }
+      await assertNoSymlinkEscapeBelow(dir, target);
       await mkdir(dirname(target), { recursive: true });
       // copyFile streams bytes verbatim — no content interpretation.
       await copyFile(sourcePath, target);
@@ -399,7 +572,28 @@ export function createRunStore(rootDir: string): RunStore {
     },
 
     runDirectory(runId: string): string {
-      return runDirectoryOf(rootDir, runId);
+      return runDirectoryOf(resolvedRootDir, runId);
+    },
+
+    async ensureSafeRun(runId: string): Promise<string> {
+      const safeId = assertSafeRunId(runId);
+      await assertRunsDirReady();
+      const dir = runDirectoryOf(resolvedRootDir, safeId);
+      // Re-assert the workspace boundary whenever a workspace root was
+      // supplied; this is the workspace-owned check the handler layer
+      // runs before it touches evidence or report files.
+      if (resolvedWorkspaceRoot !== undefined) {
+        assertInsideWorkspace(resolvedWorkspaceRoot, dir, "run directory");
+        await assertNoSymlinkEscapeBelow(
+          resolvedWorkspaceRoot,
+          dir,
+        );
+      }
+      // Also confirm no symlink between the run directory and its parent
+      // already lets us escape the run dir itself (a paranoid caller
+      // could have placed a symlink above us).
+      await assertNoSymlinkEscapeBelow(resolvedRootDir, dir);
+      return dir;
     },
 
     async tryFinalize(
@@ -407,31 +601,44 @@ export function createRunStore(rootDir: string): RunStore {
       options: TryFinalizeOptions,
     ): Promise<TryFinalizeOutcome> {
       const safeId = assertSafeRunId(runId);
-      const lockPath = lockPathOf(rootDir, safeId);
-      // Ensure the run directory exists before attempting to acquire the
-      // lock so ENOENT races do not matter.
-      const dir = runDirectoryOf(rootDir, safeId);
+      // Workspace boundary check FIRST — refuse to even acquire the lock
+      // when the run directory would land outside the workspace.
+      const dir = runDirectoryOf(resolvedRootDir, safeId);
+      if (resolvedWorkspaceRoot !== undefined) {
+        assertInsideWorkspace(
+          resolvedWorkspaceRoot,
+          dir,
+          "run directory",
+        );
+      }
+      // Confirm the run actually exists BEFORE materializing any
+      // directory. Unknown run ids must surface as a structured
+      // `missing` outcome without leaving an empty directory on disk.
+      let current: TestRun;
+      try {
+        current = await this.read(safeId);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /does not exist/.test(error.message)
+        ) {
+          return { kind: "missing" };
+        }
+        throw error;
+      }
+      // Now that the run is confirmed, the runs dir must exist (and
+      // sit inside the workspace). The directory itself was created by
+      // `create()`; we only re-assert readiness here as a defense
+      // against an external `rm -rf` between prepare and finalize.
+      await assertRunsDirReady();
+      const lockPath = lockPathOf(resolvedRootDir, safeId);
       await mkdir(dir, { recursive: true });
-
       const lock = await acquireFinalizeLock(lockPath);
       if (!lock.acquired) {
         return { kind: "concurrent" };
       }
 
       try {
-        let current: TestRun;
-        try {
-          current = await this.read(safeId);
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            /does not exist/.test(error.message)
-          ) {
-            return { kind: "missing" };
-          }
-          throw error;
-        }
-
         const accept = options.acceptStatus ?? defaultAcceptStatus;
         if (!accept(current.status)) {
           return { kind: "terminal", status: current.status };

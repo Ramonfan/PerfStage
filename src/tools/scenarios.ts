@@ -49,12 +49,21 @@ function toEntry(plan: TestPlan): ListPerformanceScenariosEntry {
  * Implementation backing both the production MCP tool and the test harness.
  *
  * The directory is re-read on every invocation so editing YAML files is
- * reflected immediately. Malformed scenarios propagate as a structured tool
- * error containing the originating file path; they are not silently dropped.
+ * reflected immediately. The scenario directory comes from the resolved
+ * workspace (or a legacy test injection) — never from a package-relative
+ * default — so each project only sees its own scenarios. Malformed
+ * scenarios propagate as a structured tool error containing the
+ * originating file path; they are not silently dropped.
  */
 export async function listPerformanceScenarios(
   options: RegisterOptions,
 ): Promise<HandlerResult> {
+  if (typeof options.scenarioDir !== "string" || options.scenarioDir.length === 0) {
+    return {
+      error:
+        "list_performance_scenarios 缺少工作区 scenarioDirectory；请先调用 initialize_performance_workspace。",
+    };
+  }
   let plans: TestPlan[];
   try {
     plans = await loadAllScenarios(options.scenarioDir);
