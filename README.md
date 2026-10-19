@@ -47,12 +47,12 @@ npm start
 
 正常情况下，标准输出只用于 MCP 协议通信；不要把调试日志写到 stdout。
 
-## 3. 注册到 Claude Code
+## 3. 注册到 Claude Code（用户级一次性安装）
 
-推荐使用 Claude Code 的命令注册本地 stdio MCP：
+性能测试 MCP 以**用户级**方式注册到 Claude Code，一次安装，所有项目复用同一个入口二进制；但**每一个项目的 `.performance-test/` 数据目录都必须独立初始化**：
 
 ```bash
-claude mcp add --transport stdio performance-test -- \
+claude mcp add --scope user --transport stdio performance-test -- \
   node "/Users/leigod/雷神/性能分析/performance-test-mcp/dist/index.js"
 ```
 
@@ -62,7 +62,9 @@ claude mcp add --transport stdio performance-test -- \
 claude mcp list
 ```
 
-如果使用项目级配置，也可以在项目的 `.mcp.json` 中配置：
+`--scope user` 让所有目录下的 Claude Code 会话都能找到这个 MCP；它**不会**让 MCP 共享数据目录或场景文件。每个项目仍然需要单独调用 `initialize_performance_workspace`，否则 MCP 只会读取它启动时所在工作目录的 `.performance-test/config.json`，找不到时返回「请先初始化」的结构化错误。
+
+如果只想在单个项目里临时使用，也可以使用项目级配置（仍然需要逐项目初始化）：
 
 ```json
 {
@@ -86,34 +88,57 @@ npm run build
 
 然后重启 Claude Code 会话，让 MCP 重新加载。
 
-## 4. 配置场景和运行目录
+## 4. 每个项目独立初始化工作区
 
-默认目录：
+由于 MCP 在用户级注册，但每个被测项目需要自己的场景和运行证据目录，**进入新项目时第一步**是初始化当前项目的工作区。
+
+工作流：
 
 ```text
-scenarios/   # YAML 场景
-runs/        # 每次测试的本地证据和报告
+进入任意项目
+→ 初始化当前项目的性能测试工作区
+→ MCP 创建 .performance-test/
+→ 在当前项目编辑 .performance-test/scenarios/
+→ 报告写入当前项目 .performance-test/runs/
 ```
 
-可以通过环境变量修改：
+初始化调用：
 
-```bash
-export PERFORMANCE_TEST_SCENARIO_DIR="/path/to/scenarios"
-export PERFORMANCE_TEST_RUNS_DIR="/path/to/runs"
+```json
+{
+  "bundleId": "com.nndev.im",
+  "appName": "NN IM",
+  "copyDefaultScenarios": false
+}
 ```
 
-在 Claude Code 注册时传入环境变量：
+- `bundleId` 和 `appName` 可选；不传则写入只含默认目录的配置。
+- `copyDefaultScenarios` 默认 `false`，避免覆盖用户已有的场景文件；首次试用可设 `true` 让 MCP 植入 `community-home-scroll` 与 `message-list-scroll` 模板。
+- 初始化是**幂等**的：再次调用只会重新校验现有配置，不会覆盖 `config.json` 或场景文件。
 
-```bash
-claude mcp add --transport stdio performance-test --env \
-  PERFORMANCE_TEST_SCENARIO_DIR="/path/to/scenarios" \
-  --env PERFORMANCE_TEST_RUNS_DIR="/path/to/runs" -- \
-  node "/Users/leigod/雷神/性能分析/performance-test-mcp/dist/index.js"
+调用成功后 MCP 会返回：
+
+```text
+性能工作区已就绪。请按下列顺序继续：
+1. 工作区根：/path/to/your/project
+2. 场景目录（相对于工作区）：.performance-test/scenarios
+3. 运行目录（相对于工作区）：.performance-test/runs
+4. 调用 list_performance_scenarios …
+5. 调用 prepare_performance_test …
+6. 完成动作/指标/诊断采集后，调用 finalize_performance_test …
 ```
 
-场景目录会在每次调用 `list_performance_scenarios` 时重新读取。修改或新增 YAML 后不需要修改 MCP 代码；重新构建不是必须的，但如果修改了 TypeScript 源码则必须重新执行 `npm run build`。
+之后 `list_performance_scenarios` / `prepare_performance_test` / `finalize_performance_test` 都只读写当前项目的 `.performance-test/`。**未初始化的项目永远不会读取其他项目的场景**；MCP 不会回退到安装目录、全局模板目录或上一次会话所在项目的配置。
 
-## 5. 三个 MCP 工具
+如果 MCP 启动时所在目录尚未初始化，会返回：
+
+```text
+当前工作区尚未初始化性能测试配置，请先调用 initialize_performance_workspace。
+```
+
+如果配置损坏，会提示具体的 `config.json` 路径和校验失败字段，**不会**自动覆盖——避免误删用户数据。
+
+## 5. 三个核心 MCP 工具（运行流程）
 
 ### `list_performance_scenarios`
 
@@ -287,7 +312,7 @@ claude mcp add --transport stdio performance-test --env \
 
 ## 6. 编写 YAML 场景
 
-场景文件位于 `scenarios/`，例如：
+场景文件位于**当前被测项目**的 `<当前项目>/.performance-test/scenarios/` 下，模板示例：
 
 ```yaml
 id: community-home-scroll
@@ -332,19 +357,19 @@ metrics:
 - `wait`：等待指定毫秒数；
 - `wait_for`：等待元素出现，直到超时。
 
-当前项目已有：
+首次初始化时如果传 `copyDefaultScenarios: true`，MCP 会植入：
 
-- `scenarios/community-home-scroll.yaml`
-- `scenarios/message-list-scroll.yaml`
+- `<当前项目>/.performance-test/scenarios/community-home-scroll.yaml`
+- `<当前项目>/.performance-test/scenarios/message-list-scroll.yaml`
 
 不要把设备 UDID 固定写进长期场景；设备应通过 `prepare_performance_test` 的 `device` 参数传入。
 
 ## 7. 测试结果在哪里
 
-每次运行会写入：
+每次运行都会写入**当前被测项目**下的运行目录（路径在 `prepare_performance_test` 的返回值 `runPath` 里以工作区相对路径形式给出）：
 
 ```text
-runs/<run-id>/
+<当前项目>/.performance-test/runs/<run-id>/
 ├── run.json                 # 实际运行状态、动作、指标和证据引用
 ├── plan.json                # 本次真正执行的解析后 TestPlan
 ├── report.json              # 机器可读报告
@@ -358,17 +383,17 @@ runs/<run-id>/
 查看最近一次报告：
 
 ```bash
-find runs -name report.md -type f -print | sort | tail -1
+find .performance-test/runs -name report.md -type f -print | sort | tail -1
 ```
 
 查看某次运行：
 
 ```bash
-less "runs/<run-id>/report.md"
-open "runs/<run-id>/report.md"
+less ".performance-test/runs/<run-id>/report.md"
+open ".performance-test/runs/<run-id>/report.md"
 ```
 
-运行目录是本地证据，不是测试管理数据库。确认不再需要某次证据后，可以手动删除对应运行目录。
+运行目录是本地证据，不是测试管理数据库。确认不再需要某次证据后，可以手动删除对应运行目录。**绝不**会因为在另一个项目里调用 MCP 而把这次运行的报告写到别的项目里——`runPath` 永远是当前项目工作区相对路径。
 
 ## 8. 报告状态和常见问题
 
@@ -392,7 +417,7 @@ open "runs/<run-id>/report.md"
 
 **找不到场景**
 
-确认场景文件在 `PERFORMANCE_TEST_SCENARIO_DIR` 指定的目录中，并调用 `list_performance_scenarios` 查看当前实际加载结果。
+确认当前项目已经调用过 `initialize_performance_workspace`，并且场景文件在 `<当前项目>/.performance-test/scenarios/` 下。再次调用 `list_performance_scenarios` 查看当前实际加载结果；如果返回 `请先调用 initialize_performance_workspace` 的结构化错误，则工作区尚未初始化。
 
 **MCP 工具没有出现**
 
@@ -403,7 +428,7 @@ npm run build
 claude mcp list
 ```
 
-然后重启 Claude Code 会话。检查注册命令中的 `dist/index.js` 是否为绝对路径。
+然后重启 Claude Code 会话。检查注册命令中的 `dist/index.js` 是否为绝对路径。如果只希望在当前目录中临时使用，确认 `.mcp.json`（或 `claude mcp add` 命令）中的 `command` / `args` 配置正确。
 
 **报告显示 `partial` 而不是 `completed`**
 
@@ -414,9 +439,9 @@ claude mcp list
 查看：
 
 ```text
-runs/<run-id>/crashes/
-runs/<run-id>/report.md
-runs/<run-id>/report.json
+<当前项目>/.performance-test/runs/<run-id>/crashes/
+<当前项目>/.performance-test/runs/<run-id>/report.md
+<当前项目>/.performance-test/runs/<run-id>/report.json
 ```
 
 报告会列出新增 Crash ID、异常信息和状态降级原因。
@@ -425,13 +450,21 @@ runs/<run-id>/report.json
 
 必须在执行第一个动作之前启动 `mobile_get_device_logs`。该工具只采集调用开始之后产生的日志。
 
+**在项目 A 中调用 MCP，报告却写到了项目 B**
+
+不应发生。MCP 始终使用**当前工作目录**作为工作区根；如果出现这种现象，请确认：
+1. Claude Code 会话是在项目 A 的目录下启动的；
+2. 项目 A 已经调用过 `initialize_performance_workspace`，其 `.performance-test/config.json` 存在；
+3. 不要使用 `cd` 在多个项目之间切换后复用同一个 Claude 会话——请在不同项目下分别启动新会话。
+
 ## 9. 当前边界
 
 - 第一版是本地单用户工具，不包含测试管理平台、数据库、CI 调度、Web 控制台或团队权限；
 - 场景不做版本管理，直接修改 YAML 即使用最新定义；
 - MCP 不直接调用设备、不启动 xctrace，也不内置 LLM；
 - 真实设备集成验收需要在有 `mobile-mcp`、`instruments-mcp-server` 和 iOS 真机的环境中执行；
-- 只有经过验证稳定的场景，未来才考虑固化为无人值守执行。
+- 只有经过验证稳定的场景，未来才考虑固化为无人值守执行；
+- **MCP 在用户级注册，但每个项目独立持有 `.performance-test/`**：MCP 不会跨项目读取场景、写入运行报告或回退到安装目录/全局目录；任何“另一个项目的场景出现在列表里”或“运行报告写到别的项目”的行为都是 bug，请提交 issue。
 
 ## 10. 相关项目和验证记录
 

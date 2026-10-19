@@ -62,6 +62,14 @@ export type ResolvedWorkspace =
       scenarioDir: string;
       runStore: RunStore;
       workspace: ReadyWorkspace | null;
+      /**
+       * Workspace-relative path to the runs directory (e.g.
+       * `.performance-test/runs`). Surfaced so production callers can
+       * pipe it into handler `RegisterOptions.runsRoot` without having
+       * to re-derive it from the workspace config. `undefined` when
+       * the legacy fallback is in use.
+       */
+      runsRoot: string | undefined;
     }
   | { kind: "error"; error: string };
 
@@ -95,6 +103,7 @@ export async function resolveReadyWorkspace(
         scenarioDir: ready.paths.scenarioDirectory,
         runStore: createRunStore(ready.paths.runsDirectory, ready.workspaceRoot),
         workspace: ready,
+        runsRoot: ready.config.runsDirectory,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -108,6 +117,7 @@ export async function resolveReadyWorkspace(
       scenarioDir: options.scenarioDir,
       runStore: options.runStore,
       workspace: null,
+      runsRoot: options.runsRoot,
     };
   }
 
@@ -238,6 +248,7 @@ export function registerTools(
         ...options,
         scenarioDir: resolved.scenarioDir,
         runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
       });
       if ("error" in result) {
         return toToolErrorResult(result.error);
@@ -263,6 +274,7 @@ export function registerTools(
         ...options,
         scenarioDir: resolved.scenarioDir,
         runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
       });
       if ("error" in result) {
         return toToolErrorResult(result.error);

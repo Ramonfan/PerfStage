@@ -87,6 +87,7 @@ export async function createWorkspaceToolHarness(
         ...options,
         scenarioDir: resolved.scenarioDir,
         runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
       };
       if (toolName === "list_performance_scenarios") {
         return (await listPerformanceScenarios(resolvedOptions)) as T;

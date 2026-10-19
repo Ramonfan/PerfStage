@@ -26,6 +26,14 @@ import { TestRun, testRunSchema } from "../model/test-run.js";
 const RUN_FILE_NAME = "run.json";
 const LOCK_FILE_NAME = ".finalize.lock";
 const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Filename of the per-run state file inside each run directory.
+ * Exported so the tool layer can build workspace-relative paths
+ * (e.g. `<workspace>/.performance-test/runs/<runId>/run.json`) without
+ * duplicating the string.
+ */
+export { RUN_FILE_NAME };
 /**
  * A lock file left behind by an earlier crashed finalize is recoverable
  * after this many milliseconds. Lock files younger than this are assumed

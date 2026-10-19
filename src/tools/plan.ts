@@ -15,7 +15,8 @@ import {
   type ExecutionMode,
 } from "../model/test-plan.js";
 import { testRunSchema, type TestRun } from "../model/test-run.js";
-import { newRunId } from "../storage/runs.js";
+import { newRunId, RUN_FILE_NAME } from "../storage/runs.js";
+import { buildRunRelativePath } from "./path-utils.js";
 import type { RegisterOptions } from "./index.js";
 
 const deviceTargetSchema = z.object({
@@ -421,7 +422,7 @@ export async function preparePerformanceTest(
     runId,
     scenarioId: input.scenarioId ?? (plan.id ?? "ad-hoc"),
     planId,
-    runPath: posix.join("run.json"),
+    runPath: buildRunRelativePath(options.runsRoot, runId, RUN_FILE_NAME),
     planPath: planRelative,
     execution: plan.execution,
     analysisFocus: plan.analysisFocus,
