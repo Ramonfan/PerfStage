@@ -1,5 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RunStore } from "../storage/runs.js";
+import { createRunStore } from "../storage/runs.js";
+import type {
+  ReadyWorkspace,
+  WorkspaceManager,
+} from "../workspace/manager.js";
 import {
   listPerformanceScenarios,
   listScenariosInputSchema,
@@ -12,18 +17,105 @@ import {
   finalizeInputSchema,
   finalizePerformanceTest,
 } from "./report.js";
+import {
+  initializePerformanceWorkspace,
+  initializeWorkspaceInputSchema,
+} from "./workspace.js";
 
 /**
- * Shared options passed to every tool handler. `scenarioDir` lists the YAML
- * scenarios, `runStore` is the persistence layer for `run.json` and evidence,
- * `now` returns the current time (overridable for tests), and `runsRoot`
- * optionally exposes the absolute root when callers need absolute paths.
+ * Shared options passed to every tool handler.
+ *
+ * Production callers (MCP server startup and the smoke tests) supply a
+ * {@link WorkspaceManager}. The readiness guard translates every
+ * "uninitialized" / "invalid" workspace state into a structured tool
+ * error before any side-effecting handler runs, then materializes the
+ * canonical `scenarioDir` and `runStore` from the resolved workspace
+ * paths so the handler itself never has to look them up.
+ *
+ * Legacy tests that build a tool harness against a raw `scenarioDir` /
+ * `runStore` pair without bootstrapping a workspace are still supported
+ * by passing the legacy fields directly and omitting
+ * `workspaceManager`. {@link resolveReadyWorkspace} detects the missing
+ * manager and uses the legacy paths verbatim.
+ *
+ * `scenarioDir` and `runStore` are typed as required because every
+ * handler that does side effects (scenario loading, run creation,
+ * evidence copying, report writing) assumes they are non-null. The
+ * readiness guard fills them in from the workspace before the handler
+ * is invoked; the harness layer is responsible for the same.
  */
 export interface RegisterOptions {
+  workspaceManager?: WorkspaceManager;
   scenarioDir: string;
   runStore: RunStore;
   now: () => Date;
   runsRoot?: string;
+}
+
+/**
+ * Outcome of {@link resolveReadyWorkspace}. Exactly one branch is set;
+ * consumers should `switch` on `kind` for exhaustive handling.
+ */
+export type ResolvedWorkspace =
+  | {
+      kind: "ready";
+      scenarioDir: string;
+      runStore: RunStore;
+      workspace: ReadyWorkspace | null;
+    }
+  | { kind: "error"; error: string };
+
+/**
+ * Shared readiness guard used by every side-effecting tool handler.
+ *
+ * The helper must run BEFORE any of: scenario loading, run creation,
+ * evidence copying, or report writing. Initialization itself stays
+ * callable in either state — it is the tool that flips the state.
+ *
+ * Resolution order:
+ *
+ *   1. When `options.workspaceManager` is provided, ask it for the
+ *      ready context. Success returns the canonical `scenarioDir` /
+ *      `runStore` rooted at the workspace paths; failure returns a
+ *      structured tool error containing the
+ *      `initialize_performance_workspace` hint that
+ *      {@link WorkspaceNotReadyError} already includes.
+ *   2. When `options.workspaceManager` is missing, fall back to the
+ *      legacy `scenarioDir` / `runStore` pair. Tests that bootstrap a
+ *      scenario directory directly rely on this branch.
+ */
+export async function resolveReadyWorkspace(
+  options: RegisterOptions,
+): Promise<ResolvedWorkspace> {
+  if (options.workspaceManager) {
+    try {
+      const ready = await options.workspaceManager.requireReady();
+      return {
+        kind: "ready",
+        scenarioDir: ready.paths.scenarioDirectory,
+        runStore: createRunStore(ready.paths.runsDirectory),
+        workspace: ready,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { kind: "error", error: message };
+    }
+  }
+
+  if (options.scenarioDir && options.runStore) {
+    return {
+      kind: "ready",
+      scenarioDir: options.scenarioDir,
+      runStore: options.runStore,
+      workspace: null,
+    };
+  }
+
+  return {
+    kind: "error",
+    error:
+      "RegisterOptions must include workspaceManager (production) or scenarioDir+runStore (legacy tests).",
+  };
 }
 
 function toToolErrorResult(error: string) {
@@ -36,7 +128,9 @@ function toToolErrorResult(error: string) {
 
 function toToolResult(payload: unknown) {
   const structured =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : undefined;
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : undefined;
   const text = JSON.stringify(payload, null, 2);
   return {
     content: [{ type: "text" as const, text }],
@@ -53,16 +147,52 @@ export function registerTools(
   server: McpServer,
   options: RegisterOptions,
 ): void {
+  // `initialize_performance_workspace` must be reachable from every state
+  // (uninitialized AND invalid), so it intentionally never calls the
+  // readiness guard.
+  server.registerTool(
+    "initialize_performance_workspace",
+    {
+      title: "Initialize Performance Workspace",
+      description:
+        "在当前工作目录创建 .performance-test 数据目录、写入 config.json（mode 0o600）、准备好 scenarios/ 与 runs/ 子目录，并返回工作区相对路径以及 Claude 下一步应执行的操作。",
+      inputSchema: initializeWorkspaceInputSchema.shape,
+    },
+    async (args: unknown) => {
+      if (!options.workspaceManager) {
+        return toToolErrorResult(
+          "initialize_performance_workspace is unavailable: server was started without a workspaceManager.",
+        );
+      }
+      const result = await initializePerformanceWorkspace(args, {
+        workspaceManager: options.workspaceManager,
+        now: options.now,
+      });
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
   server.registerTool(
     "list_performance_scenarios",
     {
       title: "List Performance Scenarios",
       description:
-        "读取当前目录下的所有性能测试场景 YAML，并返回按 id 排序的可用方案。",
+        "枚举当前工作区中的所有性能测试场景 YAML，并返回按 id 排序的可用方案。",
       inputSchema: listScenariosInputSchema.shape,
     },
     async () => {
-      const result = await listPerformanceScenarios(options);
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await listPerformanceScenarios({
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+      });
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }
@@ -79,7 +209,15 @@ export function registerTools(
       inputSchema: prepareInputSchema.shape,
     },
     async (args: unknown) => {
-      const result = await preparePerformanceTest(args, options);
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await preparePerformanceTest(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+      });
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }
@@ -96,7 +234,15 @@ export function registerTools(
       inputSchema: finalizeInputSchema.shape,
     },
     async (args: unknown) => {
-      const result = await finalizePerformanceTest(args, options);
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await finalizePerformanceTest(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+      });
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerTools } from "../tools/index.js";
+import { createWorkspaceManager } from "../workspace/manager.js";
 import { createRunStore } from "../storage/runs.js";
 
 interface RegisteredToolSummary {
@@ -18,6 +19,7 @@ interface ToolListResult {
 }
 
 const EXPECTED_TOOLS = [
+  "initialize_performance_workspace",
   "list_performance_scenarios",
   "prepare_performance_test",
   "finalize_performance_test",
@@ -37,13 +39,15 @@ afterEach(async () => {
 });
 
 describe("MCP server smoke", () => {
-  it("exposes exactly the three named tools via the MCP protocol", async () => {
+  it("exposes exactly the four named tools via the MCP protocol", async () => {
     if (!root) throw new Error("root not initialized");
     const server = new McpServer(
       { name: "performance-test-mcp", version: "0.1.0" },
       { capabilities: { tools: {} } },
     );
+    const workspaceManager = createWorkspaceManager(root);
     registerTools(server, {
+      workspaceManager,
       scenarioDir: join(root, "scenarios"),
       runStore: createRunStore(join(root, "runs")),
       now: () => new Date(),
@@ -72,22 +76,16 @@ describe("MCP server smoke", () => {
     }
   });
 
-  it("returns a tool error (not a thrown exception) for malformed scenarios", async () => {
+  it("returns a tool error (not a thrown exception) when called before workspace initialization", async () => {
     if (!root) throw new Error("root not initialized");
-    const { mkdir, writeFile } = await import("node:fs/promises");
-    const scenarioDir = join(root, "scenarios");
-    await mkdir(scenarioDir, { recursive: true });
-    await writeFile(
-      join(scenarioDir, "broken.yaml"),
-      "id: broken\napp: { bundleId: x }\nactions:\n  - id: bad\n    type: ??\n",
-      "utf8",
-    );
     const server = new McpServer(
       { name: "performance-test-mcp", version: "0.1.0" },
       { capabilities: { tools: {} } },
     );
+    const workspaceManager = createWorkspaceManager(root);
     registerTools(server, {
-      scenarioDir,
+      workspaceManager,
+      scenarioDir: join(root, "scenarios"),
       runStore: createRunStore(join(root, "runs")),
       now: () => new Date(),
     });
@@ -112,7 +110,9 @@ describe("MCP server smoke", () => {
       };
       expect(toolResult.isError).toBe(true);
       expect(
-        toolResult.content.some((c) => c.type === "text" && /broken\.yaml/.test(c.text)),
+        toolResult.content.some(
+          (c) => c.type === "text" && /initialize_performance_workspace/.test(c.text),
+        ),
       ).toBe(true);
     } finally {
       await client.close();
