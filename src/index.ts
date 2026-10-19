@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { registerTools } from "./tools/index.js";
 import { createRunStore } from "./storage/runs.js";
 
@@ -29,9 +30,12 @@ export function createServer(): McpServer {
   return server;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const scenarioDir = join(process.cwd(), SCENARIO_DIR);
-  const runsDir = join(process.cwd(), RUNS_DIR);
+if (
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1])
+) {
+  const scenarioDir = resolve(process.cwd(), SCENARIO_DIR);
+  const runsDir = resolve(process.cwd(), RUNS_DIR);
   const server = new McpServer(
     { name: "performance-test-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
