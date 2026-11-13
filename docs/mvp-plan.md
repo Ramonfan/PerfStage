@@ -496,8 +496,8 @@ perfstage report <runId>
 
 **目标：** 有一个可协作、可回归的仓库。
 
-- [ ] 配置 `origin`，整理并提交当前工作区
-- [ ] GitHub Actions：Node 20，`npm ci && npm run build && npm test`
+- [x] 配置 `origin`，本地提交当前工作区（推送待确认）
+- [x] GitHub Actions：Node 20，`npm ci && npm run build && npm test`
 - [ ] 补齐 `.gitignore`、README 链接、MVP 文档
 - [ ] 录制第一份真实设备 fixture（`mobile_list_elements_on_screen`）
 - [ ] 0.5 天技术验证：`start_profiling` 能否在真机上 attach
