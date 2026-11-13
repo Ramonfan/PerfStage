@@ -149,7 +149,7 @@ MVP 只有全部满足才算完成：
 | D8 | 配置向后兼容，新增可选 `adapters` | 不影响已初始化项目 | 需要 schema 版本处理 |
 | D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 28.5 人日 |
 | D10 | **真机优先**，模拟器仅补位（已确认） | 卡顿/Hitches 在模拟器上不可信 | 需要一台稳定真机 |
-| D11 | `blockMs` 改由 Animation Hitches 的 hang 时长推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长 hang」 |
+| D11 | `blockMs` 改由 Animation Hitches 的最长卡顿帧推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长卡顿帧」 |
 | D12 | `memoryMB` 改用 Activity Monitor 的 `phys_footprint` | Allocations 在 Xcode 27.2 / iOS 27 上系统性失效 | 全进程录制，需按进程名筛选 |
 | D13 | **PerfStage 自解析全部 trace 指标**，instruments-mcp 只负责录制 | 行为一致；不必 fork 依赖；解析口径由产品自己掌握 | 需要自己维护 4 个指标的解析器 |
 
@@ -333,10 +333,10 @@ export interface CollectedMetric {
 
 | 指标名 | Instruments 模板 | 取值字段 | 单位 | 说明 |
 | --- | --- | --- | --- | --- |
-| `hitches` | Animation Hitches | `totalHangs` | 次 | 已验证：滑动下可采到 903 hangs |
-| `blockMs` | Animation Hitches | `max(hangs[].durationMs)` | ms | **改为与 hitches 同 pass**，避免 Time Profiler 符号化 |
-| `launchMs` | App Launch | `life-cycle-period` | ms | 已适配，实测 274.3ms（cold） |
-| `memoryMB` | Activity Monitor | 目标进程 `phys_footprint` 中位数 | MB | `--all-processes`；已验证 113.35 MiB |
+| `hitches` | Animation Hitches | `hitches-frame-lifetimes`：非绿色帧 + 超过中位帧 1.3× 的绿色帧 | 次 | 卡顿帧数，不是 sparse hang 事件数；真机两次滑动 242–408 |
+| `blockMs` | Animation Hitches | `max(卡顿帧 durationMs)` | ms | **与 hitches 同 pass**，避免 Time Profiler 符号化（D11） |
+| `launchMs` | App Launch | `life-cycle-period` | ms | 已适配，真机冷启动 302–359ms |
+| `memoryMB` | Activity Monitor | 目标进程 `phys_footprint` 中位数 | MB | `--all-processes`；真机 114.9–116.1 MiB |
 
 约束：
 
@@ -565,7 +565,7 @@ perfstage report <runId>
 
 - [x] `templates/SKILL.md`：可复制的 Skill 模板
 - [x] 示例项目 Skill（1 个场景）：`examples/skills/perf-community-scroll/SKILL.md`
-- [ ] 运行 3 次，记录状态与指标波动
+- [x] 运行 3 次，记录状态与指标波动（见 `docs/m2-validation.md`）
 - [x] 修正场景 DSL 中不合理的部分（四指标规范词表 + 阈值；移除 Allocations）
 - [x] 文档：Skill 契约与编写规则（README 第 6 节 + Skill 模板）
 
@@ -575,8 +575,29 @@ perfstage report <runId>
   输出 `hitches` / `blockMs` / `launchMs` / `memoryMB`（D13）。
 - `src/analysis/parsers/animation-hitches.ts`：Animation Hitches 帧生命周期解析。
 - `scenarios/*.yaml`：示例场景迁移到四指标。
+- `scripts/m2-takes.mjs`：M2 验证驱动（prepare → 3 pass → analyze → finalize）。
 
-**交付物：** 可重复执行的 Thick Skill + 3 次运行记录。
+**真机 3 次结果（`com.nndev.im` 6.7.1 / iOS 27.0.1）：**
+
+| # | status | gate | hitches | blockMs | launchMs | memoryMB |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `completed` | `fail` | 366 | 41.8 ms | 313.64 ms | 116.10 MB |
+| 2 | `completed` | `fail` | 350 | 45.8 ms | 302.52 ms | 115.05 MB |
+| 3 | `completed` | `fail` | 242 | 50.6 ms | 316.16 ms | 114.89 MB |
+
+**结论：**
+
+- `status=completed` 3/3，证据链完整；`gate=fail` 仅由 `hitches` 触发，
+  其余三个指标 `pass`（D6 语义符合预期）。
+- `memoryMB`（1.1%）与 `launchMs`（4.3%）足以支撑单次门禁；
+  `blockMs` 中等稳定；`hitches` 极差达中位数的 35%，**单次值不足以判断回归**。
+  这直接支撑 M4 的基线中位数/分布设计。
+- 真实滑动窗口内 `hitches` 稳定在 242–408，说明示例阈值 `warn 5 / fail 15`
+  低了两个数量级。本次没有为“变绿”而改阈值，留待 M4 用基线重新标定。
+- 真机验证还修掉两个可信度问题：良性 `watchdog` 日志误报、指标 verdict 未落盘。
+
+**交付物：** 可重复执行的 Thick Skill + 3 次运行记录（`docs/m2-validation.md`、
+`docs/m2-takes.json`）。
 
 **验收：** A1、A6 初步通过。
 

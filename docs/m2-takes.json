@@ -1,0 +1,173 @@
+{
+  "generatedAt": "2026-11-13T05:30:11.845Z",
+  "device": "00008150-001E49E40128C01C",
+  "bundleId": "com.nndev.im",
+  "scenarioId": "community-home-scroll",
+  "workspace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final",
+  "takes": [
+    {
+      "runNumber": 1,
+      "runId": "2026-11-13T05-19-44.477Z-T1wM16z8",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-19-44.477Z-T1wM16z8",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 366,
+        "blockMs": 41.8,
+        "launchMs": 313.64,
+        "memoryMB": 116.1
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2635,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2585,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-19-44.477Z-T1wM16z8/traces/hitches.trace",
+          "attempts": 2
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-19-44.477Z-T1wM16z8/traces/Launch_com.nndev.im_2026-11-13_13.21.51_6051AF22.trace"
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-19-44.477Z-T1wM16z8/traces/memory.trace",
+          "pid": 6976
+        }
+      },
+      "notes": [
+        "hitches pass needed 2 attempts (kperf lock)."
+      ],
+      "timings": {
+        "hitchesMs": 113012,
+        "launchMs": 66348,
+        "memoryMs": 28019,
+        "totalMs": 217905
+      }
+    },
+    {
+      "runNumber": 2,
+      "runId": "2026-11-13T05-23-47.396Z-asbbXG1T",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-23-47.396Z-asbbXG1T",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 350,
+        "blockMs": 45.8,
+        "launchMs": 302.52,
+        "memoryMB": 115.05
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2589,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2571,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-23-47.396Z-asbbXG1T/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-23-47.396Z-asbbXG1T/traces/Launch_com.nndev.im_2026-11-13_13.25.18_FD62AB36.trace"
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-23-47.396Z-asbbXG1T/traces/memory.trace",
+          "pid": 6988
+        }
+      },
+      "notes": [],
+      "timings": {
+        "hitchesMs": 78810,
+        "launchMs": 55134,
+        "memoryMs": 31521,
+        "totalMs": 174453
+      }
+    },
+    {
+      "runNumber": 3,
+      "runId": "2026-11-13T05-27-06.869Z-xdDOaOCq",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-27-06.869Z-xdDOaOCq",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 242,
+        "blockMs": 50.6,
+        "launchMs": 316.16,
+        "memoryMB": 114.89
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2570,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2553,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-27-06.869Z-xdDOaOCq/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-27-06.869Z-xdDOaOCq/traces/Launch_com.nndev.im_2026-11-13_13.28.41_4D575139.trace"
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m2-workspace-final/.performance-test/runs/2026-11-13T05-27-06.869Z-xdDOaOCq/traces/memory.trace",
+          "pid": 7001
+        }
+      },
+      "notes": [],
+      "timings": {
+        "hitchesMs": 82787,
+        "launchMs": 63591,
+        "memoryMs": 29429,
+        "totalMs": 184973
+      }
+    }
+  ]
+}

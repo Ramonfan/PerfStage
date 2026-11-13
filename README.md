@@ -368,6 +368,14 @@ PerfStage 目前提供 5 个底层原语。它们稳定、可测试，也是未�
 返回 `metrics` 数组（含 `unit`、`instrument`、`tracePath`）以及精简后的
 `analysis` 与 `warnings`。指标没有值时不会补 0，交给证据门禁判 `partial`。
 
+指标口径：
+
+- `hitches` 是**卡顿帧数**：非绿色帧，加上时长超过中位帧 1.3 倍的绿色帧。
+  它不是 sparse hang 事件数，数量通常大一个量级。
+- `blockMs` 是这批卡顿帧里最长的一帧时长，与 `hitches` 共用同一条 trace。
+- `memoryMB` 取目标进程 `phys_footprint` 的中位数，不是峰值。
+- `launchMs` 取 `life-cycle-period` 的首尾跨度；没有生命周期行时不补 0。
+
 ### `finalize_performance_test`
 
 提交动作、指标和诊断证据，计算最终状态并生成报告。
@@ -552,7 +560,7 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 - [x] `prepare_performance_test` 返回完整解析计划
 - [x] `finalize_performance_test` 证据硬校验：缺 trace / 缺值不得 `completed`
 - [x] 阈值 verdict 与 `gate`，并把 `status` 与 `gate` 分离
-- [ ] 用真实场景连续跑 3 次，确认结果稳定
+- [x] 用真实场景连续跑 3 次，记录状态与指标波动（`docs/m2-validation.md`）
 
 **第二阶段：让一次 Take 自动化**
 

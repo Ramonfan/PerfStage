@@ -207,6 +207,11 @@ Python 口径已移植到 TypeScript（`src/analysis/parsers/activity-monitor.ts
 
 修订后一次 Take 为 **3 个 pass**（hitches + launch + activity monitor），与最初计划持平，但每轮都不再依赖不稳定的 per-process attach。
 
+> 后续修正（E0-9）：真实 trace 的主表是 `hitches-frame-lifetimes`，不是 sparse
+> 的 `hitches` 表。最终实现按帧计算 `hitches`（非绿色帧 + 超过中位帧 1.3× 的
+> 绿色帧）与 `blockMs`（最长卡顿帧），见第 8 节。`totalHangs` 只作为旧表中
+> 的回退口径。
+
 ## 6. 复现命令
 
 ```bash
