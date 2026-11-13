@@ -553,6 +553,7 @@ claude mcp list
 - [`mobile-mcp`](https://github.com/mobile-next/mobile-mcp)：设备与 UI 自动化
 - [`docs/platform-capability-review.md`](docs/platform-capability-review.md)：平台能力复盘与评分
 - [`docs/mvp-plan.md`](docs/mvp-plan.md)：MVP 范围、里程碑、任务与验收标准
+- [`docs/spikes/m0-device-spike.md`](docs/spikes/m0-device-spike.md)：M0 真机验证结论与指标可行性
 - [`docs/diagrams/`](docs/diagrams/)：架构图与流程图源文件、交互式 HTML
 - [`docs/superpowers/specs/2026-10-17-performance-test-mcp-design.md`](docs/superpowers/specs/2026-10-17-performance-test-mcp-design.md)：原始设计文档
 - [`docs/superpowers/verification/2026-10-17-interactive-run.md`](docs/superpowers/verification/2026-10-17-interactive-run.md)：交互式流程验证记录

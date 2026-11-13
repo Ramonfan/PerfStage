@@ -6,8 +6,8 @@
 | 日期 | 2026-11-13 |
 | 仓库 | [Ramonfan/PerfStage](https://github.com/Ramonfan/PerfStage) |
 | 当前状态 | 控制面可用；执行器未实现 |
-| 计划周期 | MVP 6 周（约 26 人日，含 CLI），v1.0 再 +2 周 |
-| 估算假设 | 1 名开发者、1 台 iOS 真机、可随时用模拟器补位 |
+| 计划周期 | MVP 6 周（约 28 人日，含 CLI 与真机适配），v1.0 再 +2 周 |
+| 估算假设 | 1 名开发者、1 台 iOS 真机（NN / iOS 27.0.1）、可随时用模拟器补位 |
 
 ---
 
@@ -120,7 +120,7 @@ MVP 只有全部满足才算完成：
 | --- | --- | --- |
 | A1 | 新项目 30 分钟内接入 | 计时：init → 场景 → Skill → 首次运行 |
 | A2 | 一次调用完成，无中间人工步骤 | Skill 中只有 1 次 `run_performance_test` 调用 |
-| A3 | 至少 3 个指标带 trace 落盘 | `hitches`、`blockMs`、`memoryMB` 均可追溯 |
+| A3 | 至少 3 个指标带 trace 落盘 | `hitches`、`blockMs`、`launchMs` 均可追溯 |
 | A4 | 缺 trace 时状态为 `partial` | 构造缺 trace 的用例验证 |
 | A5 | 新增 Crash 时状态为 `failed` | 构造 Crash 差集用例验证 |
 | A6 | 同一场景连续 3 次结果有效 | 3 次均 `completed`，无采集/设备错误；波动如实呈现 |
@@ -149,6 +149,7 @@ MVP 只有全部满足才算完成：
 | D8 | 配置向后兼容，新增可选 `adapters` | 不影响已初始化项目 | 需要 schema 版本处理 |
 | D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 26 人日 |
 | D10 | **真机优先**，模拟器仅补位（已确认） | 卡顿/Hitches 在模拟器上不可信 | 需要一台稳定真机 |
+| D11 | `blockMs` 改由 Animation Hitches 的 hang 时长推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长 hang」 |
 
 ### D4 的具体后果
 
@@ -156,10 +157,10 @@ MVP 只有全部满足才算完成：
 
 ```text
 对每个唯一模板：
-  重置 App → warmup → start_profiling(模板) → actions → stop_profiling → 解析
+  start_profiling(模板, launch_path=bundleId) → settle → warmup → actions → stop_profiling → 解析
 ```
 
-这意味着 **3 个指标 = 3 次动作回放**。MVP 接受这个代价，并在报告中标注 `pass`，同时把「合并模板」列入观察项。
+修订后 **3 个指标只需 2 个 pass**：`hitches` 与 `blockMs` 共用 Animation Hitches，`launchMs` 单独一轮。`memoryMB` 待 E0-8 结论后再决定是否加入。报告中标注 `pass`。
 
 ---
 
@@ -235,11 +236,12 @@ src/
 4. 记录 Crash 快照；在独立 client 上异步启动日志采集
 5. 解析 App 进程名、屏幕尺寸
 6. for 每个唯一模板:
-     6.1 terminate + launch App（重置状态）
-     6.2 执行 preconditions / warmup
-     6.3 start_profiling(template, device, process)
+     6.1 start_profiling(template, device, launch_path=bundleId, max_duration=1m)
+         —— 让 xctrace 冷启动 App，避免进程名歧义与 attach 竞态
+     6.2 等待 settleMs（默认 2000ms），确认录制已真正开始
+     6.3 执行 preconditions / warmup
      6.4 顺序执行 actions（每步成功后 waitAfterMs）
-     6.5 stop_profiling → 解析指标 + tracePath
+     6.5 stop_profiling（客户端超时 ≥ 300s）→ 解析指标 + tracePath
      6.6 单步失败：重试 1 次；仍失败则记录 partial/failed
 7. 采集后置证据：停止日志、Crash 差集、生命周期
 8. 指标标准化 + 阈值 verdict + gate
@@ -323,10 +325,10 @@ export interface CollectedMetric {
 
 | 指标名 | Instruments 模板 | 取值字段 | 单位 | 说明 |
 | --- | --- | --- | --- | --- |
-| `hitches` | Animation Hitches | `totalHangs` | 次 | 卡顿总数 |
-| `blockMs` | Time Profiler | `max(mainThreadBlockers[].durationMs)` | ms | 主线程最长阻塞 |
-| `memoryMB` | Allocations | `totalMB` | MB | 分配总量，非 resident footprint |
-| `launchMs` | App Launch | `totalLaunchMs` | ms | 冷启动/热启动由 `launchType` 标注 |
+| `hitches` | Animation Hitches | `totalHangs` | 次 | 已验证：滑动下可采到 903 hangs |
+| `blockMs` | Animation Hitches | `max(hangs[].durationMs)` | ms | **改为与 hitches 同 pass**，避免 Time Profiler 符号化 |
+| `launchMs` | App Launch | `life-cycle-period` | ms | 模板可录；解析器需适配（见 E0-7） |
+| `memoryMB` | Allocations | `totalMB` | MB | **当前构建不可用**，待 E0-8 定方案 |
 
 约束：
 
@@ -424,7 +426,10 @@ gate = fail 若任一 fail；否则 warn 若任一 warn；否则 pass
 | --- | --- |
 | 单步动作失败 | 重试 1 次（可配置），仍失败则终止 |
 | 元素找不到 | 明确报错并附当前可见元素摘要，不做猜测式点击 |
+| 录制启动失败 | `start_profiling` 返回值不可信，stop 时报 `No active recording` → 该指标记缺失 |
 | 录制超时 | 模板预算 + 60s 硬超时，强制 `stop_profiling` |
+| 大 trace 落盘 | `stop_profiling` 客户端超时 ≥ 300s，记录 trace 体积 |
+| 录制启动延迟 | start 后等待 2s settle 再执行动作，避免首屏动作未被采集 |
 | MCP 子进程崩溃 | 重启 1 次；仍失败则 `failed`，记录 stderr 摘要 |
 | 设备断连 | 立即 `failed`，保留已有证据 |
 | 工作区未初始化 | 直接结构化错误，不创建任何文件 |
@@ -492,19 +497,23 @@ perfstage report <runId>
 
 ## 5. 里程碑
 
-### M0 — 仓库与工程基线（2.5 人日）
+### M0 — 仓库与工程基线（4.5 人日）
 
-**目标：** 有一个可协作、可回归的仓库。
+**目标：** 有一个可协作、可回归的仓库，并把真机采集的不确定性消掉。
 
 - [x] 配置 `origin`，本地提交当前工作区（推送待确认）
 - [x] GitHub Actions：Node 20，`npm ci && npm run build && npm test`
-- [ ] 补齐 `.gitignore`、README 链接、MVP 文档
-- [ ] 录制第一份真实设备 fixture（`mobile_list_elements_on_screen`）
-- [ ] 0.5 天技术验证：`start_profiling` 能否在真机上 attach
+- [x] 补齐 `.gitignore`、README 链接、MVP 文档
+- [x] 真机 `start_profiling` 验证：`launch_path` 冷启动稳定，产出 trace + JSON
+- [ ] `start_profiling` 失败即报错（E0-6）
+- [ ] App Launch 解析器适配（E0-7）
+- [ ] 内存指标来源验证（E0-8）
+- [ ] 录制 `mobile_list_elements_on_screen` 与 `stop_profiling` fixture（E0-4）
+- [ ] 验证独立 client 并发日志采集（E0-5）
 
-**交付物：** 绿色 CI；真机 attach 结论。
+**交付物：** 绿色 CI；`docs/spikes/m0-device-spike.md`；指标可行性结论。
 
-**验收：** 新克隆仓库可一键构建与测试。
+**验收：** 新克隆仓库可一键构建与测试；真机可稳定产出至少 3 个指标。
 
 ### M1 — 可信单次（5 人日）
 
@@ -589,6 +598,9 @@ perfstage report <runId>
 | E0-3 | 真机 `start_profiling` attach 验证 | P0 | 0.5d | — | 产出 trace 与 JSON |
 | E0-4 | 录制 mobile/instruments fixtures | P0 | 0.5d | E0-3 | fixture 入库 |
 | E0-5 | 验证并发日志采集（独立 client） | P0 | 0.5d | E0-4 | 动作期间日志可落盘 |
+| E0-6 | `start_profiling` 失败即报错 | P0 | 0.5d | E0-3 | 失败不再返回 `recording` |
+| E0-7 | App Launch 解析器适配 `life-cycle-period` | P0 | 1d | E0-3 | 返回非 0 `launchMs` |
+| E0-8 | 内存指标来源验证（非热更新构建） | P0 | 0.5d | E0-3 | 明确可做或降级 |
 | E1-1 | `prepare` 返回完整 plan | P0 | 1d | — | 返回值含 actions/metrics |
 | E1-2 | 指标证据校验（值 / trace） | P0 | 1d | — | 缺 trace → partial |
 | E1-3 | 阈值 verdict 与 gate | P0 | 1d | — | 三档判定正确 |
@@ -606,7 +618,7 @@ perfstage report <runId>
 | E3-2 | DeviceDriver 接口 | P0 | 0.5d | — | 类型冻结 |
 | E3-3 | mobile-mcp 适配器 | P0 | 1.5d | E3-2 | 动作全部可执行 |
 | E3-4 | MetricCollector 接口 | P0 | 0.5d | — | 类型冻结 |
-| E3-5 | instruments 适配器 | P0 | 1.5d | E3-4 | 4 指标可采集 |
+| E3-5 | instruments 适配器 | P0 | 1.5d | E3-4 | 3 指标可采集（memory 待定） |
 | E3-6 | 证据适配器 | P0 | 1d | E3-3 | 日志/Crash/生命周期 |
 | E3-7 | Runner 编排 | P0 | 1d | E3-3..6 | 全链路可跑 |
 | E3-8 | `run_performance_test` | P0 | 1d | E3-7 | 返回契约完整 |
@@ -620,7 +632,7 @@ perfstage report <runId>
 | E5-1 | 运行历史索引 | P2 | 2d | v0.1 | 可列出历史 |
 | E5-2 | 基线对比 | P2 | 2d | E5-1 | 可对比两次 |
 
-合计 P0：约 26 人日（6 周，含缓冲）；P2 另行 4 人日。
+合计 P0：约 28 人日（6 周，含缓冲）；P2 另行 4 人日。
 
 ---
 
@@ -628,7 +640,7 @@ perfstage report <runId>
 
 | 周 | 主要工作 | 演示节点 |
 | --- | --- | --- |
-| W1 | M0 + M1 前半 | CI 绿；真机 attach 与日志并发结论；缺 trace 时 `partial` |
+| W1 | M0 收尾 + M1 前半 | CI 绿；3 个指标在真机可采；缺 trace 时 `partial` |
 | W2 | M1 收尾 + M2 | 同一 Skill 连续 3 次；阈值 gate 生效 |
 | W3 | M3 前半（client / 适配器） | Runner 跑通一个动作 + 一个指标 |
 | W4 | M3 后半（编排 / 工具 / 测试） | 一键执行 2 个场景 |
@@ -644,7 +656,9 @@ perfstage report <runId>
 
 | 风险 | 影响 | 概率 | 缓解 | 触发后 |
 | --- | --- | --- | --- | --- |
-| 真机 xctrace attach 不稳定 | 高 | 中 | M0 先做 0.5 天验证；准备模拟器路径 | MVP 降级为模拟器 + 真机手动验收 |
+| 真机 attach 竞态 | 高 | 高 | 已改用 `launch_path` 冷启动录制；不用进程名 attach | 按 PID 挂起—attach—resume |
+| 内存指标不可用 | 高 | 高 | E0-8 先验证非热更新构建 | `memoryMB` 移出 MVP 必选，改 best-effort |
+| 大 trace 导致 stop 超时 | 中 | 高 | 客户端超时 ≥ 300s；录制预算 ≤ 20s | 降低采样或改用轻量模板 |
 | 一次只能录一个模板 | 中 | 高 | 顺序多 pass；报告标注 pass；限制 MVP 为 2–3 指标 | 只保留 hitches + blockMs |
 | 文本点击定位不稳 | 高 | 中 | 用元素 ref；失败时报可见元素；不猜坐标 | 场景改用坐标点击（DSL 扩展） |
 | instruments JSON 随版本变化 | 中 | 中 | fixture 契约测试；版本检查 | 锁定 xctrace 版本 |
@@ -678,7 +692,7 @@ perfstage report <runId>
 | # | 决策 | 结论 | 对计划的影响 |
 | --- | --- | --- | --- |
 | 1 | 基线对比 | **不包含**，放 M4 | MVP 保持单次报告 |
-| 2 | 多指标顺序多 pass | **接受**，报告标注 pass | 3 指标 = 3 次回放 |
+| 2 | 多指标顺序多 pass | **接受**，报告标注 pass | 3 指标 = 2 个 pass |
 | 3 | 首个验证项目 | 用手头最稳定的真实项目 | 待补具体路径、bundleId、进程名 |
 | 4 | 设备优先级 | **真机优先**，模拟器补位 | 卡顿指标以真机为准 |
 | 5 | CLI | **纳入 MVP** | +2 人日，MVP 约 26 人日 / 6 周 |
