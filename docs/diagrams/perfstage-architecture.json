@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "PerfStage 平台架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "platform-layers",
+        "label": "平台分层",
+        "focus": [
+          "agent",
+          "skill",
+          "scenes",
+          "mcp",
+          "runner",
+          "runstore",
+          "reports"
+        ],
+        "note": "项目定义 Scene Skill，PerfStage 提供通用控制面能力。"
+      },
+      {
+        "id": "execution-path",
+        "label": "iOS 执行链路",
+        "focus": [
+          "mcp",
+          "runner",
+          "mobile",
+          "instruments",
+          "device"
+        ],
+        "note": "Runner 驱动 mobile-mcp 和 instruments-mcp，完成动作与采集。"
+      },
+      {
+        "id": "evidence-loop",
+        "label": "证据与报告",
+        "focus": [
+          "runner",
+          "runstore",
+          "reports"
+        ],
+        "note": "每次执行都落盘 run、plan、report 和证据，形成可重复闭环。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "Claude / CI",
+      "sublabel": "执行或触发 Skill",
+      "pos": [
+        60,
+        430
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "skill",
+      "type": "frontend",
+      "label": "项目 Scene Skill",
+      "sublabel": "一个场景一个 Skill",
+      "pos": [
+        60,
+        300
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "tag": "项目资产"
+    },
+    {
+      "id": "scenes",
+      "type": "database",
+      "label": "Scene YAML",
+      "sublabel": ".performance-test/scenarios",
+      "pos": [
+        300,
+        110
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "PerfStage MCP",
+      "sublabel": "场景 · 运行 · 证据 · 报告",
+      "pos": [
+        300,
+        300
+      ],
+      "size": [
+        190,
+        84
+      ],
+      "tag": "通用能力"
+    },
+    {
+      "id": "runner",
+      "type": "backend",
+      "label": "Execution Runner",
+      "sublabel": "规划中 · 一键执行",
+      "pos": [
+        560,
+        300
+      ],
+      "size": [
+        190,
+        84
+      ],
+      "tag": "规划中"
+    },
+    {
+      "id": "mobile",
+      "type": "external",
+      "label": "mobile-mcp",
+      "sublabel": "UI 动作 · 日志 · Crash",
+      "pos": [
+        820,
+        180
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "instruments",
+      "type": "external",
+      "label": "instruments-mcp",
+      "sublabel": "xctrace · 指标解析",
+      "pos": [
+        820,
+        430
+      ],
+      "size": [
+        190,
+        76
+      ]
+    },
+    {
+      "id": "device",
+      "type": "external",
+      "label": "iOS Device",
+      "sublabel": "真机 / 模拟器",
+      "pos": [
+        1080,
+        300
+      ],
+      "size": [
+        180,
+        76
+      ]
+    },
+    {
+      "id": "runstore",
+      "type": "database",
+      "label": "Run Store",
+      "sublabel": "run.json · plan.json",
+      "pos": [
+        560,
+        540
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "reports",
+      "type": "database",
+      "label": "Report + Gate",
+      "sublabel": "report.json · report.md",
+      "pos": [
+        300,
+        540
+      ],
+      "size": [
+        190,
+        72
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "agent-skill",
+      "from": "agent",
+      "to": "skill",
+      "label": "执行"
+    },
+    {
+      "id": "skill-mcp",
+      "from": "skill",
+      "to": "mcp",
+      "label": "调用",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scenes-mcp",
+      "from": "scenes",
+      "to": "mcp",
+      "label": "场景",
+      "labelAt": [
+        395,
+        196
+      ]
+    },
+    {
+      "id": "mcp-runner",
+      "from": "mcp",
+      "to": "runner",
+      "label": "分发"
+    },
+    {
+      "id": "runner-mobile",
+      "from": "runner",
+      "to": "mobile",
+      "label": "actions"
+    },
+    {
+      "id": "runner-instruments",
+      "from": "runner",
+      "to": "instruments",
+      "label": "traces"
+    },
+    {
+      "id": "mobile-device",
+      "from": "mobile",
+      "to": "device"
+    },
+    {
+      "id": "instruments-device",
+      "from": "instruments",
+      "to": "device"
+    },
+    {
+      "id": "runner-runstore",
+      "from": "runner",
+      "to": "runstore",
+      "label": "写入",
+      "labelAt": [
+        655,
+        398
+      ]
+    },
+    {
+      "id": "runstore-reports",
+      "from": "runstore",
+      "to": "reports",
+      "label": "报告"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "平台保持通用",
+      "items": [
+        "PerfStage 只提供场景、执行、证据、报告等通用能力",
+        "项目差异收敛到 Scene Skill 和 Scene YAML",
+        "新增 App 或场景不需要修改平台内核"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "执行链路清晰",
+      "items": [
+        "mobile-mcp 负责 UI 动作、日志与 Crash",
+        "instruments-mcp 负责 xctrace 与指标解析",
+        "Runner 串联 prepare → execute → collect → finalize"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "渐进演进",
+      "items": [
+        "当前已具备 MCP 控制面、场景、运行存储和报告",
+        "Runner 是一键执行的目标形态",
+        "Skill 保持薄，平台保持稳定契约"
+      ]
+    }
+  ]
+}

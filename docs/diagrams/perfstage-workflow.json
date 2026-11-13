@@ -1,0 +1,294 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "PerfStage 测试流程：执行一次 Scene Skill",
+    "subtitle": "一次定义，次次上演",
+    "locale": "zh-CN",
+    "output": "perfstage-workflow.html",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "first-take",
+        "label": "首次定义与执行",
+        "focus": [
+          "scene_yaml",
+          "scene_skill",
+          "run_tool",
+          "runner",
+          "exec_actions",
+          "collect_trace",
+          "report_gate"
+        ],
+        "note": "项目定义 Scene，执行 Skill 即完成一次完整测试。"
+      },
+      {
+        "id": "evidence-loop",
+        "label": "证据与报告",
+        "focus": [
+          "runstore",
+          "collect_trace",
+          "report_gate"
+        ],
+        "note": "证据不完整时报告降级为 partial，绝不输出假通过。"
+      },
+      {
+        "id": "encore",
+        "label": "返场与回归",
+        "focus": [
+          "report_gate",
+          "run_tool",
+          "runstore"
+        ],
+        "note": "重复执行同一 Skill，对比历史结果并判定回归。"
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "project",
+      "label": "项目层（Scene Skill）"
+    },
+    {
+      "id": "platform",
+      "label": "PerfStage 平台 · iOS 执行层"
+    },
+    {
+      "id": "evidence",
+      "label": "证据 · 报告 · 返场"
+    }
+  ],
+  "phases": [
+    {
+      "id": "define",
+      "label": "定义场景",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "perform",
+      "label": "执行一次 Take",
+      "fromCol": 2,
+      "toCol": 5,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "scene_yaml",
+    "scene_skill",
+    "run_tool",
+    "runner",
+    "exec_actions",
+    "collect_trace",
+    "report_gate"
+  ],
+  "nodes": [
+    {
+      "id": "scene_yaml",
+      "lane": "project",
+      "col": 0,
+      "type": "database",
+      "label": "Scene YAML",
+      "sublabel": "场景声明",
+      "width": 128,
+      "tag": "项目资产"
+    },
+    {
+      "id": "scene_skill",
+      "lane": "project",
+      "col": 1,
+      "type": "frontend",
+      "label": "Scene Skill",
+      "sublabel": "可重复执行的入口",
+      "width": 128,
+      "tag": "SKILL.md"
+    },
+    {
+      "id": "run_tool",
+      "lane": "platform",
+      "col": 2,
+      "type": "backend",
+      "label": "run_performance_test",
+      "sublabel": "一键执行入口",
+      "width": 148,
+      "tag": "规划中"
+    },
+    {
+      "id": "runner",
+      "lane": "platform",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Execution Runner",
+      "sublabel": "编排 · 重试 · 超时",
+      "width": 140,
+      "tag": "规划中"
+    },
+    {
+      "id": "exec_actions",
+      "lane": "platform",
+      "col": 4,
+      "type": "external",
+      "label": "mobile-mcp",
+      "sublabel": "warmup + actions",
+      "width": 128
+    },
+    {
+      "id": "collect_trace",
+      "lane": "platform",
+      "col": 5,
+      "type": "external",
+      "label": "instruments-mcp",
+      "sublabel": "xctrace + 日志",
+      "width": 128
+    },
+    {
+      "id": "runstore",
+      "lane": "evidence",
+      "col": 3,
+      "type": "database",
+      "label": "Run Store",
+      "sublabel": "run.json + plan.json",
+      "width": 128
+    },
+    {
+      "id": "report_gate",
+      "lane": "evidence",
+      "col": 5,
+      "type": "backend",
+      "label": "Report + Gate",
+      "sublabel": "report.md + verdict",
+      "width": 140,
+      "tag": "pass / fail"
+    }
+  ],
+  "edges": [
+    {
+      "id": "define-scene",
+      "from": "scene_yaml",
+      "to": "scene_skill",
+      "label": "定义",
+      "variant": "emphasis"
+    },
+    {
+      "id": "invoke-run",
+      "from": "scene_skill",
+      "to": "run_tool",
+      "label": "执行 Skill",
+      "variant": "emphasis"
+    },
+    {
+      "id": "dispatch",
+      "from": "run_tool",
+      "to": "runner",
+      "label": "prepare",
+      "variant": "default"
+    },
+    {
+      "id": "drive-actions",
+      "from": "runner",
+      "to": "exec_actions",
+      "label": "actions",
+      "variant": "emphasis"
+    },
+    {
+      "id": "actions-done",
+      "from": "exec_actions",
+      "to": "collect_trace",
+      "label": "动作完成",
+      "variant": "default"
+    },
+    {
+      "id": "traces-back",
+      "from": "collect_trace",
+      "to": "report_gate",
+      "label": "traces（缺则 partial）",
+      "variant": "emphasis"
+    },
+    {
+      "id": "write-run",
+      "from": "runner",
+      "to": "runstore",
+      "label": "写入证据",
+      "variant": "dashed"
+    },
+    {
+      "id": "store-report",
+      "from": "runstore",
+      "to": "report_gate",
+      "label": "汇总",
+      "variant": "default"
+    },
+    {
+      "id": "encore-rerun",
+      "from": "report_gate",
+      "to": "run_tool",
+      "label": "Encore 返场",
+      "variant": "dashed",
+      "route": "auto",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "一次定义，次次上演",
+      "items": [
+        "Scene YAML 与 Scene Skill 属于项目，随项目一起演进",
+        "平台只提供通用能力，不绑定任何业务场景",
+        "重复测试就是再执行一次同一个 Skill"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "不伪造通过",
+      "items": [
+        "缺 trace、缺指标值即降级为 partial",
+        "completed 必须能追溯到证据",
+        "阈值与门禁随报告一起输出"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "演进路径",
+      "items": [
+        "现在：4 个底层工具 + Skill 编排",
+        "目标：run_performance_test 一键闭环",
+        "之后：基线与回归门禁"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "id": "project_assets",
+      "label": "项目自有资产",
+      "lane": "project",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "platform_core",
+      "label": "通用能力内核",
+      "lane": "platform",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "device_work",
+      "label": "设备侧动作与采集",
+      "lane": "platform",
+      "fromCol": 4,
+      "toCol": 5
+    },
+    {
+      "id": "evidence_work",
+      "label": "落盘、判定与复跑",
+      "lane": "evidence",
+      "fromCol": 3,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Local tooling and generated diagram QA artifacts
+.claude/
+*.visual-check.*

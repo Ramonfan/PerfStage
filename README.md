@@ -1,18 +1,98 @@
-# 性能测试 MCP
+# PerfStage
 
-本项目是一个本地、单用户使用的 iOS 性能测试编排 MCP。它负责读取 YAML 场景、生成测试计划、保存运行证据并生成报告；设备操作和 Instruments 采集仍由 Claude 编排 `mobile-mcp` 与 `instruments-mcp-server` 完成。
+**Define once. Perform every time.**
+**一次定义，次次上演。**
 
-当前已支持交互式测试流程，适合直接告诉 Claude：
+PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用能力收敛成一个稳定的 MCP 服务；每个接入项目基于这套能力，定义自己的测试场景和 Scene Skill。场景定义一次，之后每次回归只需要执行同一个 Skill。
 
-- 跑哪个性能场景；
-- 在 App 中执行什么交互；
-- 采集卡顿、CPU、内存等哪些指标；
-- 重点分析哪些问题；
-- 测试结束后查看 JSON/Markdown 报告。
+> 平台是舞台，项目是剧目。PerfStage 提供灯光、音响和后台，项目负责写好自己的一场戏。
 
-无人值守执行暂不自动调度，等场景稳定后再扩展。
+---
 
-## 1. 环境要求
+## 目录
+
+- [1. 为什么是「平台 + 项目 Skill」](#1-为什么是平台--项目-skill)
+- [2. 当前状态](#2-当前状态)
+- [3. 快速开始](#3-快速开始)
+- [4. 平台架构](#4-平台架构)
+- [5. 一次 Take 的执行流程](#5-一次-take-的执行流程)
+- [6. 项目 Scene Skill 契约](#6-项目-scene-skill-契约)
+- [7. MCP 工具参考](#7-mcp-工具参考)
+- [8. 场景 YAML 参考](#8-场景-yaml-参考)
+- [9. 运行产物与报告](#9-运行产物与报告)
+- [10. 状态语义](#10-状态语义)
+- [11. 边界与路线图](#11-边界与路线图)
+- [12. 常见问题](#12-常见问题)
+- [13. 相关项目](#13-相关项目)
+
+---
+
+## 1. 为什么是「平台 + 项目 Skill」
+
+不同 App 的性能场景差异很大：社区首页滚动、消息列表长按、直播间进出、启动首屏……这些知识属于业务，不属于平台。PerfStage 因此把职责分成三层：
+
+| 层 | 归属 | 负责什么 |
+| --- | --- | --- |
+| **项目层** | 每个接入项目 | Scene YAML（场景定义）、Scene Skill（执行入口）、阈值与输出约定 |
+| **平台层** | PerfStage | 场景解析、计划校验、运行生命周期、证据落盘、诊断归一化、报告生成 |
+| **执行层** | iOS 工具链 | `mobile-mcp` 执行 UI 动作，`instruments-mcp-server` 采集 xctrace 与指标 |
+
+这样分工带来两个直接好处：
+
+- **平台不绑定业务。** 新增一个 App 或一个场景，不需要修改 PerfStage 内核。
+- **重复测试成本极低。** 场景稳定后，回归就是「再执行一次 Skill」，而不是重新向助手描述一遍测试步骤。
+
+### 命名约定
+
+沿用舞台隐喻，文档和 Skill 中使用同一套词汇：
+
+| 概念 | 叫法 | 说明 |
+| --- | --- | --- |
+| 平台 | **PerfStage** | 提供通用能力 |
+| 项目场景 | **Scene** | 一个 YAML + 一个 Skill |
+| 一次运行 | **Take** | 一次完整的测试执行 |
+| 重复执行 | **Encore** | 复跑同一 Scene；历史对比与门禁规划中 |
+| 项目场景集合 | **Repertoire** | 一个项目的全部 Scene |
+| 报告 | **Scorecard** | `report.md` / `report.json` |
+
+> 兼容性说明：运行时标识保持原样，MCP server 名仍是 `performance-test`，数据目录仍是 `.performance-test/`。PerfStage 是品牌与架构层，不要求迁移已有项目数据。
+
+---
+
+## 2. 当前状态
+
+PerfStage 目前是一个**可用的控制面**，还不是完整的自动化执行平台。下面这张表区分「今天就能用」和「规划中」，避免把路线图当成现状。
+
+| 能力 | 状态 | 说明 |
+| --- | --- | --- |
+| 场景加载与校验 | ✅ 可用 | YAML → TestPlan，未知动作直接报错 |
+| 运行目录与证据落盘 | ✅ 可用 | 每次 Take 独立目录，路径边界与原子写 |
+| 诊断归一化 | ✅ 可用 | 日志三态、Crash 差集、生命周期分类 |
+| 报告生成 | ✅ 可用 | `report.json` + 中文 `report.md` |
+| 工作区隔离 | ✅ 可用 | 以项目为边界，不跨项目读写 |
+| Skill 模板与契约 | ⏳ 规划中 | 本文第 6 节给出目标契约 |
+| 一键执行 `run_performance_test` | ⏳ 规划中 | 目前由 Skill / Claude 按 `nextSteps` 编排 |
+| 基线、对比、门禁 | ⏳ 规划中 | 当前只有单次报告 |
+
+**现在的真实执行链路是：**
+
+```text
+Scene Skill → list / prepare → 按 nextSteps 执行动作与采集 → finalize → report
+```
+
+**目标是：**
+
+```text
+Scene Skill → run_performance_test → 自动执行 + 采集 + 报告 + 门禁
+```
+
+在第 2 条落地之前，Skill 仍然需要负责编排 `mobile-mcp` 与 `instruments-mcp-server` 的调用顺序。本文档不会把规划中的能力写成已实现。
+
+---
+
+## 3. 快速开始
+
+### 3.1 环境要求
 
 - macOS
 - Node.js 20 或更高版本
@@ -20,11 +100,9 @@
 - 已配置可用的 `instruments-mcp-server`
 - 真机性能采集建议使用真实 iOS 设备；`Animation Hitches` 不支持模拟器
 
-本项目本身不会启动或实现另外两个 MCP，也不会修改被测 App 源码。
+PerfStage 不启动、不实现另外两个 MCP，也不修改被测 App 源码。
 
-## 2. 安装、测试和构建
-
-在项目目录执行：
+### 3.2 构建与注册
 
 ```bash
 cd "/Users/leigod/雷神/性能分析/performance-test-mcp"
@@ -33,221 +111,233 @@ npm test
 npm run build
 ```
 
-构建成功后，MCP 入口文件是：
-
-```text
-dist/index.js
-```
-
-直接启动 stdio MCP：
-
-```bash
-npm start
-```
-
-正常情况下，标准输出只用于 MCP 协议通信；不要把调试日志写到 stdout。
-
-## 3. 注册到 Claude Code（用户级一次性安装）
-
-性能测试 MCP 以**用户级**方式注册到 Claude Code，一次安装，所有项目复用同一个入口二进制；但**每一个项目的 `.performance-test/` 数据目录都必须独立初始化**：
+以用户级方式注册到 Claude Code，一次安装、所有项目复用同一个入口：
 
 ```bash
 claude mcp add --scope user --transport stdio performance-test -- \
   node "/Users/leigod/雷神/性能分析/performance-test-mcp/dist/index.js"
 ```
 
-检查是否注册成功：
+检查连接：
 
 ```bash
 claude mcp list
 ```
 
-`--scope user` 让所有目录下的 Claude Code 会话都能找到这个 MCP；它**不会**让 MCP 共享数据目录或场景文件。每个项目仍然需要单独调用 `initialize_performance_workspace`，否则 MCP 只会读取它启动时所在工作目录的 `.performance-test/config.json`，找不到时返回「请先初始化」的结构化错误。
+用户级注册只共享**二进制入口**，不共享数据。每个项目仍然拥有自己的 `.performance-test/`。修改代码后需要 `npm run build` 并重启会话。
 
-如果只想在单个项目里临时使用，也可以使用项目级配置（仍然需要逐项目初始化）：
+### 3.3 初始化项目工作区
 
-```json
-{
-  "mcpServers": {
-    "performance-test": {
-      "type": "stdio",
-      "command": "node",
-      "args": [
-        "/Users/leigod/雷神/性能分析/performance-test-mcp/dist/index.js"
-      ]
-    }
-  }
-}
-```
-
-首次注册或修改代码后，重新构建：
-
-```bash
-npm run build
-```
-
-然后重启 Claude Code 会话，让 MCP 重新加载。
-
-## 4. 每个项目独立初始化工作区
-
-由于 MCP 在用户级注册，但每个被测项目需要自己的场景和运行证据目录，**进入新项目时第一步**是初始化当前项目的工作区。
-
-工作流：
-
-```text
-进入任意项目
-→ 初始化当前项目的性能测试工作区
-→ MCP 创建 .performance-test/
-→ 在当前项目编辑 .performance-test/scenarios/
-→ 报告写入当前项目 .performance-test/runs/
-```
-
-初始化调用：
+进入被测项目后，第一步永远是初始化：
 
 ```json
 {
-  "bundleId": "com.nndev.im",
-  "appName": "NN IM",
+  "bundleId": "com.example.app",
+  "appName": "Example App",
   "copyDefaultScenarios": false
 }
 ```
 
-- `bundleId` 和 `appName` 可选；不传则写入只含默认目录的配置。
-- `copyDefaultScenarios` 默认 `false`，避免覆盖用户已有的场景文件；首次试用可设 `true` 让 MCP 植入 `community-home-scroll` 与 `message-list-scroll` 模板。
-- 初始化是**幂等**的：再次调用只会重新校验现有配置，不会覆盖 `config.json` 或场景文件。
+- `bundleId` / `appName` 可选；不传则只创建默认目录。
+- `copyDefaultScenarios: true` 会植入两个模板场景，适合首次试用。
+- 初始化是**幂等**的，重复调用只重新校验，不覆盖已有配置与场景。
 
-调用成功后 MCP 会返回：
-
-```text
-性能工作区已就绪。请按下列顺序继续：
-1. 工作区根：/path/to/your/project
-2. 场景目录（相对于工作区）：.performance-test/scenarios
-3. 运行目录（相对于工作区）：.performance-test/runs
-4. 调用 list_performance_scenarios …
-5. 调用 prepare_performance_test …
-6. 完成动作/指标/诊断采集后，调用 finalize_performance_test …
-```
-
-之后 `list_performance_scenarios` / `prepare_performance_test` / `finalize_performance_test` 都只读写当前项目的 `.performance-test/`。**未初始化的项目永远不会读取其他项目的场景**；MCP 不会回退到安装目录、全局模板目录或上一次会话所在项目的配置。
-
-如果 MCP 启动时所在目录尚未初始化，会返回：
+初始化后，项目的目录结构如下：
 
 ```text
-当前工作区尚未初始化性能测试配置，请先调用 initialize_performance_workspace。
+<project>/
+├── .performance-test/
+│   ├── config.json
+│   ├── scenarios/
+│   │   └── community-home-scroll.yaml
+│   └── runs/
+└── .claude/
+    └── skills/
+        └── perf-community-scroll/
+            └── SKILL.md
 ```
 
-如果配置损坏，会提示具体的 `config.json` 路径和校验失败字段，**不会**自动覆盖——避免误删用户数据。
+### 3.4 定义一个 Scene
 
-## 5. 三个核心 MCP 工具（运行流程）
+把场景写进 `.performance-test/scenarios/`（完整格式见[第 8 节](#8-场景-yaml-参考)），然后为它写一个 Skill（见[第 6 节](#6-项目-scene-skill-契约)）。
+
+### 3.5 执行
+
+对 Claude 说：
+
+```text
+执行 perf-community-scroll
+```
+
+Skill 会完成一次 Take，并返回 `runId`、状态、指标、报告路径。需要回归时再说一次，就是一次 Encore。
+
+---
+
+## 4. 平台架构
+
+![PerfStage 平台架构](docs/diagrams/perfstage-architecture.png)
+
+- 交互式版本（可切换视图、明暗主题）：[`docs/diagrams/perfstage-architecture.html`](docs/diagrams/perfstage-architecture.html)
+- 源文件：[`docs/diagrams/perfstage-architecture.json`](docs/diagrams/perfstage-architecture.json)
+
+**读图要点：**
+
+- **项目 Scene Skill** 是唯一入口。它属于项目，随项目一起版本化。
+- **PerfStage MCP** 是通用能力层：加载场景、校验计划、管理运行、落盘证据、生成报告。
+- **Execution Runner** 是规划中的执行器。它负责把 Skill 的一次调用展开为「执行动作 → 采集指标 → 收尾」，让重复测试不再依赖现场编排。
+- **mobile-mcp / instruments-mcp** 是 iOS 执行层的两个适配器，分别负责 UI 动作与性能采集。
+- **Run Store / Report + Gate** 是证据层。每次 Take 都写入独立目录，报告可追溯。
+
+平台当前已具备图中实线部分；Runner 与门禁为规划中能力。
+
+---
+
+## 5. 一次 Take 的执行流程
+
+![PerfStage 测试流程](docs/diagrams/perfstage-workflow.png)
+
+- 交互式版本：[`docs/diagrams/perfstage-workflow.html`](docs/diagrams/perfstage-workflow.html)
+- 源文件：[`docs/diagrams/perfstage-workflow.json`](docs/diagrams/perfstage-workflow.json)
+
+一次 Take 分为四段：
+
+1. **定义**：Scene YAML 描述 App、前置条件、warmup、actions、metrics；Scene Skill 描述如何执行它。
+2. **执行**：调用 PerfStage MCP 创建运行，按计划驱动 `mobile-mcp` 完成 UI 动作。
+3. **采集**：通过 `instruments-mcp-server` 获取 xctrace 与指标，同时保存日志、Crash 与生命周期证据。
+4. **判定**：`finalize` 汇总证据并生成报告。设计规则是「证据不足即降级为 `partial`」；当前的证据校验尚未完全强制，见[路线图](#11-边界与路线图)。
+
+**返场（Encore）** 是同一个流程的再次执行。规划中的基线对比与门禁会接在报告之后，用历史结果判断本次是否回归。
+
+---
+
+## 6. 项目 Scene Skill 契约
+
+Skill 是项目资产，不是平台资产。它应该足够短：只描述「测什么、在哪台设备上测、结果怎么算」，不重复平台的编排细节。
+
+### 6.1 目录约定
+
+```text
+<project>/.claude/skills/perf-<scene>/
+├── SKILL.md          # 必须
+└── references/       # 可选：截图、预期结果、历史结论
+```
+
+### 6.2 输入契约
+
+一个 Scene Skill 至少接收：
+
+| 输入 | 必填 | 说明 |
+| --- | --- | --- |
+| `sceneId` | 是 | 对应 `.performance-test/scenarios/<sceneId>.yaml` |
+| `deviceId` | 是 | 目标设备 UDID；不要写死在 YAML 里 |
+| `analysisFocus` | 否 | 例如 `["jank", "memory"]`，覆盖场景默认值 |
+| `baselineRunId` | 否 | 规划中：指定对比基线 |
+
+### 6.3 输出契约
+
+无论底层如何实现，Skill 最终都应返回同一组字段：
+
+```json
+{
+  "runId": "2026-11-13T06-20-00.000Z-a1b2",
+  "sceneId": "community-home-scroll",
+  "status": "completed",
+  "metrics": { "hitches": 3, "cpu": 28.4, "memory": 186 },
+  "findings": [],
+  "reportPath": ".performance-test/runs/<runId>/report.md",
+  "gate": "unknown"
+}
+```
+
+- `status`：`completed` / `partial` / `failed` / `invalid` / `cancelled`
+- `gate`：规划中；当前固定为 `unknown`，门禁落地后为 `pass` / `fail`
+
+### 6.4 示例 `SKILL.md`
+
+> 这是**当前可执行**的 Thick Skill 形态：Skill 负责编排，MCP 提供原语。等 `run_performance_test` 落地后，Skill 可以缩短为只调用一个工具。
+
+```markdown
+---
+name: perf-community-scroll
+description: 社区首页上下滚动性能测试。用于回归卡顿、CPU 与内存。
+---
+
+# 社区首页滚动性能测试
+
+## 参数
+- sceneId: community-home-scroll
+- deviceId: 必填，向用户确认或从 mobile-mcp 设备列表中选择
+
+## 步骤
+1. 调用 `list_performance_scenarios`，确认 `community-home-scroll` 存在。
+2. 调用 `prepare_performance_test`：
+   `{ "scenarioId": "community-home-scroll", "device": { "id": "<deviceId>" } }`
+3. 读取返回的 `runPath`，并读取同目录下的 `plan.json` 获取本次解析后的
+   `preconditions`、`warmup`、`actions`、`metrics`。
+4. 按 `nextSteps` 顺序执行：
+   - 先启动设备日志，记录测试前 Crash 列表；
+   - 用 `mobile-mcp` 依次执行 warmup 与 actions，遵守 `waitAfterMs`；
+   - 用 `instruments-mcp-server` 采集 plan 中声明的每个指标，并记录 tracePath；
+   - 采集执行后日志、Crash 差集与生命周期事件。
+5. 调用 `finalize_performance_test`，提交 `runId`、`requestedStatus`、
+   `actions`、`metrics`、`diagnostics` 与 `evidencePaths`。
+6. 输出：`runId`、`status`、指标摘要、`reportPath`。
+   若 `status` 不是 `completed`，明确列出缺失的证据。
+```
+
+### 6.5 编写 Skill 的三条规则
+
+1. **不要伪造证据。** 没采到 trace 就如实报告，让状态降级为 `partial`。
+2. **不要在 Skill 里写设备 UDID。** 设备是运行时参数，不是场景定义。
+3. **不要把业务判断写进平台。** 阈值、关注点和结论属于项目，平台只负责计算与呈现。
+
+---
+
+## 7. MCP 工具参考
+
+PerfStage 目前提供 4 个底层原语。它们稳定、可测试，也是未来 `run_performance_test` 的实现基础。
+
+### `initialize_performance_workspace`
+
+在当前项目创建或校验 `.performance-test/`。幂等，不覆盖已有数据。
 
 ### `list_performance_scenarios`
 
-列出当前场景，不需要参数。返回：
-
-- 场景 ID 和名称；
-- App Bundle ID；
-- 动作数量；
-- 指标名称；
-- 诊断默认配置。
+列出当前项目的场景：ID、名称、Bundle ID、动作数量、指标、诊断配置。无参数。
 
 ### `prepare_performance_test`
 
-准备一次测试但不直接操作设备。必须在 `scenarioId` 和 `adHocPlan` 中选择一个，不能同时传入。
-
-已有场景：
+创建一次运行（`prepared` 状态），写入 `run.json` 和解析后的 `plan.json`，返回执行指引。
 
 ```json
 {
   "scenarioId": "community-home-scroll",
-  "device": {
-    "id": "00008150-001E49E40128C01C",
-    "name": "Ra iPhone"
-  },
+  "device": { "id": "00008150-001E49E40128C01C", "name": "Ra iPhone" },
   "execution": "interactive",
   "analysisFocus": ["jank", "memory"]
 }
 ```
 
-返回 `runId`、已解析的计划、运行目录和 `nextSteps`。Claude 应按 `nextSteps` 顺序继续执行：
+返回字段：`runId`、`scenarioId`、`planId`、`runPath`、`planPath`、`execution`、`analysisFocus`、`metricOverrides`、`nextSteps`。
 
-1. 启动 `mobile_get_device_logs`；
-2. 调用 `mobile_list_crashes` 保存测试前 Crash 列表；
-3. 使用 `mobile-mcp` 执行场景动作；
-4. 使用 `instruments-mcp-server` 采集请求的指标；
-5. 采集测试后的日志、Crash 列表、Crash report、生命周期和其他证据；
-6. 调用 `finalize_performance_test`。
+> 已知限制：`prepare` 不直接返回 `actions` / `warmup` / `metrics`，完整计划需要读取 `planPath` 指向的 `plan.json`。这是 Skill 目前需要感知文件布局的原因，也是后续要修的点。
 
-一次性临时计划：
-
-```json
-{
-  "adHocPlan": {
-    "source": "ad_hoc",
-    "id": "one-shot-community-scroll",
-    "name": "临时社区滚动测试",
-    "app": {
-      "bundleId": "com.nndev.im"
-    },
-    "device": {
-      "id": "00008150-001E49E40128C01C"
-    },
-    "actions": [
-      {
-        "id": "scroll-up",
-        "type": "swipe",
-        "direction": "up",
-        "distance": 700,
-        "durationMs": 500,
-        "waitAfterMs": 1500
-      },
-      {
-        "id": "scroll-down",
-        "type": "swipe",
-        "direction": "down",
-        "distance": 700,
-        "durationMs": 500,
-        "waitAfterMs": 1500
-      }
-    ],
-    "metrics": [
-      {
-        "name": "hitches",
-        "instrument": "Animation Hitches"
-      },
-      {
-        "name": "cpu",
-        "instrument": "Time Profiler"
-      },
-      {
-        "name": "memory",
-        "instrument": "Allocations"
-      }
-    ],
-    "analysisFocus": ["jank", "memory"],
-    "execution": "interactive"
-  },
-  "device": {
-    "id": "00008150-001E49E40128C01C"
-  }
-}
-```
-
-临时计划不会自动保存为长期场景。需要长期复用时，应把它整理成 `scenarios/*.yaml`。
+也可以传 `adHocPlan` 做一次性测试；临时计划不会自动沉淀为长期场景。
 
 ### `finalize_performance_test`
 
-提交动作、指标和诊断证据，生成最终报告。典型结构如下：
+提交动作、指标和诊断证据，计算最终状态并生成报告。
 
 ```json
 {
-  "runId": "2026-10-17T03-00-00.000Z-example",
+  "runId": "2026-11-13T06-20-00.000Z-a1b2",
   "requestedStatus": "completed",
   "actions": [
     {
-      "actionId": "scroll-up",
+      "actionId": "scroll-up-1",
       "outcome": "executed",
-      "startedAt": "2026-10-17T03:00:10.000Z",
-      "endedAt": "2026-10-17T03:00:11.500Z",
+      "startedAt": "2026-11-13T06:20:10.000Z",
+      "endedAt": "2026-11-13T06:20:11.500Z",
       "durationMs": 1500
     }
   ],
@@ -258,20 +348,6 @@ npm run build
       "unit": "frames",
       "verdict": "warn",
       "tracePath": "/tmp/community-hitches.trace"
-    },
-    {
-      "name": "cpu",
-      "value": 28.4,
-      "unit": "%",
-      "verdict": "pass",
-      "tracePath": "/tmp/community-cpu.trace"
-    },
-    {
-      "name": "memory",
-      "value": 186,
-      "unit": "MB",
-      "verdict": "pass",
-      "tracePath": "/tmp/community-memory.trace"
     }
   ],
   "diagnostics": {
@@ -279,49 +355,37 @@ npm run build
     "crashIdsBefore": ["old-crash-id"],
     "crashIdsAfter": ["old-crash-id"],
     "crashReports": [],
-    "lifecycle": [
-      {
-        "kind": "foreground",
-        "timestamp": "2026-10-17T03:00:00.000Z"
-      }
-    ]
+    "lifecycle": [{ "kind": "foreground", "timestamp": "2026-11-13T06:20:00.000Z" }]
   },
   "evidencePaths": [
-    {
-      "kind": "deviceLog",
-      "sourcePath": "/tmp/device.log",
-      "relativePath": "device.log"
-    },
-    {
-      "kind": "lifecycleTrace",
-      "sourcePath": "/tmp/lifecycle.json",
-      "relativePath": "lifecycle.json"
-    }
+    { "kind": "deviceLog", "sourcePath": "/tmp/device.log", "relativePath": "device.log" }
   ],
-  "notes": "社区首页上下滚动，重点观察减速尾段。"
+  "notes": "重点观察减速尾段。"
 }
 ```
 
-注意：
+规则：
 
-- `sourcePath` 是 Claude 当前拿到的本地证据路径；MCP 会将允许的证据复制到运行目录；
-- 报告中的 `evidencePaths` 使用运行目录内的相对路径，不应泄漏外部绝对路径；
-- 如果日志、Crash 列表或生命周期采集失败，应填写对应的 `*QueryError`，不能伪造为空结果；
-- 测试中出现新增 Crash、watchdog、jetsam 或设备断连时，结果不会被标记为普通成功；
-- `requestedStatus` 使用终态：`completed`、`partial`、`failed`、`invalid` 或 `cancelled`。
+- `requestedStatus` 必须是终态；`prepared` / `running` 会被拒绝。
+- 证据会复制进运行目录，报告中只出现相对路径。
+- 查询失败必须填写对应的 `*QueryError`，不能伪造为空结果。
+- 新增 Crash、watchdog、jetsam、设备断连都会阻止结果被标记为普通成功。
+- **目标规则**：证据缺失时最终状态不得高于 `partial`。当前实现尚未完全强制这一点——缺 trace 仍可能得到 `completed`，这是第二阶段要修的第一项。
 
-## 6. 编写 YAML 场景
+---
 
-场景文件位于**当前被测项目**的 `<当前项目>/.performance-test/scenarios/` 下，模板示例：
+## 8. 场景 YAML 参考
+
+场景文件位于 `<project>/.performance-test/scenarios/`：
 
 ```yaml
 id: community-home-scroll
 name: 社区首页来回滚动
 app:
-  bundleId: com.nndev.im
+  bundleId: com.example.app
 device: {}
 preconditions:
-  foregroundBundleId: com.nndev.im
+  foregroundBundleId: com.example.app
   accessibilityText: 社区
 warmup:
   - id: open-community
@@ -352,32 +416,35 @@ metrics:
 
 支持的动作类型：
 
-- `tap`：按 accessibility 文本或元素目标点击；
-- `swipe`：指定方向、距离、可选持续时间；
-- `wait`：等待指定毫秒数；
-- `wait_for`：等待元素出现，直到超时。
+| 类型 | 说明 |
+| --- | --- |
+| `tap` | 按 accessibility 文本或元素目标点击 |
+| `swipe` | 指定方向、距离、可选持续时间 |
+| `wait` | 等待指定毫秒数 |
+| `wait_for` | 等待元素出现，直到超时 |
 
-首次初始化时如果传 `copyDefaultScenarios: true`，MCP 会植入：
+约定：
 
-- `<当前项目>/.performance-test/scenarios/community-home-scroll.yaml`
-- `<当前项目>/.performance-test/scenarios/message-list-scroll.yaml`
+- 不要在长期场景里写设备 UDID，设备通过 `prepare_performance_test` 传入。
+- 未知动作会导致加载失败，不会静默跳过。
+- 场景目前不做版本管理，修改 YAML 即生效。
 
-不要把设备 UDID 固定写进长期场景；设备应通过 `prepare_performance_test` 的 `device` 参数传入。
+---
 
-## 7. 测试结果在哪里
+## 9. 运行产物与报告
 
-每次运行都会写入**当前被测项目**下的运行目录（路径在 `prepare_performance_test` 的返回值 `runPath` 里以工作区相对路径形式给出）：
+每次 Take 写入当前项目的独立目录：
 
 ```text
-<当前项目>/.performance-test/runs/<run-id>/
-├── run.json                 # 实际运行状态、动作、指标和证据引用
-├── plan.json                # 本次真正执行的解析后 TestPlan
+<project>/.performance-test/runs/<run-id>/
+├── run.json                 # 运行状态、动作、指标、证据引用
+├── plan.json                # 本次解析后的完整 TestPlan
 ├── report.json              # 机器可读报告
 ├── report.md                # 中文 Markdown 报告
-├── device.log               # 设备日志证据（如果已保存）
-├── lifecycle.json           # 生命周期证据（如果已保存）
+├── device.log               # 设备日志（如有）
+├── lifecycle.json           # 生命周期证据（如有）
 └── crashes/
-    └── <crash-id>.txt       # 测试期间新增的 Crash report
+    └── <crash-id>.txt       # 测试期间新增的 Crash
 ```
 
 查看最近一次报告：
@@ -386,89 +453,106 @@ metrics:
 find .performance-test/runs -name report.md -type f -print | sort | tail -1
 ```
 
-查看某次运行：
+运行目录是**证据**，不是测试管理数据库。确认不再需要后可以手动删除。平台永远不会把 A 项目的报告写进 B 项目。
 
-```bash
-less ".performance-test/runs/<run-id>/report.md"
-open ".performance-test/runs/<run-id>/report.md"
-```
+---
 
-运行目录是本地证据，不是测试管理数据库。确认不再需要某次证据后，可以手动删除对应运行目录。**绝不**会因为在另一个项目里调用 MCP 而把这次运行的报告写到别的项目里——`runPath` 永远是当前项目工作区相对路径。
+## 10. 状态语义
 
-## 8. 报告状态和常见问题
+| 状态 | 含义 |
+| --- | --- |
+| `prepared` | 已创建运行与计划，尚未执行 |
+| `completed` | 指标与诊断证据齐全，且无稳定性问题 |
+| `partial` | 部分指标、日志或证据缺失，或存在 warning |
+| `failed` | 流程中断、设备断连、Crash、watchdog、jetsam 等 |
+| `invalid` | 前置条件、场景结构、参数或证据格式不合法 |
+| `cancelled` | 主动终止 |
 
-### `completed`
+平台的判定原则是：`completed` 必须建立在**可追溯的证据**上。如果一个指标没有值或没有 trace，结果就不应被当作完整成功——这是重复测试可信度的底线。当前实现尚未完全强制这条规则（见路线图），使用时应主动检查报告的「限制与未知项」。
 
-性能指标和诊断证据均可用，没有发现会降级结果的稳定性问题。
+---
 
-### `partial`
+## 11. 边界与路线图
 
-部分指标、日志或诊断证据缺失，或者发现了 warning。报告仍然生成，但不能视为完整成功。
+### 当前边界
 
-### `failed`
+- **iOS only。** 动作模型面向 iOS accessibility，不承诺 Android / Web / 桌面。
+- **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
+- **执行仍靠编排。** 没有内置 Runner，Skill / Claude 负责调用 `mobile-mcp` 与 `instruments-mcp-server`。
+- **只有单次报告。** 没有历史索引、基线、趋势与 CI 门禁。
+- **阈值只透传。** `threshold` 已建模，但尚未自动计算 verdict。
 
-测试流程中断、设备断连、App 崩溃、watchdog、jetsam 或其他失败级别事件导致测试失败。
+### 路线图
 
-### `invalid`
+完整的 MVP 范围、里程碑、任务清单与验收标准见 **[`docs/mvp-plan.md`](docs/mvp-plan.md)**。
 
-前置条件、场景结构、参数或证据格式不合法，测试没有形成有效运行。
+**第一阶段：让一次 Take 可重复**
 
-### 常见问题
+- [ ] 固化 Scene Skill 模板与输出契约（本文第 6 节）
+- [ ] `prepare_performance_test` 返回完整解析计划
+- [ ] `finalize_performance_test` 证据硬校验：缺 trace / 缺值不得 `completed`
+- [ ] 用真实场景连续跑 3 次，确认结果稳定
 
-**找不到场景**
+**第二阶段：让一次 Take 自动化**
 
-确认当前项目已经调用过 `initialize_performance_workspace`，并且场景文件在 `<当前项目>/.performance-test/scenarios/` 下。再次调用 `list_performance_scenarios` 查看当前实际加载结果；如果返回 `请先调用 initialize_performance_workspace` 的结构化错误，则工作区尚未初始化。
+- [ ] 实现 `run_performance_test` 高层工具
+- [ ] 把 `mobile-mcp` / `instruments-mcp` 封装为 Runner 的执行器与采集器
+- [ ] 落地 `running` 状态与 `repetitions` 聚合
+- [ ] 结构化输出稳定为 `status / metrics / findings / reportPath / gate`
+- [ ] CLI：`perfstage init/list/run/report`，退出码可被脚本消费
 
-**MCP 工具没有出现**
+**第三阶段：让重复测试有意义**
 
-执行：
+- [ ] 运行历史索引与查询
+- [ ] 基线管理与两次 Take 的指标对比
+- [ ] 回归门禁与趋势
+- [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
+
+---
+
+## 12. 常见问题
+
+**工具没有出现**
 
 ```bash
 npm run build
 claude mcp list
 ```
 
-然后重启 Claude Code 会话。检查注册命令中的 `dist/index.js` 是否为绝对路径。如果只希望在当前目录中临时使用，确认 `.mcp.json`（或 `claude mcp add` 命令）中的 `command` / `args` 配置正确。
+确认注册命令里的 `dist/index.js` 是绝对路径，然后重启会话。
 
-**报告显示 `partial` 而不是 `completed`**
+**提示工作区未初始化**
 
-先查看 `report.md` 的“稳定性诊断”和“限制与未知项”章节。常见原因是日志/Crash 查询失败、指标缺少 trace、内存压力或其他诊断证据不完整。
+当前目录下没有 `.performance-test/config.json`。先调用 `initialize_performance_workspace`。MCP 不会回退到安装目录或其他项目。
 
-**测试过程中新增 Crash**
+**找不到场景**
 
-查看：
+确认场景文件在 `.performance-test/scenarios/` 下，再调用 `list_performance_scenarios` 查看实际加载结果。未知动作会导致整个场景加载失败。
 
-```text
-<当前项目>/.performance-test/runs/<run-id>/crashes/
-<当前项目>/.performance-test/runs/<run-id>/report.md
-<当前项目>/.performance-test/runs/<run-id>/report.json
-```
+**报告是 `partial` 而不是 `completed`**
 
-报告会列出新增 Crash ID、异常信息和状态降级原因。
+查看 `report.md` 的「稳定性诊断」和「限制与未知项」。常见原因是日志 / Crash 查询失败、指标缺少 trace 或诊断证据不完整。
 
 **设备日志为空**
 
-必须在执行第一个动作之前启动 `mobile_get_device_logs`。该工具只采集调用开始之后产生的日志。
+必须在执行第一个动作**之前**启动 `mobile_get_device_logs`。它只采集调用开始之后的日志。
 
-**在项目 A 中调用 MCP，报告却写到了项目 B**
+**新增了 Crash**
 
-不应发生。MCP 始终使用**当前工作目录**作为工作区根；如果出现这种现象，请确认：
-1. Claude Code 会话是在项目 A 的目录下启动的；
-2. 项目 A 已经调用过 `initialize_performance_workspace`，其 `.performance-test/config.json` 存在；
-3. 不要使用 `cd` 在多个项目之间切换后复用同一个 Claude 会话——请在不同项目下分别启动新会话。
+查看 `runs/<run-id>/crashes/` 与 `report.md`。新增 Crash 会让状态降级，报告会列出 Crash ID、异常信息和降级原因。
 
-## 9. 当前边界
+**在项目 A 执行，报告却写到了项目 B**
 
-- 第一版是本地单用户工具，不包含测试管理平台、数据库、CI 调度、Web 控制台或团队权限；
-- 场景不做版本管理，直接修改 YAML 即使用最新定义；
-- MCP 不直接调用设备、不启动 xctrace，也不内置 LLM；
-- 真实设备集成验收需要在有 `mobile-mcp`、`instruments-mcp-server` 和 iOS 真机的环境中执行；
-- 只有经过验证稳定的场景，未来才考虑固化为无人值守执行；
-- **MCP 在用户级注册，但每个项目独立持有 `.performance-test/`**：MCP 不会跨项目读取场景、写入运行报告或回退到安装目录/全局目录；任何“另一个项目的场景出现在列表里”或“运行报告写到别的项目”的行为都是 bug，请提交 issue。
+不应发生。确认会话是在项目 A 目录下启动、项目 A 已初始化，并且不要用同一个会话跨目录复用。
 
-## 10. 相关项目和验证记录
+---
 
-- `../instruments-mcp-server/`：Instruments 采集和解析；
-- `mobile-mcp`：设备和 UI 自动化；
-- `docs/superpowers/specs/2026-10-17-performance-test-mcp-design.md`：中文设计文档；
-- `docs/superpowers/verification/2026-10-17-interactive-run.md`：交互式流程验证记录。
+## 13. 相关项目
+
+- [`../instruments-mcp-server/`](../instruments-mcp-server/)：Instruments 采集与解析
+- [`mobile-mcp`](https://github.com/mobile-next/mobile-mcp)：设备与 UI 自动化
+- [`docs/platform-capability-review.md`](docs/platform-capability-review.md)：平台能力复盘与评分
+- [`docs/mvp-plan.md`](docs/mvp-plan.md)：MVP 范围、里程碑、任务与验收标准
+- [`docs/diagrams/`](docs/diagrams/)：架构图与流程图源文件、交互式 HTML
+- [`docs/superpowers/specs/2026-10-17-performance-test-mcp-design.md`](docs/superpowers/specs/2026-10-17-performance-test-mcp-design.md)：原始设计文档
+- [`docs/superpowers/verification/2026-10-17-interactive-run.md`](docs/superpowers/verification/2026-10-17-interactive-run.md)：交互式流程验证记录
