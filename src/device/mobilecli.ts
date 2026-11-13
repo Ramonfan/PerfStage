@@ -448,34 +448,14 @@ export function createMobilecliDriver(
       if (!line) {
         return null;
       }
-      // Two installs of the same app (different containers, same bundle name)
-      // produce two processes with the same executable name. The device-side
-      // process table used by `xctrace --attach` then cannot resolve either of
-      // them by pid, and the failure surfaces as a confusing
-      // `Cannot find process for provided pid`. Detect it here so the report
-      // names the real cause instead of blaming the recording.
-      const executablePath = line.trim().split(/\s+/).pop() ?? "";
-      const executableName = executablePath.split("/").pop() ?? executablePath;
-      const collisions = lines.filter((entry) => {
-        if (entry.includes(containerUuid)) {
-          return false;
-        }
-        const path = entry.trim().split(/\s+/).pop() ?? "";
-        return (path.split("/").pop() ?? path) === executableName;
-      });
-      if (collisions.length > 0) {
-        const pids = [line, ...collisions]
-          .map((entry) => entry.trim().split(/\s+/)[0])
-          .join(", ");
-        throw new DeviceError(
-          `another running process shares the executable name ${executableName} ` +
-            `(pids ${pids}); xctrace cannot attach while duplicates exist`,
-          "duplicate-process",
-          lines.join("\n"),
-        );
-      }
+      // Two installs of the same app (different containers, same executable
+      // name) can run side by side. That used to be fatal because the hitches
+      // pass attached by pid; since D15 it records with `--launch`, and the
+      // memory pass selects the exact pid from Activity Monitor rows. So a
+      // collision is normal, not an error: matching the container UUID already
+      // picks the process this Take measures.
       const pid = Number(line.trim().split(/\s+/)[0]);
-      return Number.isInteger(pid) ? pid : null;
+      return Number.isFinite(pid) ? pid : null;
     },
 
     async launch(deviceId: string, bundleId: string): Promise<void> {

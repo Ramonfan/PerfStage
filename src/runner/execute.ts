@@ -270,16 +270,18 @@ export async function executeTake(
         return;
       }
       const settle = deps.healthCheckSettleMs ?? DEFAULTS.healthCheckSettleMs;
-      const before = await deps.device
-        .resolvePid(deviceId, installation.containerUuid)
-        .catch(() => null);
+      const before = await deps.device.resolvePid(
+        deviceId,
+        installation.containerUuid,
+      );
       if (before === null) {
         await deps.device.launch(deviceId, plan.app.bundleId);
       }
       await sleep(settle);
-      const after = await deps.device
-        .resolvePid(deviceId, installation.containerUuid)
-        .catch(() => null);
+      const after = await deps.device.resolvePid(
+        deviceId,
+        installation.containerUuid,
+      );
       if (after === null) {
         lifecycle.push({
           kind: "app_exit",

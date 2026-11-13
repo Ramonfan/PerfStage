@@ -130,7 +130,7 @@ describe("logStreamExitError", () => {
   });
 });
 
-describe("resolvePid duplicate detection", () => {
+describe("resolvePid container selection", () => {
   let root: string;
   let fakeXcrun: string;
 
@@ -159,25 +159,16 @@ describe("resolvePid duplicate detection", () => {
   const TARGET = "11111111-1111-1111-1111-111111111111";
   const OTHER = "22222222-2222-2222-2222-222222222222";
 
-  it("resolves the pid of the requested container", async () => {
+  it("picks the requested container even when another build runs the same executable", async () => {
+    // Two installs of the same app is a normal device state: the hitches pass
+    // launches by bundle id (D15) and the memory pass selects the exact pid,
+    // so only the container UUID matters.
     const driver = await driverFor(`
   500 /private/var/containers/Bundle/Application/${TARGET}/NNIM.app/NNIM
   501 /private/var/containers/Bundle/Application/${OTHER}/NNIM.app/NNIM
 `);
-    await expect(driver.resolvePid("device", TARGET)).rejects.toMatchObject({
-      name: "DeviceError",
-      kind: "duplicate-process",
-    });
-  });
-
-  it("names both colliding pids so the operator can act", async () => {
-    const driver = await driverFor(`
-  500 /private/var/containers/Bundle/Application/${TARGET}/NNIM.app/NNIM
-  501 /private/var/containers/Bundle/Application/${OTHER}/NNIM.app/NNIM
-`);
-    await expect(driver.resolvePid("device", TARGET)).rejects.toThrow(
-      /pids 500, 501.*cannot attach while duplicates exist/,
-    );
+    await expect(driver.resolvePid("device", TARGET)).resolves.toBe(500);
+    await expect(driver.resolvePid("device", OTHER)).resolves.toBe(501);
   });
 
   it("returns the pid when the executable name is unique", async () => {
