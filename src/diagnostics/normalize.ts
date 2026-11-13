@@ -124,12 +124,36 @@ const UNKNOWN_CATEGORIES: LogCategories = {
 };
 
 function scanCategories(logText: string | undefined): LogCategories {
-  const haystack = logText ?? "";
+  const lines = (logText ?? "").split(/\r?\n/);
   const categories = {} as LogCategories;
   for (const key of Object.keys(CATEGORY_PATTERNS) as (keyof LogCategories)[]) {
-    categories[key] = CATEGORY_PATTERNS[key].test(haystack);
+    const pattern = CATEGORY_PATTERNS[key];
+    categories[key] = lines.some((line) => matchesCategory(key, pattern, line));
   }
   return categories;
+}
+
+/**
+ * Some category words appear in benign framework chatter. The most common is
+ * `watchdog`: WebKit's `XPCConnectionTerminationWatchdog` assertion and
+ * hangtracer's `Watchdog monitoring` debug line are not watchdog terminations.
+ * Excluding those lines keeps the watchdog signal meaningful instead of
+ * failing every Take that touches WebKit.
+ */
+const CATEGORY_LINE_EXCLUDES: Partial<Record<keyof LogCategories, RegExp>> = {
+  watchdog: /[A-Za-z]Watchdog\b|Watchdog monitoring/i,
+};
+
+function matchesCategory(
+  key: keyof LogCategories,
+  pattern: RegExp,
+  line: string,
+): boolean {
+  if (!pattern.test(line)) {
+    return false;
+  }
+  const exclude = CATEGORY_LINE_EXCLUDES[key];
+  return exclude === undefined ? true : !exclude.test(line);
 }
 
 function countLines(text: string | undefined): number {

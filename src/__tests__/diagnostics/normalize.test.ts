@@ -41,8 +41,41 @@ describe("normalizeDiagnostics", () => {
     expect(impact.reasons).toEqual(expect.arrayContaining(["jetsam", "watchdog"]));
   });
 
-  it("makes an incomplete Crash query unavailable rather than clean", () => {
+  it("ignores benign watchdog mentions from WebKit and hangtracer", () => {
     const evidence = normalizeDiagnostics(
+      {
+        logText: [
+          "ProcessAssertion::acquireSync Trying to take RBS assertion 'XPCConnectionTerminationWatchdog'",
+          "Watchdog monitoring: starting monitor",
+          "Watchdog monitoring: watchdog enabled, no assertion active",
+        ].join("\n"),
+        crashIdsBefore: ["old"],
+        crashIdsAfter: ["old"],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-11-13T03:53:17.445Z" }],
+      },
+      "2026-11-13T03:53:00.000Z",
+      "2026-11-13T03:56:00.000Z",
+    );
+    expect(evidence.logs.categories.watchdog).toBe(false);
+    expect(classifyDiagnosticImpact(evidence).reasons).not.toContain("watchdog");
+  });
+
+  it("still flags a real watchdog termination line", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "watchdog timeout: NNIM failed to check in\ncom.apple.watchdog",
+        crashIdsBefore: ["old"],
+        crashIdsAfter: ["old"],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-11-13T03:53:17.445Z" }],
+      },
+      "2026-11-13T03:53:00.000Z",
+      "2026-11-13T03:56:00.000Z",
+    );
+    expect(evidence.logs.categories.watchdog).toBe(true);
+    expect(classifyDiagnosticImpact(evidence).reasons).toContain("watchdog");
+  });
+
+  it("makes an incomplete Crash query unavailable rather than clean", () => {    const evidence = normalizeDiagnostics(
       { crashQueryError: "device disconnected" },
       "2026-10-17T00:00:00.000Z",
       "2026-10-17T00:01:00.000Z",

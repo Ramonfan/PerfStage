@@ -155,6 +155,14 @@ describe("finalizeRun", () => {
     expect(
       outcome.result.findings.some((finding) => finding.code === "metric:hitches"),
     ).toBe(true);
+
+    const persisted = JSON.parse(
+      await readFile(join(harness.root, "runs", runId, "run.json"), "utf8"),
+    );
+    const hitches = persisted.metrics.find(
+      (metric: { name: string }) => metric.name === "hitches",
+    );
+    expect(hitches.verdict).toBe("fail");
   });
 
   it("returns partial/unknown when an instrument-backed metric has no trace", async () => {

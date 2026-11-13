@@ -214,7 +214,10 @@ export async function finalizeRun(
           new Date(endedAt).getTime() - new Date(startedAt).getTime(),
         ),
         actions: actionRecords,
-        metrics: normalizedMetrics.map((metric) => ({ ...metric })),
+        metrics: normalizedMetrics.map((metric, index) => ({
+          ...metric,
+          verdict: metricEvaluation.verdicts[index] ?? metric.verdict,
+        })),
         evidence: newEvidence,
         notes: input.notes ?? current.notes,
       };
