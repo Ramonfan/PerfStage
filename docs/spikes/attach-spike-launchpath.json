@@ -1,0 +1,240 @@
+{
+  "startedAt": "2026-11-13T02:45:44.973Z",
+  "server": "/Users/leigod/雷神/性能分析/instruments-mcp-server/dist/index.js",
+  "device": "00008150-001E49E40128C01C",
+  "process": "NNIM",
+  "launchPath": "com.nndev.im",
+  "template": "Time Profiler",
+  "durationMs": 6000,
+  "start": {
+    "isError": false,
+    "payload": {
+      "status": "recording",
+      "template": "Time Profiler",
+      "process": "com.nndev.im",
+      "device": "00008150-001E49E40128C01C",
+      "tracePath": "/Users/leigod/.instruments-mcp/traces/profile-1794537945274.trace",
+      "maxDuration": "1m",
+      "hint": "Recording started. The user should interact with the app now. Call stop_profiling when done."
+    }
+  },
+  "stop": {
+    "isError": false,
+    "payload": {
+      "template": "Time Profiler",
+      "totalSamples": 1654,
+      "duration": "3.47s",
+      "hotspots": [
+        {
+          "function": "objc_msgSend",
+          "module": "libobjcMsgSend.dylib",
+          "selfWeight": 61,
+          "totalWeight": 61,
+          "selfPercent": 3.7,
+          "totalPercent": 3.7
+        },
+        {
+          "function": "getMethodNoSuper_nolock(objc_class*, objc_selector*)",
+          "module": "libobjc.A.dylib",
+          "selfWeight": 46,
+          "totalWeight": 46,
+          "selfPercent": 2.8,
+          "totalPercent": 2.8
+        },
+        {
+          "function": "stat",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 23,
+          "totalWeight": 23,
+          "selfPercent": 1.4,
+          "totalPercent": 1.4
+        },
+        {
+          "function": "mach_msg2_trap",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 22,
+          "totalWeight": 22,
+          "selfPercent": 1.3,
+          "totalPercent": 1.3
+        },
+        {
+          "function": "__getattrlist",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 22,
+          "totalWeight": 22,
+          "selfPercent": 1.3,
+          "totalPercent": 1.3
+        },
+        {
+          "function": "_xzm_xzone_malloc_tiny",
+          "module": "libsystem_malloc.dylib",
+          "selfWeight": 20,
+          "totalWeight": 20,
+          "selfPercent": 1.2,
+          "totalPercent": 1.2
+        },
+        {
+          "function": "__open",
+          "module": "dyld",
+          "selfWeight": 18,
+          "totalWeight": 18,
+          "selfPercent": 1.1,
+          "totalPercent": 1.1
+        },
+        {
+          "function": "CFStringFindWithOptionsAndLocale",
+          "module": "CoreFoundation",
+          "selfWeight": 16,
+          "totalWeight": 28,
+          "selfPercent": 1,
+          "totalPercent": 1.7
+        },
+        {
+          "function": "lstat",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 15,
+          "totalWeight": 15,
+          "selfPercent": 0.9,
+          "totalPercent": 0.9
+        },
+        {
+          "function": "_xzm_free_tc",
+          "module": "libsystem_malloc.dylib",
+          "selfWeight": 14,
+          "totalWeight": 14,
+          "selfPercent": 0.8,
+          "totalPercent": 0.8
+        },
+        {
+          "function": "__CFStringHash",
+          "module": "CoreFoundation",
+          "selfWeight": 14,
+          "totalWeight": 14,
+          "selfPercent": 0.8,
+          "totalPercent": 0.8
+        },
+        {
+          "function": "__CFStringCreateImmutableFunnel3",
+          "module": "CoreFoundation",
+          "selfWeight": 14,
+          "totalWeight": 35,
+          "selfPercent": 0.8,
+          "totalPercent": 2.1
+        },
+        {
+          "function": "_platform_strcmp_noMTE",
+          "module": "dyld",
+          "selfWeight": 14,
+          "totalWeight": 14,
+          "selfPercent": 0.8,
+          "totalPercent": 0.8
+        },
+        {
+          "function": "_CFRelease",
+          "module": "CoreFoundation",
+          "selfWeight": 12,
+          "totalWeight": 27,
+          "selfPercent": 0.7,
+          "totalPercent": 1.6
+        },
+        {
+          "function": "lsl::Allocator::AllocationMetadata::pool(bool) const",
+          "module": "dyld",
+          "selfWeight": 10,
+          "totalWeight": 10,
+          "selfPercent": 0.6,
+          "totalPercent": 0.6
+        },
+        {
+          "function": "mach_o::GenericTrie::find(CString, bool) const",
+          "module": "dyld",
+          "selfWeight": 10,
+          "totalWeight": 10,
+          "selfPercent": 0.6,
+          "totalPercent": 0.6
+        },
+        {
+          "function": "-[__NSCFString isEqual:]",
+          "module": "CoreFoundation",
+          "selfWeight": 10,
+          "totalWeight": 20,
+          "selfPercent": 0.6,
+          "totalPercent": 1.2
+        },
+        {
+          "function": "GetCoeffsFast",
+          "module": "libwebp",
+          "selfWeight": 10,
+          "totalWeight": 19,
+          "selfPercent": 0.6,
+          "totalPercent": 1.1
+        },
+        {
+          "function": "__ulock_wait2",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 9,
+          "totalWeight": 9,
+          "selfPercent": 0.5,
+          "totalPercent": 0.5
+        },
+        {
+          "function": "__open_nocancel",
+          "module": "libsystem_kernel.dylib",
+          "selfWeight": 9,
+          "totalWeight": 9,
+          "selfPercent": 0.5,
+          "totalPercent": 0.5
+        }
+      ],
+      "mainThreadBlockers": [],
+      "severity": "ok",
+      "summary": "Hottest function: objc_msgSend (3.7% CPU). 17 user-code hotspots identified. 19% of samples unsymbolicated — use symbolicate_trace with dSYMs for full detail.",
+      "needsSymbolication": false,
+      "tracePath": "/Users/leigod/.instruments-mcp/traces/profile-1794537945274.trace",
+      "recordingDuration": "14.9s"
+    }
+  },
+  "error": null,
+  "serverStderr": "[transport closed]",
+  "tools": [
+    "profile_cpu",
+    "profile_swiftui",
+    "profile_memory",
+    "profile_hitches",
+    "profile_launch",
+    "profile_energy",
+    "profile_leaks",
+    "profile_network",
+    "profile_raw",
+    "instruments_status",
+    "instruments_list_templates",
+    "instruments_list_devices",
+    "instruments_list_instruments",
+    "analyze_trace",
+    "symbolicate_trace",
+    "performance_audit",
+    "performance_baseline",
+    "performance_report",
+    "sim_list_booted",
+    "sim_launch_app",
+    "sim_terminate_app",
+    "sim_open_url",
+    "sim_push_notification",
+    "sim_screenshot",
+    "sim_set_appearance",
+    "sim_set_location",
+    "start_profiling",
+    "stop_profiling",
+    "profile_scenario",
+    "ui_snapshot",
+    "ui_tap",
+    "ui_type",
+    "ui_swipe",
+    "ui_gesture",
+    "ui_long_press",
+    "drill_down",
+    "list_traces"
+  ],
+  "finishedAt": "2026-11-13T02:46:04.790Z",
+  "ok": true
+}

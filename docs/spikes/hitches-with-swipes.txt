@@ -1,0 +1,29 @@
+=== Animation Hitches ===  severity: [CRITICAL]  total: 903 (0 critical, 0 warning, 1 minor, 902 micro)
+
+Hang events:
+  [minor] 100ms  start: 1.184s
+  [micro] 83ms  start: 1.184s
+  [micro] 83ms  start: 1.267s
+  [micro] 67ms  start: 1.117s
+  [micro] 54ms  start: 1.392s
+  [micro] 54ms  start: 1.580s
+  [micro] 42ms  start: 3.259s
+  [micro] 38ms  start: 3.096s
+  [micro] 38ms  start: 13.094s
+  [micro] 36ms  start: 4.615s
+
+trace: t_kb850u | path: /Users/leigod/.instruments-mcp/traces/profile-1794537985235.trace
+
+-- Investigation --
+#1 [MINOR] 100ms hang at 1.184s
+   No backtrace available. Run symbolicate_trace for details.
+
+#2 [MICRO] 83ms hang at 1.184s
+   No backtrace available. Run symbolicate_trace for details.
+
+#3 [MICRO] 83ms hang at 1.267s
+   No backtrace available. Run symbolicate_trace for details.
+
+Suggested drill-down:
+  drill_down("t_kb850u", "worst")
+  drill_down("t_kb850u", "critical")

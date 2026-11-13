@@ -1,0 +1,388 @@
+{
+  "startedAt": "2026-11-13T02:39:06.917Z",
+  "server": "/Users/leigod/雷神/性能分析/instruments-mcp-server/dist/index.js",
+  "device": "00008150-001E49E40128C01C",
+  "process": "NN",
+  "template": "Time Profiler",
+  "durationMs": 6000,
+  "start": {
+    "isError": false,
+    "payload": {
+      "status": "recording",
+      "template": "Time Profiler",
+      "process": "NN",
+      "device": "00008150-001E49E40128C01C",
+      "tracePath": "/Users/leigod/.instruments-mcp/traces/profile-1794537547717.trace",
+      "maxDuration": "1m",
+      "hint": "Recording started. The user should interact with the app now. Call stop_profiling when done."
+    }
+  },
+  "stop": {
+    "isError": false,
+    "payload": {
+      "template": "Time Profiler",
+      "totalSamples": 51,
+      "duration": "unknown",
+      "hotspots": [],
+      "threads": [
+        {
+          "name": "unknown thread",
+          "sampleCount": 8,
+          "runningCount": 8,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "Main Thread (0x2cf112) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 0,
+          "blockedCount": 1,
+          "utilizationPercent": 0
+        },
+        {
+          "name": "NN (0x2cf119) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf11a) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf124) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf125) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf126) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf127) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf128) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf129) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-std/runtime (0x2cf12a) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "async-io (0x2cf12b) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf12e) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "TelemetryTaskManager-TaskDelayedWorker (0x2cf12f) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "TelemetryTaskManager-TaskWorker-0 (0x2cf130) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "SDKTaskManager-TaskDelayedWorker (0x2cf131) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "SDKTaskManager-TaskWorker-0 (0x2cf132) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "HttpManager-TaskDelayedWorker (0x2cf133) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "HttpManager-TaskWorker-0 (0x2cf134) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "HttpManager-TaskWorker-1 (0x2cf135) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "HttpManager-TaskWorker-2 (0x2cf136) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "HttpManager-TaskWorker-3 (0x2cf137) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "MainRunloopMonitor (0x2cf13b) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "com.apple.NSURLConnectionLoader (0x2cf13f) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "com.apple.CFSocket.private (0x2cf147) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf153) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf154) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-group (0x2cf157) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-session (0x2cf158) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-message (0x2cf159) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-friend (0x2cf15a) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-user_worker (0x2cf15b) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "Log work queue (0x2cf163) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "AsioTcpClient (0x2cf164) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "156870779-Session (0x2cf165) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "NN (0x2cf166) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "signaling_thread (0x2cf16a) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "worker_thread (0x2cf16b) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "network_thread (0x2cf16c) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "beast_thread (0x2cf16f) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "audio_filter_queue (0x2cf173) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "internal_peer_thread (0x2cf174) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "effect_player_task_queue (0x2cf175) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        },
+        {
+          "name": "JavaScriptCore libpas scavenger (0x2cf573) (NN, pid: 6678)",
+          "sampleCount": 1,
+          "runningCount": 1,
+          "blockedCount": 0,
+          "utilizationPercent": 100
+        }
+      ],
+      "mainThreadBlockers": [],
+      "severity": "ok",
+      "summary": "51 CPU samples across 44 threads. Main thread: 0% active (0 running, 1 blocked). Main thread mostly idle — app was not under load during recording. Active background threads: unknown(100%), NN(100%), NN(100%), NN(100%), async-std/runtime(100%) and 38 more. Note: Raw sample data — use symbolicate_trace with dSYMs for function-level detail.",
+      "needsSymbolication": true,
+      "tracePath": "/Users/leigod/.instruments-mcp/traces/profile-1794537547717.trace",
+      "recordingDuration": "12.2s"
+    }
+  },
+  "error": null,
+  "serverStderr": "[transport closed]",
+  "tools": [
+    "profile_cpu",
+    "profile_swiftui",
+    "profile_memory",
+    "profile_hitches",
+    "profile_launch",
+    "profile_energy",
+    "profile_leaks",
+    "profile_network",
+    "profile_raw",
+    "instruments_status",
+    "instruments_list_templates",
+    "instruments_list_devices",
+    "instruments_list_instruments",
+    "analyze_trace",
+    "symbolicate_trace",
+    "performance_audit",
+    "performance_baseline",
+    "performance_report",
+    "sim_list_booted",
+    "sim_launch_app",
+    "sim_terminate_app",
+    "sim_open_url",
+    "sim_push_notification",
+    "sim_screenshot",
+    "sim_set_appearance",
+    "sim_set_location",
+    "start_profiling",
+    "stop_profiling",
+    "profile_scenario",
+    "ui_snapshot",
+    "ui_tap",
+    "ui_type",
+    "ui_swipe",
+    "ui_gesture",
+    "ui_long_press",
+    "drill_down",
+    "list_traces"
+  ],
+  "finishedAt": "2026-11-13T02:39:26.657Z",
+  "ok": true
+}

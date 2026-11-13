@@ -1,0 +1,61 @@
+{
+  "device": "00008150-001E49E40128C01C",
+  "bundle": "com.nndev.im",
+  "template": "Animation Hitches",
+  "start": {
+    "isError": false,
+    "payload": {
+      "status": "recording",
+      "template": "Animation Hitches",
+      "process": "com.nndev.im",
+      "device": "00008150-001E49E40128C01C",
+      "tracePath": "/Users/leigod/.instruments-mcp/traces/profile-1794537985235.trace",
+      "maxDuration": "1m",
+      "hint": "Recording started. The user should interact with the app now. Call stop_profiling when done."
+    }
+  },
+  "stop": null,
+  "actions": [
+    {
+      "index": 0,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 1,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 2,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 3,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 4,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 5,
+      "isError": false,
+      "result": "Swiped up on screen"
+    },
+    {
+      "index": 6,
+      "isError": false,
+      "result": "Swiped down on screen"
+    },
+    {
+      "index": 7,
+      "isError": false,
+      "result": "Swiped down on screen"
+    }
+  ],
+  "error": "MCP error -32001: Request timed out"
+}
