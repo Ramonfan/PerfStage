@@ -70,6 +70,17 @@ export interface RecordRequest {
    * so the recorded window contains the interaction, not just idle time.
    */
   during?: () => Promise<void>;
+  /**
+   * Upper bound on `during`.
+   *
+   * A hung device call inside the action callback must never keep the session
+   * open: xctrace would record until `timeLimit`, produce a multi-gigabyte
+   * trace, and hold the on-device Instruments service long after the scenario
+   * ended. Observed during M3: a foreground query that never answered turned
+   * an 8s action window into 60s of recording (4.7 GB, §4.10). On expiry the
+   * session is stopped and the Take fails as non-retryable.
+   */
+  duringTimeoutMs?: number;
   /** Extra time to keep recording after `during` resolves. Default 1500ms. */
   graceMs?: number;
   /** How long to wait for the session to become live. Default 90s. */

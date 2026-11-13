@@ -125,37 +125,89 @@ function run(
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
+      // Own process group so a stuck CLI and anything it forks can be killed
+      // together. Without it a hung `apps foreground` survived its 60s timeout
+      // for nine minutes during M3 (docs/m3-validation.md §4.10).
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let settled = false;
     let timedOut = false;
+
+    const killGroup = (): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const finish = (result: CommandResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      releasePipes();
+      resolve(result);
+    };
+
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      releasePipes();
+      reject(error);
+    };
+
+    /**
+     * Drop our end of the pipes.
+     *
+     * If a grandchild inherited stdout/stderr it can hold them open after the
+     * command exits; leaving our read end attached would keep the Node process
+     * alive and, worse, hide the fact that the command is already done.
+     */
+    const releasePipes = (): void => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
     const timer = setTimeout(() => {
       timedOut = true;
-      // mobilecli can hang on a locked device; killing it keeps the Take's
-      // failure attributable to one command instead of the whole run.
-      child.kill("SIGKILL");
+      killGroup();
+      // Never wait for `close` here. A grandchild can inherit the stdout pipe
+      // and keep it open forever, which is exactly how a 60s timeout turned
+      // into a nine-minute stall: the child died, `close` never fired, and the
+      // recording then ran to its 60s cap.
+      fail(
+        new DeviceError(
+          `${command} did not finish within ${timeoutMs}ms; killed it (${args.slice(0, 3).join(" ")})`,
+          "command-failed",
+          stderr,
+        ),
+      );
     }, timeoutMs);
 
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.on("data", (chunk) => {
       stdout += chunk;
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+    child.on("error", fail);
+    // `exit` fires even while a grandchild still holds the pipes; `close` waits
+    // for every holder to let go. Prefer the former so a leaked descriptor
+    // cannot hang the Take, but give the pipe a moment to drain first.
+    child.on("exit", (code) => {
+      const drain = setTimeout(() => {
+        if (timedOut) return;
+        finish({ code, stdout, stderr });
+      }, 50);
+      drain.unref();
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({
-        code,
-        stdout,
-        stderr: timedOut
-          ? `${stderr}\ncommand timed out after ${timeoutMs}ms`
-          : stderr,
-      });
+      finish({ code, stdout, stderr });
     });
   });
 }

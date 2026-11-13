@@ -107,6 +107,7 @@ function takeDeps(
     passCooldownMs: 0,
     healthCheck: false,
     postLaunchSampleMs: 0,
+    foregroundProbeTimeoutMs: 20,
     ...input,
     minimumWindowMs: input.minimumWindowMs ?? 0,
   };
@@ -837,5 +838,36 @@ describe("device-health guards", () => {
     const notes = outcome.summary.notes.join(" ");
     expect(notes).toContain("device log: app fatal error");
     expect(notes).toContain("Database bootstrap failed");
+  });
+});
+
+/**
+ * The recording window must stay closed even when a device call hangs.
+ *
+ * On 2026-11-13 an `apps foreground` query issued after the last action never
+ * returned. `during` kept the session open, xctrace recorded to its 60s cap,
+ * and an 8s action window produced a 4.7GB trace (docs/m3-validation.md §4.10).
+ */
+describe("recording-window guards", () => {
+  it("stops the Take when the foreground probe never answers", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({ hangForegroundAfterSwipe: true });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, { device, recorder, foregroundProbeTimeoutMs: 20 }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    expect(outcome.summary.notes.join(" ")).toContain("could not verify");
+    // One pass only: the launch and memory sessions must not start on an
+    // unverified recording.
+    expect(recorder.requests.map((request) => request.template)).toEqual([
+      "hitches",
+    ]);
   });
 });

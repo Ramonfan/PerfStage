@@ -50,6 +50,14 @@ export interface FakeDriverOptions {
   exitOnLaunch?: boolean;
   /** Register a fresh crash report on every `launch()`. */
   crashOnLaunch?: boolean;
+  /**
+   * Stop answering `foreground()` once a swipe has run.
+   *
+   * Models the device-side Instruments service starving during a recording:
+   * the query never returns, so `during` would keep the session open until the
+   * recording's time limit (docs/m3-validation.md §4.10).
+   */
+  hangForegroundAfterSwipe?: boolean;
 }
 
 /** Bundle id reported while a system alert owns the foreground. */
@@ -260,6 +268,10 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
 
     async foreground(_deviceId) {
       record("foreground");
+      if (options.hangForegroundAfterSwipe === true && swipes.length > 0) {
+        // Never resolves: the caller must bound this itself.
+        return new Promise<ForegroundApp>(() => undefined);
+      }
       await delay();
       const entry: ForegroundApp = {
         bundleId: foregroundBundleId,

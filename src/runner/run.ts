@@ -40,6 +40,8 @@ export interface RunDependencies {
    */
   healthCheck?: boolean;
   healthCheckSettleMs?: number;
+  /** Bound on one `apps foreground` query; see `ExecuteTakeDependencies`. */
+  foregroundProbeTimeoutMs?: number;
   foregroundTimeoutMs?: number;
   postLaunchSampleMs?: number;
   elementTimeoutMs?: number;
@@ -160,6 +162,9 @@ export async function runTake(
       healthCheck: deps.healthCheck ?? true,
       ...(deps.healthCheckSettleMs !== undefined
         ? { healthCheckSettleMs: deps.healthCheckSettleMs }
+        : {}),
+      ...(deps.foregroundProbeTimeoutMs !== undefined
+        ? { foregroundProbeTimeoutMs: deps.foregroundProbeTimeoutMs }
         : {}),
       ...(deps.foregroundTimeoutMs !== undefined
         ? { foregroundTimeoutMs: deps.foregroundTimeoutMs }

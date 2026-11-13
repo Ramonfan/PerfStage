@@ -575,7 +575,7 @@ async function recordOnce(input: {
     // all-processes passes are fire-and-forget windows.
     if (request.during) {
       await session.live;
-      await request.during();
+      await runDuring(request.during, request.duringTimeoutMs);
       await sleep(request.graceMs ?? DEFAULT_GRACE_MS);
       session.stop();
       interrupted = true;
@@ -666,6 +666,49 @@ async function cleanupTrace(path: string): Promise<void> {
   // would let a later pass "find" a trace that contains no data.
   if (existsSync(path)) {
     await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Run the scenario callback with an optional deadline.
+ *
+ * The callback talks to the device, and a single unanswered query is enough to
+ * keep xctrace recording long past the scenario. Rejecting here makes the
+ * caller's `catch` stop the session now instead of at `timeLimit`.
+ */
+async function runDuring(
+  during: () => Promise<void>,
+  timeoutMs: number | undefined,
+): Promise<void> {
+  if (timeoutMs === undefined) {
+    await during();
+    return;
+  }
+  const pending = during();
+  // The abandoned callback may settle (or reject) after the deadline; never
+  // let that become an unhandled rejection.
+  pending.catch(() => undefined);
+
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new RecordingError(
+              `scenario actions did not finish within ${timeoutMs}ms; stopping the recording. ` +
+                "A device call inside the actions hung.",
+              "aborted",
+              false,
+            ),
+          );
+        }, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

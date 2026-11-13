@@ -756,6 +756,7 @@ perfstage report <runId>
 | 文本点击定位不稳 | 高 | 中 | 用元素 ref；失败时报可见元素；不猜坐标 | 场景改用坐标点击（DSL 扩展） |
 | 手势落入系统安全区 | 高 | 中 | 屏幕尺寸取自 `mobilecli device info`，手势限制在 20%–80% 安全带；动作后校验前台 App | 前台已不是被测 App：Take 直接 `failed`，不评系统 UI |
 | 设备 Instruments 服务被录制拖垮 | 高 | 中 | SIGINT 后宽限 5 分钟再 SIGKILL；pass 间 10s、Take 间 30s 冷却；录制前 5s App 健康探测；损坏 trace / 目标退出判为不可重试；矩阵脚本命中不健康标记即中止 | 已出现 `Failed starting ktrace session`：提示重启手机并停止矩阵，不做重试 |
+| 设备调用挂起拖长录制 | 高 | 中 | mobilecli 以 `exit` 为准并按进程组超时；前台查询 5s 上限；`during` 30s 上限 + `--time-limit 40s` 双闸；拿不到前台状态就判 Take 失败 | 出现 `did not finish within` / `could not verify that`：该 Take 失败，矩阵中止 |
 | instruments JSON 随版本变化 | 中 | 中 | fixture 契约测试；版本检查 | 锁定 xctrace 版本 |
 | 日志采集阻塞动作 | 高 | 中 | 独立 mobile-mcp client 异步采集；limit + filter 控制 | 改为动作后采集并标注日志窗口 |
 | 日志量过大 | 中 | 中 | 子系统过滤、大小上限、只保留摘要 | 默认关闭全量日志 |

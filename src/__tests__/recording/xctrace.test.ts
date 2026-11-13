@@ -386,3 +386,55 @@ describe("createXctraceRecorder fatal-trace guards", () => {
     expect((await readFile(counter, "utf8")).trim()).toBe("1");
   });
 });
+
+describe("createXctraceRecorder during deadline", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "perfstage-recorder-during-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("stops the session when the scenario callback hangs", async () => {
+    const stopped = join(root, "stopped");
+    const path = join(root, "fake-xctrace.sh");
+    await writeFile(
+      path,
+      [
+        "#!/bin/bash",
+        `trap 'echo stopped > "${stopped}"; exit 0' INT`,
+        'echo "Starting recording."',
+        'echo "Ctrl-C to stop the recording"',
+        "while true; do sleep 0.02; done",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const started = Date.now();
+    await expect(
+      createXctraceRecorder({
+        command: path,
+        sleep: async () => undefined,
+        sigkillGraceMs: 500,
+      }).record({
+        template: "hitches",
+        device: DEVICE,
+        target: { kind: "attach", pid: 4242 },
+        outputPath: join(root, "hitches.trace"),
+        duringTimeoutMs: 100,
+        // Models a device query that never answers.
+        during: () => new Promise<void>(() => undefined),
+        maxAttempts: 1,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toMatchObject({ kind: "aborted", retryable: false });
+
+    // The session was asked to stop instead of waiting for `timeLimit`.
+    expect(await readFile(stopped, "utf8")).toContain("stopped");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});

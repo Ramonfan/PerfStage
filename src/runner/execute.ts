@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { posix, relative, resolve, sep } from "node:path";
 import { extractDeviceFailureCause } from "../diagnostics/cause.js";
 import type { DiagnosticInput } from "../diagnostics/normalize.js";
-import type { DeviceDriver } from "../device/types.js";
+import type { DeviceDriver, ForegroundApp } from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
 import type { ActionRecord, MetricResult } from "../model/test-run.js";
 import type {
@@ -101,6 +101,11 @@ export interface ExecuteTakeDependencies {
   healthCheck?: boolean;
   /** How long the health probe waits before expecting the app to be alive. */
   healthCheckSettleMs?: number;
+  /**
+   * Bound on one `apps foreground` query. Mainly a test knob; production uses
+   * {@link FOREGROUND_PROBE_TIMEOUT_MS}.
+   */
+  foregroundProbeTimeoutMs?: number;
   foregroundTimeoutMs?: number;
   /** Best-effort post-launch lifecycle probe; never fails the Take. */
   postLaunchSampleMs?: number;
@@ -134,6 +139,16 @@ const DEFAULTS = {
    */
   minimumWindowMs: 250,
 };
+
+/**
+ * How long one `apps foreground` query may take before it is abandoned.
+ *
+ * The device-side Instruments service serves both the recording and this
+ * query. A recording can starve the query for minutes, so a per-call bound is
+ * what keeps `during` (and therefore the recording session) from running to
+ * `timeLimit`. See docs/m3-validation.md §4.10.
+ */
+const FOREGROUND_PROBE_TIMEOUT_MS = 5_000;
 
 const defaultAnalyzer: TraceAnalyzer = async (input) => {
   const result = await analyzePerformanceTrace({
@@ -510,14 +525,16 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     // permission) sitting on top. Naming it turns a mystery into a one-tap fix.
     let blockedBy: string | null = null;
     while (Date.now() <= deadline) {
-      const app = await deps.device.foreground(deviceId);
-      if (app.bundleId === plan.app.bundleId) {
+      const app = await probeForeground();
+      if (app !== null && app.bundleId === plan.app.bundleId) {
         return app.activity ?? "unknown";
       }
-      blockedBy =
-        app.activity === undefined || app.activity === null
-          ? app.bundleId
-          : `${app.bundleId} (${app.activity})`;
+      if (app !== null) {
+        blockedBy =
+          app.activity === undefined || app.activity === null
+            ? app.bundleId
+            : `${app.bundleId} (${app.activity})`;
+      }
       await sleep(500);
     }
     throw new Error(
@@ -525,6 +542,36 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
         deps.foregroundTimeoutMs ?? DEFAULTS.foregroundTimeoutMs
       }ms${blockedBy === null ? "" : `; foreground was ${blockedBy}`}`,
     );
+  };
+
+  /**
+   * Query the foreground app with a hard per-call bound.
+   *
+   * `apps foreground` and the recording session share the device-side
+   * Instruments service. During a recording the query can go unanswered for
+   * minutes; on 2026-11-13 one never returned and kept an 8s action window
+   * recording for 60s (4.7 GB, docs/m3-validation.md §4.10). Returning `null`
+   * keeps every caller's own deadline meaningful.
+   */
+  const probeTimeoutMs =
+    deps.foregroundProbeTimeoutMs ?? FOREGROUND_PROBE_TIMEOUT_MS;
+  const probeForeground = async (): Promise<ForegroundApp | null> => {
+    const query = deps.device.foreground(deviceId);
+    // The abandoned query still settles eventually; do not turn that into an
+    // unhandled rejection.
+    query.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        query,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), probeTimeoutMs);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
 
   /**
@@ -539,7 +586,7 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
   ): Promise<string | null> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() <= deadline) {
-      const app = await deps.device.foreground(deviceId).catch(() => null);
+      const app = await probeForeground();
       if (app !== null && app.bundleId === plan.app.bundleId) {
         return app.activity ?? "unknown";
       }
@@ -725,9 +772,11 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       target: { kind: "launch", bundleId: plan.app.bundleId },
       outputPath: resolve(tracesDir, "hitches.trace"),
       // `during` stops the session right after the last action; this is only a
-      // safety cap, and a short live timeout keeps a wedged session from
-      // burning the whole retry budget.
-      timeLimit: "60s",
+      // safety cap. `duringTimeoutMs` is the real bound: it keeps a hung
+      // device call from recording until the cap (M3 produced a 4.7GB trace
+      // that way, §4.10). A healthy Take needs ~14s here.
+      timeLimit: "40s",
+      duringTimeoutMs: 30_000,
       liveTimeoutMs: 30_000,
       during: async () => {
         sessionStart = Date.now();
@@ -748,7 +797,14 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
         // rest of the actions then play against SpringBoard/Spotlight. The
         // trace would still contain frames, so without this check a Take could
         // "complete" while never touching the scenario screen.
-        const afterActions = await deps.device.foreground(deviceId);
+        const afterActions = await probeForeground();
+        if (afterActions === null) {
+          throw new Error(
+            `could not verify that ${plan.app.bundleId} stayed in the foreground: ` +
+              `the device did not answer within ${probeTimeoutMs}ms. ` +
+              "Refusing to score a Take whose foreground state is unknown; the recording was stopped early.",
+          );
+        }
         if (afterActions.bundleId !== plan.app.bundleId) {
           throw new Error(
             `the device left ${plan.app.bundleId} while the actions ran (foreground was ${

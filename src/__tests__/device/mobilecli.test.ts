@@ -195,3 +195,56 @@ describe("resolvePid duplicate detection", () => {
     await expect(driver.resolvePid("device", TARGET)).resolves.toBeNull();
   });
 });
+
+/**
+ * A device command that never yields must not hang the Take.
+ *
+ * M3 hit this for real: `apps foreground` was killed at its 60s timeout but a
+ * grandchild kept the inherited stdout pipe open, so Node's `close` event
+ * never fired and the recording stayed open for nine minutes
+ * (docs/m3-validation.md §4.10).
+ */
+describe("mobilecli command settling", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "perfstage-mobilecli-settle-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function driverFor(script: string[], timeoutMs = 5_000) {
+    const binary = join(root, "mobilecli");
+    await writeFile(binary, ["#!/bin/bash", ...script, ""].join("\n"), {
+      mode: 0o755,
+    });
+    const { createMobilecliDriver } = await import("../../device/mobilecli.js");
+    return createMobilecliDriver({ binary, timeoutMs });
+  }
+
+  it("ignores a grandchild that keeps stdout open", async () => {
+    const driver = await driverFor([
+      "printf '{\"status\":\"ok\",\"data\":{\"packageName\":\"com.nndev.im\"}}\\n'",
+      "sleep 30 &",
+      "exit 0",
+    ]);
+
+    const started = Date.now();
+    await expect(driver.foreground("device")).resolves.toMatchObject({
+      bundleId: "com.nndev.im",
+    });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("rejects on timeout instead of waiting for close", async () => {
+    const driver = await driverFor(["sleep 30"], 150);
+
+    const started = Date.now();
+    await expect(driver.foreground("device")).rejects.toThrow(
+      /did not finish within 150ms/,
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});

@@ -346,6 +346,62 @@ status:signal(2) code:SIGTRAP(5)          // 启动 1.2s 后
 但把它和“设备需要重启、当轮矩阵全部作废、要重新插线重跑”相比，等待明显更便宜；
 而且冷却和健康探测已经把“容易挂死”的场景提前挡掉了。
 
+### 4.10 动作结束后的一次前台查询，让 8 秒窗口录成了 60 秒 / 4.7GB
+
+修复 §4.9 后第一次跑矩阵，Take 1 的 hitches trace 是 **4.72GB**，整轮卡了
+9 分钟。动作窗口本身是对的（`5965–13909ms`，5 次滑动全部 `executed`），
+但录制并没有在动作结束时停下：
+
+| 时刻 | 事件 |
+| --- | --- |
+| 20:43:25 | xctrace 启动，`--time-limit 60s` |
+| 20:43:39 | 最后一个动作结束，窗口记为 8 秒 |
+| 20:43:43 | 动作后的“App 是否还在前台”查询发出 |
+| 20:44:25 | 60s 上限到，xctrace 自己停止录制 |
+| 20:44:37 | 4.72GB 数据落盘，传输/收尾卡住 |
+| 20:52:55 | 5 分钟宽限期到，录制层 SIGKILL |
+| 20:53 | 分析失败（`Document Missing Template Error`），Take 记为 `failed` |
+
+根因有三层，缺一层这个 Take 都不会变成 4.7GB：
+
+1. **`apps foreground` 查询永远没有 settle。** mobilecli  runner 的超时确实
+   在 60s 杀了子进程，但 Promise 等的是 `close` 事件；脚本/孙进程继承了
+   stdout 管道时，子进程已经死了 `close` 也不会触发。于是 `during` 一直挂着，
+   而 `session.stop()` 永远没被执行。
+2. **`during` 没有上限。** 只要回调不返回，录制就只能等 `--time-limit`。
+   8 秒的动作窗口因此变成 60 秒整段录制；这次内容视频多，约 79MB/s，
+   正好 4.7GB。
+3. **正常停止路径也没有上限。** `await session.exited` 只受 270s 硬超时和
+   之后 5 分钟 SIGKILL 约束，所以一次卡住的收尾能拖到 9 分钟。
+
+修复：
+
+1. **命令 runner 以 `exit` 为准，不再等 `close`。** `mobilecli` 用独立进程组
+   启动，超时杀整个进程组；超时直接 reject（带 `did not finish within`），
+   并销毁管道读端。孙进程再也无法拖住宿主。
+2. **前台查询加 5 秒上限。** `probeForeground()` 用 `Promise.race` 包住查询；
+   动作后拿不到答案就**如实失败**：
+   `could not verify that com.nndev.im stayed in the foreground … the recording
+   was stopped early`，不再假装 Take 有效。`waitForForeground` 的轮询也用
+   同一个上限，20 秒总超时因此是真的。
+3. **`during` 加 30 秒上限（`duringTimeoutMs`）。** 超时由录制层 SIGINT
+   收尾并抛 `aborted`（不可重试），hitches 的 `--time-limit` 同时从 60s
+   降到 **40s**，作为第二道闸。健康路径约 14 秒，正常 trace 仍在
+   400MB–1.4GB 量级（取决于内容），但一次卡住最多 30 秒。
+4. **矩阵脚本把这类失败也算作设备不健康**（`Document Missing Template Error`、
+   `Export failed`、`did not finish within`、`could not verify that`），
+   命中即中止，不再重试。
+
+测试：`src/__tests__/device/mobilecli.test.ts`（孙进程占住管道仍能返回、
+超时 reject）、`src/__tests__/recording/xctrace.test.ts`（`during` 卡住时
+SIGINT 收尾）、`src/__tests__/runner/run.test.ts`（前台查询不返回 → Take
+在第一个 pass 就失败）。
+
+**关于体积：** 4.7GB 不是 8 秒动作的代价，是 **60 秒内容**的代价。同样
+`--launch` 的冒烟 trace 是 17.8 秒 / 421MB（约 24MB/s），这次滚动到视频
+内容后约 79MB/s。trace 体积与内容强相关，目前没有裁剪/降采样；M4 若要压缩
+单次耗时，应先处理这块，而不是缩短动作窗口。
+
 ## 5. 仍未解决
 
 - **`hitches` 对内容高度敏感。** 消息列表三次的中位数与极差见 §2.3；同一
@@ -375,10 +431,12 @@ status:signal(2) code:SIGTRAP(5)          // 启动 1.2s 后
   warmup 帧），而不是截断动作；`blockMs` 因此略偏高而非偏低。M4 若需要更紧的
   窗口，可用 `life-cycle-period` 或首帧时间做二次对齐。
 - **hitches trace 的体积与保存时间由录制时长决定，而不是动作时长。** 一次约
-  15s 的 Animation Hitches 录制约 350MB，xctrace 保存要花约 2 分钟，占整个
-  Take 墙钟时间的大头；动作结束后的 SIGINT 只是停止录制，保存仍要继续。这不
-  影响结果有效性，但 M4 若要把单次耗时压到更低，应先解决 trace 体积（裁剪
-  trace 或换更轻的导出），而不是缩短动作。
+  15s 的 Animation Hitches 录制约 350MB–1.4GB（取决于滚动到的内容，视频
+  场景可达约 79MB/s），xctrace 保存要花 1–2 分钟，占整个 Take 墙钟时间的
+  大头；动作结束后的 SIGINT 只是停止录制，保存仍要继续。这不影响结果有效性，
+  但 M4 若要把单次耗时压到更低，应先解决 trace 体积（裁剪 trace、降低采样
+  或换更轻的导出），而不是缩短动作。§4.10 的 30s `during` 上限保证一次卡住
+  不会超过这个量级。
 - **手机重启会让 `mobilecli` 守护进程握着的隧道失效。** 表现是
   `apps foreground` 报 `timed out waiting for WebDriverAgent to be ready`
   且 Runner 在第一步就失败，而 `apps launch` 单独执行却成功。执行
