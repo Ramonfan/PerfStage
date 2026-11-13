@@ -9,7 +9,7 @@
 | 被测 App | NN（`com.nndev.im`） |
 | 工程 | `/Users/leigod/雷神/App改造/nnios`（NNIM.xcworkspace） |
 | 工作区 | `/Users/leigod/雷神/App改造/.performance-test`（5 个场景） |
-| 结论 | **执行链路可行；指标层有 2 个必须修的缺口** |
+| 结论 | **执行链路与 4 个指标均可行；有 2 个必须修的代码缺口** |
 
 ## 1. 结论摘要
 
@@ -21,6 +21,7 @@
 | Animation Hitches | 可用；真实滑动下采到 903 个 hang |
 | App Launch | 能录到 trace，但解析器返回 `0ms / unknown`，**必须修** |
 | Allocations（内存） | **不可用**：TOC 里没有任何 allocation 表 |
+| Activity Monitor（内存） | **可用**：`--all-processes` + `phys_footprint`，NNIM 113.35 MiB |
 | attach 稳定性 | 有竞态；推荐 `launch_path` 冷启动录制 |
 | 失败时的 MCP server | 原实现会直接崩溃，**已修复** |
 
@@ -49,7 +50,8 @@
 | `hitches` | Animation Hitches | 空闲 0；滑动后 903 hangs（1 minor 100ms + 902 micro） | ✅ |
 | `blockMs`（原方案） | Time Profiler | `mainThreadBlockers` 为空；release 包 attach 时 `needsSymbolication=true`，hotspots 为 0 | ⚠️ 需改方案 |
 | `launchMs` | App Launch | trace 有 `life-cycle-period` / `dyld-activity-interval` / `time-profile`，解析器却返回 `0ms / unknown` | ❌ 需修解析器 |
-| `memoryMB` | Allocations | 直接 attach、挂起后 attach、`--launch` 三种方式都没有 allocation 表；伴随 `dylibs overlap` 告警 | ❌ 当前不可用 |
+| `memoryMB`（原方案） | Allocations | 直接 attach、挂起后 attach、`--launch` 三种方式都没有 allocation 表；伴随 `dylibs overlap` 告警 | ❌ 工具链问题 |
+| `memoryMB`（新方案） | Activity Monitor | `--all-processes` 产出 `activity-monitor-process-live` 表；`analyze_memory.py` 读到 NNIM 113.35 MiB | ✅ |
 
 Allocations 失败的伴生信息：
 
@@ -58,7 +60,37 @@ Timeline modification failed -- dylibs overlap by 0x164000:
     0x104c90000-0x104df4000 [0x164000] ... /usr/lib/dyld
 ```
 
-App 集成了 Pushy 热更新（`Pushy_iOS热更新操作流程.md`），注入的 dylib 与 `/usr/lib/dyld` 地址重叠，导致 Instruments 的内存时间线构建失败。这更像**该构建形态的限制**，不是 Allocations 模板本身不可用。
+**最初怀疑是 Pushy 热更新导致，但用非热更新的 `MiniAINotes` 复测后出现完全相同的 `dylibs overlap`。** 结论：这是 Xcode 27.2 + iOS 27.0.1 上 Allocations 模板的共性问题，与 NN 的构建形态无关。重装非热更新包不能解决。
+
+### 2.4 内存的正确口径：Activity Monitor
+
+你之前的 `.performance-test/tools/analyze_memory.py` 已经给出了可用方案：
+
+```bash
+xcrun xctrace record --template 'Activity Monitor' \
+  --all-processes --time-limit 8s \
+  --output /tmp/actmon.trace --no-prompt \
+  --device 00008150-001E49E40128C01C
+
+python3 -I analyze_memory.py /tmp/actmon.trace --pid <pid> --json out.json
+```
+
+实测：
+
+| 项 | 值 |
+| --- | --- |
+| TOC schema | `activity-monitor-process-live` |
+| trace 体积 | 1.7 MB（8s，全进程） |
+| NNIM footprint | 首次 113.35 / 末次 113.35 / 中位 113.35 MiB |
+| 系统总进程数 | 数十个，报告只应输出目标进程 |
+
+口径：`phys_footprint` 是 Instruments 的 Memory 列，比 Allocations 的 `totalMB` 更接近用户感知的内存占用。
+
+约束：
+
+- Activity Monitor 不支持 `--launch -- bundleId`，只能 `--all-processes` 或 `--attach`。
+- 当前设备上 `--attach <pid>` 很不稳定，**统一用 `--all-processes`**。
+- 解析时按进程名 `NNIM` 或 PID 选取目标，忽略其它进程。
 
 ### 2.3 耗时与体积
 
@@ -114,13 +146,11 @@ TOC 实际表名是 `life-cycle-period`，解析器查找的是 `app-launch` / `
 
 需要按 `life-cycle-period` + `dyld-activity-interval` 重写取值逻辑，并用这份 trace 做 fixture。
 
-### P0-4：Allocations 在当前构建上不可用
+### P0-4：Allocations 不可用，改用 Activity Monitor（已解决）
 
-三种采集方式均无可解析数据。MVP 必须先决定：
+Allocations 在当前 Xcode / iOS 组合上系统性地产不出 allocation 表，非热更新 App 同样失败。**不再尝试修 Allocations**，内存指标改用 Activity Monitor + `phys_footprint`，复用 `analyze_memory.py` 的解析口径。
 
-1. 用**非热更新构建**验证 Allocations 是否能恢复；
-2. 或改用其他内存来源（VM Tracker / 设备日志 / 应用内埋点）；
-3. 或把 `memoryMB` 移出 MVP 必选指标，标为 best-effort。
+遗留工作：把 Python 解析逻辑移植到 TypeScript，按进程名选目标，输出 `memoryMB` 与 `netGrowth` / `slope`。
 
 ## 4. 对 Runner 的直接影响
 
@@ -150,9 +180,9 @@ TOC 实际表名是 `life-cycle-period`，解析器查找的是 `app-launch` / `
 | `hitches` | Animation Hitches → `totalHangs` | 已验证 |
 | `blockMs` | Animation Hitches → `max(hangs[].durationMs)` | 与 hitches 同一 pass，避免 Time Profiler 符号化与额外一轮回放 |
 | `launchMs` | App Launch → 修解析器后取 `life-cycle-period` | 模板可录，解析待修 |
-| `memoryMB` | 暂移出 MVP 必选；先验证非热更新构建 | 当前构建无 allocation 表 |
+| `memoryMB` | Activity Monitor → 目标进程 `phys_footprint` 中位数 | 已验证；`--all-processes` 稳定，避免 attach |
 
-修订后一次 Take 只需 **2 个 pass**（hitches + launch），比原计划少一轮动作回放。
+修订后一次 Take 为 **3 个 pass**（hitches + launch + activity monitor），与最初计划持平，但每轮都不再依赖不稳定的 per-process attach。
 
 ## 6. 复现命令
 
@@ -167,6 +197,13 @@ node scripts/spike-attach.mjs \
   --template "Animation Hitches" \
   --duration-ms 8000 \
   --out docs/spikes/spike-hitches-launchpath.json
+
+# 内存：Activity Monitor 全进程录制
+node scripts/spike-attach.mjs \
+  --all-processes \
+  --template "Activity Monitor" \
+  --duration-ms 8000 \
+  --out docs/spikes/activity-monitor-memory.json
 
 # 录制期间驱动 UI（两个 MCP 并行）
 node scripts/spike-run.mjs
@@ -186,3 +223,4 @@ node scripts/spike-run.mjs
 | `spike-hitches-launchpath.json` | 空闲 8s，端到端 35.6s，115MB |
 | `spike-run-hitches.json` | 12 次滑动期间录制；stop 超时，trace 后续单独解析 |
 | `hitches-with-swipes.txt` | 316MB trace 的解析结果：903 hangs |
+| `activity-monitor-memory.json` | Activity Monitor 全进程内存序列，NNIM 113.35 MiB |

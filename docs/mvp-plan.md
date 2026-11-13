@@ -6,7 +6,7 @@
 | 日期 | 2026-11-13 |
 | 仓库 | [Ramonfan/PerfStage](https://github.com/Ramonfan/PerfStage) |
 | 当前状态 | 控制面可用；执行器未实现 |
-| 计划周期 | MVP 6 周（约 28 人日，含 CLI 与真机适配），v1.0 再 +2 周 |
+| 计划周期 | MVP 6 周（约 28.5 人日，含 CLI 与真机适配），v1.0 再 +2 周 |
 | 估算假设 | 1 名开发者、1 台 iOS 真机（NN / iOS 27.0.1）、可随时用模拟器补位 |
 
 ---
@@ -120,12 +120,12 @@ MVP 只有全部满足才算完成：
 | --- | --- | --- |
 | A1 | 新项目 30 分钟内接入 | 计时：init → 场景 → Skill → 首次运行 |
 | A2 | 一次调用完成，无中间人工步骤 | Skill 中只有 1 次 `run_performance_test` 调用 |
-| A3 | 至少 3 个指标带 trace 落盘 | `hitches`、`blockMs`、`launchMs` 均可追溯 |
+| A3 | 至少 4 个指标带 trace 落盘 | `hitches`、`blockMs`、`launchMs`、`memoryMB` 均可追溯 |
 | A4 | 缺 trace 时状态为 `partial` | 构造缺 trace 的用例验证 |
 | A5 | 新增 Crash 时状态为 `failed` | 构造 Crash 差集用例验证 |
 | A6 | 同一场景连续 3 次结果有效 | 3 次均 `completed`，无采集/设备错误；波动如实呈现 |
 | A7 | 报告含 verdict / gate / 证据 / 限制 | 人工评审 `report.md` |
-| A8 | 单次运行 ≤ 8 分钟（15s 场景 + 3 指标） | 计时 |
+| A8 | 单次运行 ≤ 8 分钟（15s 场景 + 4 指标） | 计时 |
 | A9 | 现有 163 用例保持通过，新增 ≥ 30 | `npm test` |
 | A10 | 2 个真实场景在真机跑通 | 真机验收记录 |
 | A11 | CLI 退出码正确 | 4 类场景逐一验证（pass / gate fail / 无效 / 环境错误） |
@@ -150,6 +150,7 @@ MVP 只有全部满足才算完成：
 | D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 26 人日 |
 | D10 | **真机优先**，模拟器仅补位（已确认） | 卡顿/Hitches 在模拟器上不可信 | 需要一台稳定真机 |
 | D11 | `blockMs` 改由 Animation Hitches 的 hang 时长推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长 hang」 |
+| D12 | `memoryMB` 改用 Activity Monitor 的 `phys_footprint` | Allocations 在 Xcode 27.2 / iOS 27 上系统性失效 | 全进程录制，需按进程名筛选 |
 
 ### D4 的具体后果
 
@@ -160,7 +161,7 @@ MVP 只有全部满足才算完成：
   start_profiling(模板, launch_path=bundleId) → settle → warmup → actions → stop_profiling → 解析
 ```
 
-修订后 **3 个指标只需 2 个 pass**：`hitches` 与 `blockMs` 共用 Animation Hitches，`launchMs` 单独一轮。`memoryMB` 待 E0-8 结论后再决定是否加入。报告中标注 `pass`。
+4 个指标共 **3 个 pass**：`hitches` 与 `blockMs` 共用 Animation Hitches，`launchMs` 单独一轮，`memoryMB` 用 Activity Monitor 全进程录制。报告中标注 `pass`。
 
 ---
 
@@ -328,7 +329,7 @@ export interface CollectedMetric {
 | `hitches` | Animation Hitches | `totalHangs` | 次 | 已验证：滑动下可采到 903 hangs |
 | `blockMs` | Animation Hitches | `max(hangs[].durationMs)` | ms | **改为与 hitches 同 pass**，避免 Time Profiler 符号化 |
 | `launchMs` | App Launch | `life-cycle-period` | ms | 模板可录；解析器需适配（见 E0-7） |
-| `memoryMB` | Allocations | `totalMB` | MB | **当前构建不可用**，待 E0-8 定方案 |
+| `memoryMB` | Activity Monitor | 目标进程 `phys_footprint` 中位数 | MB | `--all-processes`；已验证 113.35 MiB |
 
 约束：
 
@@ -336,6 +337,8 @@ export interface CollectedMetric {
 - 录制上限 5 分钟，Runner 的场景预算必须小于该值。
 - 真实设备必须传 UDID；模拟器用 `booted`。
 - `mobile_get_device_logs` 是**同步阻塞**调用（最多 30 秒静默或到达 limit），必须用独立 MCP client 异步启动，动作结束后再 await；否则会阻塞动作执行。
+- `memoryMB` 走 `Activity Monitor` 的 `--all-processes`（该模板不支持 `--launch`）；8s trace 约 1.7MB，按进程名筛选目标。
+- `launchMs` 依赖 E0-7：解析器必须按 `life-cycle-period` / `dyld-activity-interval` 取值。
 
 ### 4.6 证据门禁与状态
 
@@ -497,7 +500,7 @@ perfstage report <runId>
 
 ## 5. 里程碑
 
-### M0 — 仓库与工程基线（4.5 人日）
+### M0 — 仓库与工程基线（5 人日）
 
 **目标：** 有一个可协作、可回归的仓库，并把真机采集的不确定性消掉。
 
@@ -507,7 +510,7 @@ perfstage report <runId>
 - [x] 真机 `start_profiling` 验证：`launch_path` 冷启动稳定，产出 trace + JSON
 - [ ] `start_profiling` 失败即报错（E0-6）
 - [ ] App Launch 解析器适配（E0-7）
-- [ ] 内存指标来源验证（E0-8）
+- [x] 内存口径验证：Allocations 不可用，Activity Monitor 可用（解析移植见 E0-8）
 - [ ] 录制 `mobile_list_elements_on_screen` 与 `stop_profiling` fixture（E0-4）
 - [ ] 验证独立 client 并发日志采集（E0-5）
 
@@ -600,7 +603,7 @@ perfstage report <runId>
 | E0-5 | 验证并发日志采集（独立 client） | P0 | 0.5d | E0-4 | 动作期间日志可落盘 |
 | E0-6 | `start_profiling` 失败即报错 | P0 | 0.5d | E0-3 | 失败不再返回 `recording` |
 | E0-7 | App Launch 解析器适配 `life-cycle-period` | P0 | 1d | E0-3 | 返回非 0 `launchMs` |
-| E0-8 | 内存指标来源验证（非热更新构建） | P0 | 0.5d | E0-3 | 明确可做或降级 |
+| E0-8 | Activity Monitor 内存口径与 TS 解析移植 | P0 | 1d | E0-3 | 输出 `memoryMB` / 斜率 |
 | E1-1 | `prepare` 返回完整 plan | P0 | 1d | — | 返回值含 actions/metrics |
 | E1-2 | 指标证据校验（值 / trace） | P0 | 1d | — | 缺 trace → partial |
 | E1-3 | 阈值 verdict 与 gate | P0 | 1d | — | 三档判定正确 |
@@ -618,7 +621,7 @@ perfstage report <runId>
 | E3-2 | DeviceDriver 接口 | P0 | 0.5d | — | 类型冻结 |
 | E3-3 | mobile-mcp 适配器 | P0 | 1.5d | E3-2 | 动作全部可执行 |
 | E3-4 | MetricCollector 接口 | P0 | 0.5d | — | 类型冻结 |
-| E3-5 | instruments 适配器 | P0 | 1.5d | E3-4 | 3 指标可采集（memory 待定） |
+| E3-5 | instruments 适配器 | P0 | 1.5d | E3-4 | 4 指标可采集 |
 | E3-6 | 证据适配器 | P0 | 1d | E3-3 | 日志/Crash/生命周期 |
 | E3-7 | Runner 编排 | P0 | 1d | E3-3..6 | 全链路可跑 |
 | E3-8 | `run_performance_test` | P0 | 1d | E3-7 | 返回契约完整 |
@@ -632,7 +635,7 @@ perfstage report <runId>
 | E5-1 | 运行历史索引 | P2 | 2d | v0.1 | 可列出历史 |
 | E5-2 | 基线对比 | P2 | 2d | E5-1 | 可对比两次 |
 
-合计 P0：约 28 人日（6 周，含缓冲）；P2 另行 4 人日。
+合计 P0：约 28.5 人日（6 周，含缓冲）；P2 另行 4 人日。
 
 ---
 
@@ -657,7 +660,7 @@ perfstage report <runId>
 | 风险 | 影响 | 概率 | 缓解 | 触发后 |
 | --- | --- | --- | --- | --- |
 | 真机 attach 竞态 | 高 | 高 | 已改用 `launch_path` 冷启动录制；不用进程名 attach | 按 PID 挂起—attach—resume |
-| 内存指标不可用 | 高 | 高 | E0-8 先验证非热更新构建 | `memoryMB` 移出 MVP 必选，改 best-effort |
+| Allocations 工具链失效 | 中 | 高 | 改用 Activity Monitor（已验证） | 保持全进程录制 + 进程名筛选 |
 | 大 trace 导致 stop 超时 | 中 | 高 | 客户端超时 ≥ 300s；录制预算 ≤ 20s | 降低采样或改用轻量模板 |
 | 一次只能录一个模板 | 中 | 高 | 顺序多 pass；报告标注 pass；限制 MVP 为 2–3 指标 | 只保留 hitches + blockMs |
 | 文本点击定位不稳 | 高 | 中 | 用元素 ref；失败时报可见元素；不猜坐标 | 场景改用坐标点击（DSL 扩展） |
@@ -678,7 +681,7 @@ perfstage report <runId>
 | 一键执行成功率 | ≥ 90% | 排除设备离线后的成功/总数 |
 | 连续 3 次有效 | 3/3 | 验收记录 |
 | 假通过 | 0 | 缺证据用例必须非 `completed` |
-| 单次耗时 | ≤ 8 分钟 | p50，15s 场景 + 3 指标 |
+| 单次耗时 | ≤ 8 分钟 | p50，15s 场景 + 4 指标 |
 | 新增测试 | ≥ 30 | `npm test` 统计 |
 | 报告完备度 | 100% | 指标/证据/限制/结论四段齐全 |
 | CLI 退出码正确率 | 100% | 4 类退出码用例 |
@@ -692,7 +695,7 @@ perfstage report <runId>
 | # | 决策 | 结论 | 对计划的影响 |
 | --- | --- | --- | --- |
 | 1 | 基线对比 | **不包含**，放 M4 | MVP 保持单次报告 |
-| 2 | 多指标顺序多 pass | **接受**，报告标注 pass | 3 指标 = 2 个 pass |
+| 2 | 多指标顺序多 pass | **接受**，报告标注 pass | 4 指标 = 3 个 pass |
 | 3 | 首个验证项目 | 用手头最稳定的真实项目 | 待补具体路径、bundleId、进程名 |
 | 4 | 设备优先级 | **真机优先**，模拟器补位 | 卡顿指标以真机为准 |
 | 5 | CLI | **纳入 MVP** | +2 人日，MVP 约 26 人日 / 6 周 |

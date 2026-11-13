@@ -22,6 +22,7 @@ const DEFAULTS = {
   device: "00008150-001E49E40128C01C",
   process: "NNIM",
   launchPath: "",
+  allProcesses: false,
   template: "Time Profiler",
   durationMs: 8000,
   out: "docs/spikes/attach-spike.json",
@@ -48,6 +49,9 @@ function parseArgs(argv) {
       case "--launch-path":
         args.launchPath = value;
         i += 1;
+        break;
+      case "--all-processes":
+        args.allProcesses = true;
         break;
       case "--template":
         args.template = value;
@@ -120,7 +124,11 @@ async function main() {
       name: "start_profiling",
       arguments: {
         device: args.device,
-        ...(args.launchPath ? { launch_path: args.launchPath } : { process: args.process }),
+        ...(args.allProcesses
+          ? {}
+          : args.launchPath
+            ? { launch_path: args.launchPath }
+            : { process: args.process }),
         template: args.template,
         max_duration: "1m",
       },
