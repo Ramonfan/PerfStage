@@ -20,7 +20,8 @@ name: 冷启动基线
 app:
   bundleId: com.example.app
 device: {}
-preconditions: []
+preconditions:
+  description: Target app is installed and running on the connected device
 warmup: []
 actions:
   - id: relaunch
@@ -41,7 +42,8 @@ name: 列表滚动基线
 app:
   bundleId: com.example.app
 device: {}
-preconditions: []
+preconditions:
+  description: Target app is installed and running on the connected device
 warmup: []
 actions:
   - id: scroll-up
