@@ -9,37 +9,19 @@
       {
         "id": "platform-layers",
         "label": "平台分层",
-        "focus": [
-          "agent",
-          "skill",
-          "scenes",
-          "mcp",
-          "runner",
-          "runstore",
-          "reports"
-        ],
+        "focus": ["agent", "skill", "scenes", "mcp", "runner", "runstore", "reports"],
         "note": "项目定义 Scene Skill，PerfStage 提供通用控制面能力。"
       },
       {
         "id": "execution-path",
         "label": "iOS 执行链路",
-        "focus": [
-          "mcp",
-          "runner",
-          "mobile",
-          "instruments",
-          "device"
-        ],
-        "note": "Runner 驱动 mobile-mcp 和 instruments-mcp，完成动作与采集。"
+        "focus": ["mcp", "runner", "device", "recorder", "iphone"],
+        "note": "Runner 通过 DeviceDriver 驱动真机，通过 Recorder 录制并自解析 trace。"
       },
       {
         "id": "evidence-loop",
         "label": "证据与报告",
-        "focus": [
-          "runner",
-          "runstore",
-          "reports"
-        ],
+        "focus": ["runner", "runstore", "reports"],
         "note": "每次执行都落盘 run、plan、report 和证据，形成可重复闭环。"
       }
     ]
@@ -50,28 +32,16 @@
       "type": "external",
       "label": "Claude / CI",
       "sublabel": "执行或触发 Skill",
-      "pos": [
-        60,
-        430
-      ],
-      "size": [
-        170,
-        72
-      ]
+      "pos": [60, 430],
+      "size": [170, 72]
     },
     {
       "id": "skill",
       "type": "frontend",
       "label": "项目 Scene Skill",
       "sublabel": "一个场景一个 Skill",
-      "pos": [
-        60,
-        300
-      ],
-      "size": [
-        170,
-        72
-      ],
+      "pos": [60, 300],
+      "size": [170, 72],
       "tag": "项目资产"
     },
     {
@@ -79,114 +49,67 @@
       "type": "database",
       "label": "Scene YAML",
       "sublabel": ".performance-test/scenarios",
-      "pos": [
-        300,
-        110
-      ],
-      "size": [
-        190,
-        72
-      ]
+      "pos": [300, 110],
+      "size": [190, 72]
     },
     {
       "id": "mcp",
       "type": "backend",
-      "label": "PerfStage MCP",
+      "label": "PerfStage MCP / CLI",
       "sublabel": "场景 · 运行 · 证据 · 报告",
-      "pos": [
-        300,
-        300
-      ],
-      "size": [
-        190,
-        84
-      ],
+      "pos": [300, 300],
+      "size": [190, 84],
       "tag": "通用能力"
     },
     {
       "id": "runner",
       "type": "backend",
-      "label": "Execution Runner",
-      "sublabel": "规划中 · 一键执行",
-      "pos": [
-        560,
-        300
-      ],
-      "size": [
-        190,
-        84
-      ],
-      "tag": "规划中"
-    },
-    {
-      "id": "mobile",
-      "type": "external",
-      "label": "mobile-mcp",
-      "sublabel": "UI 动作 · 日志 · Crash",
-      "pos": [
-        820,
-        180
-      ],
-      "size": [
-        190,
-        76
-      ]
-    },
-    {
-      "id": "instruments",
-      "type": "external",
-      "label": "instruments-mcp",
-      "sublabel": "xctrace · 指标解析",
-      "pos": [
-        820,
-        430
-      ],
-      "size": [
-        190,
-        76
-      ]
+      "label": "Runner",
+      "sublabel": "状态机 · 重试 · 中位数",
+      "pos": [560, 300],
+      "size": [190, 84],
+      "tag": "内建执行器"
     },
     {
       "id": "device",
+      "type": "backend",
+      "label": "DeviceDriver",
+      "sublabel": "mobilecli + devicectl",
+      "pos": [820, 180],
+      "size": [190, 76]
+    },
+    {
+      "id": "recorder",
+      "type": "backend",
+      "label": "Recorder",
+      "sublabel": "xctrace 录制 + 自解析",
+      "pos": [820, 430],
+      "size": [190, 76],
+      "tag": "D13"
+    },
+    {
+      "id": "iphone",
       "type": "external",
-      "label": "iOS Device",
-      "sublabel": "真机 / 模拟器",
-      "pos": [
-        1080,
-        300
-      ],
-      "size": [
-        180,
-        76
-      ]
+      "label": "iOS 真机",
+      "sublabel": "Animation Hitches",
+      "pos": [1080, 300],
+      "size": [180, 76]
     },
     {
       "id": "runstore",
       "type": "database",
       "label": "Run Store",
       "sublabel": "run.json · plan.json",
-      "pos": [
-        560,
-        540
-      ],
-      "size": [
-        190,
-        72
-      ]
+      "pos": [560, 540],
+      "size": [190, 72]
     },
     {
       "id": "reports",
       "type": "database",
       "label": "Report + Gate",
       "sublabel": "report.json · report.md",
-      "pos": [
-        300,
-        540
-      ],
-      "size": [
-        190,
-        72
-      ]
+      "pos": [300, 540],
+      "size": [190, 72]
     }
   ],
   "connections": [
@@ -208,10 +131,7 @@
       "from": "scenes",
       "to": "mcp",
       "label": "场景",
-      "labelAt": [
-        395,
-        196
-      ]
+      "labelAt": [395, 196]
     },
     {
       "id": "mcp-runner",
@@ -220,36 +140,37 @@
       "label": "分发"
     },
     {
-      "id": "runner-mobile",
+      "id": "runner-device",
       "from": "runner",
-      "to": "mobile",
-      "label": "actions"
+      "to": "device",
+      "label": "actions",
+      "variant": "emphasis"
     },
     {
-      "id": "runner-instruments",
+      "id": "runner-recorder",
       "from": "runner",
-      "to": "instruments",
-      "label": "traces"
+      "to": "recorder",
+      "label": "record",
+      "variant": "emphasis"
     },
     {
-      "id": "mobile-device",
-      "from": "mobile",
-      "to": "device"
+      "id": "device-iphone",
+      "from": "device",
+      "to": "iphone",
+      "label": "UI · 日志 · Crash"
     },
     {
-      "id": "instruments-device",
-      "from": "instruments",
-      "to": "device"
+      "id": "recorder-iphone",
+      "from": "recorder",
+      "to": "iphone",
+      "label": "采集"
     },
     {
       "id": "runner-runstore",
       "from": "runner",
       "to": "runstore",
       "label": "写入",
-      "labelAt": [
-        655,
-        398
-      ]
+      "labelAt": [655, 398]
     },
     {
       "id": "runstore-reports",
@@ -270,20 +191,20 @@
     },
     {
       "dot": "emerald",
-      "title": "执行链路清晰",
+      "title": "执行链路内建",
       "items": [
-        "mobile-mcp 负责 UI 动作、日志与 Crash",
-        "instruments-mcp 负责 xctrace 与指标解析",
-        "Runner 串联 prepare → execute → collect → finalize"
+        "DeviceDriver 用 mobilecli / devicectl 驱动真机",
+        "Recorder 直接调用 xctrace 完成三 pass 录制",
+        "trace 由 PerfStage 自己解析，不再依赖外部 instruments MCP"
       ]
     },
     {
       "dot": "amber",
-      "title": "渐进演进",
+      "title": "证据与判定分离",
       "items": [
-        "当前已具备 MCP 控制面、场景、运行存储和报告",
-        "Runner 是一键执行的目标形态",
-        "Skill 保持薄，平台保持稳定契约"
+        "每次 Take 写入独立运行目录，证据可追溯",
+        "status 表示测试是否可信，gate 表示是否达标",
+        "证据缺失降级为 partial，指标超阈值才是 gate=fail"
       ]
     }
   ]

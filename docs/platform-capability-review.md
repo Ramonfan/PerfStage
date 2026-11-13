@@ -4,6 +4,7 @@
 - **目标架构：** iOS-only；MCP 提供平台通用能力；每个项目基于 MCP 定义场景 Skill；后续重复测试执行 Skill 即可
 - **复盘日期：** 2026-11-13
 - **版本说明：** v1 按“单项目本地助手”评分，v2 按“跨端平台产品”评分，都偏离了实际目标。v3 按“通用能力层 + 项目 Skill 层”重新校准。
+- **后续进展（2026-11-13）：** 路线 B 已落地为 M3：`run_performance_test` + 内建 Runner。执行层把 `mobile-mcp` / `instruments-mcp` 换成了 `mobilecli` / `devicectl` / `xctrace`（决策 D14），Skill 已缩为一次调用。本文保留为复盘时的判断依据，不再逐条更新。
 
 ---
 

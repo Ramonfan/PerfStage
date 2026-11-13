@@ -152,6 +152,20 @@ MVP 只有全部满足才算完成：
 | D11 | `blockMs` 改由 Animation Hitches 的最长卡顿帧推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长卡顿帧」 |
 | D12 | `memoryMB` 改用 Activity Monitor 的 `phys_footprint` | Allocations 在 Xcode 27.2 / iOS 27 上系统性失效 | 全进程录制，需按进程名筛选 |
 | D13 | **PerfStage 自解析全部 trace 指标**，instruments-mcp 只负责录制 | 行为一致；不必 fork 依赖；解析口径由产品自己掌握 | 需要自己维护 4 个指标的解析器 |
+| D14 | **录制层内化到 PerfStage**（M3 实现时确认）：`mobilecli` + `xcrun devicectl` 驱动设备，`xctrace` 直接录制 | 外部 MCP 仍需跨进程编排，且 instruments-mcp 的单项录制与 D13 解析重复；内化后 Runner 是一个进程、一套错误处理 | 取代 D3 的 MCP client 方案，需要自己维护设备与录制适配器 |
+| D15 | **hitches pass 改用 `xctrace --launch` + 动作时间窗**，不再 `--attach <pid>` | `--attach` 依赖设备侧进程表：刚启动的 App 会因表滞后被拒，同名可执行文件并存时永久失败（M0 已记录竞态，M2/M3 仍用了 attach）。`--launch` 让 xctrace 自己拉起 App，窗口把冷启动帧排除在指标之外 | 录制里包含冷启动帧，解析必须带窗口；窗口对齐依赖「`during` 在会话 live 后立即调用」，误差约 ±1s，方向保守 |
+
+### D3 → D14 的实现修订
+
+M0 阶段用 `mobile-mcp` / `instruments-mcp` 验证了指标可行性；M3 落地时按 D14 把执行层改成了内建模块：
+
+| 计划中的适配器 | 实际实现 |
+| --- | --- |
+| `mobile-mcp` 客户端 | `src/device/mobilecli.ts`（DeviceDriver） |
+| `instruments-mcp` 客户端 | `src/recording/xctrace.ts`（Recorder）+ 自带 trace 解析 |
+| MCP client 超时/重启 | 子进程 spawn + 超时 + kperf 锁重试 |
+
+这样 Runner 不再依赖两个外部 MCP 进程；遗留的 `instruments-mcp-server` 目录只保留为 M0 参考实现。
 
 ### D4 的具体后果
 
@@ -605,29 +619,30 @@ perfstage report <runId>
 
 **目标：** Claude 退出执行链，验证 H2 + H3。
 
-- [ ] 配置 v2：adapters（device / collector）
-- [ ] MCP client 封装（超时、重启、关闭）
-- [ ] DeviceDriver + mobile-mcp 适配器
-- [ ] MetricCollector + instruments-mcp 适配器
-- [ ] 证据适配器（日志 / Crash / 生命周期）
-- [ ] Runner 编排与状态机（`running`、`repetitions`）
-- [ ] `run_performance_test` 工具
-- [ ] fake 适配器 + 集成测试（≥ 15 个）
-- [ ] 真机冒烟：2 个场景 × 3 次
-- [ ] 文档与 Quick Start 更新
+- [x] 配置 v2：adapters（device / collector）
+- [x] MCP client 封装（超时、重启、关闭）→ 改为内建录制层，不再跨进程
+- [x] DeviceDriver + mobilecli / devicectl 适配器
+- [x] MetricCollector → `xctrace` Recorder + PerfStage 自解析（D13）
+- [x] 证据适配器（日志 / Crash / 生命周期）
+- [x] Runner 编排与状态机（`running`、`repetitions`）
+- [x] `run_performance_test` 工具
+- [x] fake 适配器 + 集成测试（≥ 15 个）
+- [x] 真机冒烟：2 个场景 × 3 次
+- [x] 文档与 Quick Start 更新
 
 **交付物：** `run_performance_test` 可用；示例 Skill 缩短为 1 次调用。
 
-**验收：** A2、A3、A8、A9、A10 通过。
+**验收：** A2、A3、A8、A9、A10 通过。真机记录见
+[`docs/m3-validation.md`](m3-validation.md) 与 [`docs/m3-takes.json`](m3-takes.json)。
 
 ### M3.5 — CLI 薄封装（2 人日）
 
 **目标：** 脚本与后续 CI 能直接消费结果。
 
-- [ ] `perfstage init` / `list` / `run` / `report`
-- [ ] 退出码 0 / 1 / 2 / 3，支持 `--strict`
-- [ ] `--json` 输出与 MCP 工具同构
-- [ ] 退出码测试（4 类用例）
+- [x] `perfstage init` / `list` / `run` / `report`
+- [x] 退出码 0 / 1 / 2 / 3，支持 `--strict`
+- [x] `--json` 输出与 MCP 工具同构
+- [x] 退出码测试（4 类用例）
 
 **交付物：** `perfstage run <sceneId> --device <udid>` 可用。
 
@@ -640,6 +655,24 @@ perfstage report <runId>
 - [ ] 回归门禁与趋势
 - [ ] `perfstage compare`（基线对比）
 - [ ] CI 示例
+
+**M2/M3 真机结论带入 M4：**
+
+- `hitches` 是单次窗口内的卡顿帧计数，跨次波动最大（M2 三次 Take 极差 35.4%）。
+  基线必须用**多 Take 中位数**，不能拿单次结果当基准。
+- 示例阈值仍是 M0 的占位值（`hitches` warn 5 / fail 15）。真机滑动普遍在
+  180–370 之间，需要按「同一场景、同一设备、多 Take 分布」重新标定，
+  而不是为了变绿而放宽。
+- `blockMs`、`launchMs`、`memoryMB` 的跨次极差分别为 19.2% / 4.3% / 1.1%，
+  更适合先做回归门禁。
+- 基线对比要区分「设备/系统变化」与「代码回归」，报告中应记录设备型号与
+  iOS 版本。
+- M3 真机矩阵暴露的环境级故障已定位两类：设备侧进程表滞后（已用同 pid
+  短退避重试覆盖）与同名可执行文件冲突（已用 `duplicate-process` 明确报错）。
+  M3 后期的 D15 把 hitches pass 从 `--attach <pid>` 改为 `--launch` + 动作
+  时间窗，彻底绕开前者；同名冲突仍会影响 memory pass（按容器 UUID 解析 pid），
+  因此矩阵脚本保留单实例前置检查。M4 可考虑把「同名进程」也做成可自愈的
+  启动前置步骤，而不是让每个 pass 各自报错。
 
 ---
 
@@ -689,6 +722,8 @@ perfstage report <runId>
 | E5-2 | 基线对比 | P2 | 2d | E5-1 | 可对比两次 |
 
 > 2026-11-13：E0-6（start fail-fast）、E0-7（App Launch 解析）、E0-8（Activity Monitor 解析）已完成，见 `docs/spikes/m0-device-spike.md` 第 8 节。M0 剩余 E0-4（fixtures）与 E0-5（并发日志）。
+>
+> 2026-11-13：M3 落地时把「MCP client 封装」改为**内建录制层**（`src/recording/`、`src/device/`），E3-3 由 `mobilecli` 适配器承担，E3-5 由 `xctrace` Recorder + PerfStage 自解析承担，不再跨进程调用外部 MCP。任务 ID 保留用于对照原始估算。
 
 合计 P0：约 28.5 人日（6 周，含缓冲）；P2 另行 4 人日。
 
@@ -714,11 +749,13 @@ perfstage report <runId>
 
 | 风险 | 影响 | 概率 | 缓解 | 触发后 |
 | --- | --- | --- | --- | --- |
-| 真机 attach 竞态 | 高 | 高 | 已改用 `launch_path` 冷启动录制；不用进程名 attach | 按 PID 挂起—attach—resume |
+| 真机 attach 竞态 | 高 | 高 | hitches pass 已改为 `xctrace --launch` + 动作时间窗（D15），完全不用 attach；memory pass 仍按 pid 取值 | 若 `--launch` 在 App 已运行时挂住，先 terminate 再录；探测进程表不再作为判据 |
 | Allocations 工具链失效 | 中 | 高 | 改用 Activity Monitor（已验证） | 保持全进程录制 + 进程名筛选 |
 | 大 trace 导致 stop 超时 | 中 | 高 | 客户端超时 ≥ 300s；录制预算 ≤ 20s | 降低采样或改用轻量模板 |
 | 一次只能录一个模板 | 中 | 高 | 顺序多 pass；报告标注 pass；限制 MVP 为 2–3 指标 | 只保留 hitches + blockMs |
 | 文本点击定位不稳 | 高 | 中 | 用元素 ref；失败时报可见元素；不猜坐标 | 场景改用坐标点击（DSL 扩展） |
+| 手势落入系统安全区 | 高 | 中 | 屏幕尺寸取自 `mobilecli device info`，手势限制在 20%–80% 安全带；动作后校验前台 App | 前台已不是被测 App：Take 直接 `failed`，不评系统 UI |
+| 设备 Instruments 服务被录制拖垮 | 高 | 中 | SIGINT 后宽限 5 分钟再 SIGKILL；pass 间 10s、Take 间 30s 冷却；录制前 5s App 健康探测；损坏 trace / 目标退出判为不可重试；矩阵脚本命中不健康标记即中止 | 已出现 `Failed starting ktrace session`：提示重启手机并停止矩阵，不做重试 |
 | instruments JSON 随版本变化 | 中 | 中 | fixture 契约测试；版本检查 | 锁定 xctrace 版本 |
 | 日志采集阻塞动作 | 高 | 中 | 独立 mobile-mcp client 异步采集；limit + filter 控制 | 改为动作后采集并标注日志窗口 |
 | 日志量过大 | 中 | 中 | 子系统过滤、大小上限、只保留摘要 | 默认关闭全量日志 |

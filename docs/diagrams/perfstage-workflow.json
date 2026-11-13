@@ -3,7 +3,6 @@
   "diagram_type": "workflow",
   "meta": {
     "title": "PerfStage 测试流程：执行一次 Scene Skill",
-    "subtitle": "一次定义，次次上演",
     "locale": "zh-CN",
     "output": "perfstage-workflow.html",
     "animation": "trace",
@@ -18,8 +17,8 @@
           "scene_skill",
           "run_tool",
           "runner",
-          "exec_actions",
-          "collect_trace",
+          "device_driver",
+          "recorder",
           "report_gate"
         ],
         "note": "项目定义 Scene，执行 Skill 即完成一次完整测试。"
@@ -29,8 +28,8 @@
         "label": "证据与报告",
         "focus": [
           "runstore",
-          "collect_trace",
-          "report_gate"
+          "report_gate",
+          "run_tool"
         ],
         "note": "证据不完整时报告降级为 partial，绝不输出假通过。"
       },
@@ -53,7 +52,7 @@
     },
     {
       "id": "platform",
-      "label": "PerfStage 平台 · iOS 执行层"
+      "label": "PerfStage 内建执行层"
     },
     {
       "id": "evidence",
@@ -80,8 +79,8 @@
     "scene_skill",
     "run_tool",
     "runner",
-    "exec_actions",
-    "collect_trace",
+    "device_driver",
+    "recorder",
     "report_gate"
   ],
   "nodes": [
@@ -91,7 +90,7 @@
       "col": 0,
       "type": "database",
       "label": "Scene YAML",
-      "sublabel": "场景声明",
+      "sublabel": "app · actions · metrics",
       "width": 128,
       "tag": "项目资产"
     },
@@ -101,7 +100,7 @@
       "col": 1,
       "type": "frontend",
       "label": "Scene Skill",
-      "sublabel": "可重复执行的入口",
+      "sublabel": "一次调用即可回归",
       "width": 128,
       "tag": "SKILL.md"
     },
@@ -113,35 +112,36 @@
       "label": "run_performance_test",
       "sublabel": "一键执行入口",
       "width": 148,
-      "tag": "规划中"
+      "tag": "已完成"
     },
     {
       "id": "runner",
       "lane": "platform",
       "col": 3,
       "type": "messagebus",
-      "label": "Execution Runner",
-      "sublabel": "编排 · 重试 · 超时",
+      "label": "Runner",
+      "sublabel": "状态机 · 重试 · 中位数",
       "width": 140,
-      "tag": "规划中"
+      "tag": "已完成"
     },
     {
-      "id": "exec_actions",
+      "id": "device_driver",
       "lane": "platform",
       "col": 4,
       "type": "external",
-      "label": "mobile-mcp",
-      "sublabel": "warmup + actions",
-      "width": 128
+      "label": "DeviceDriver",
+      "sublabel": "mobilecli + devicectl",
+      "width": 136
     },
     {
-      "id": "collect_trace",
+      "id": "recorder",
       "lane": "platform",
       "col": 5,
       "type": "external",
-      "label": "instruments-mcp",
-      "sublabel": "xctrace + 日志",
-      "width": 128
+      "label": "Recorder",
+      "sublabel": "xctrace + 自解析",
+      "width": 136,
+      "tag": "D13"
     },
     {
       "id": "runstore",
@@ -158,7 +158,7 @@
       "col": 5,
       "type": "backend",
       "label": "Report + Gate",
-      "sublabel": "report.md + verdict",
+      "sublabel": "status · gate · verdict",
       "width": 140,
       "tag": "pass / fail"
     }
@@ -175,35 +175,35 @@
       "id": "invoke-run",
       "from": "scene_skill",
       "to": "run_tool",
-      "label": "执行 Skill",
+      "label": "执行",
       "variant": "emphasis"
     },
     {
-      "id": "dispatch",
+      "id": "start-take",
       "from": "run_tool",
       "to": "runner",
-      "label": "prepare",
+      "label": "开始 Take",
       "variant": "default"
     },
     {
-      "id": "drive-actions",
+      "id": "prepare-device",
       "from": "runner",
-      "to": "exec_actions",
-      "label": "actions",
+      "to": "device_driver",
+      "label": "前台 · warmup",
       "variant": "emphasis"
     },
     {
-      "id": "actions-done",
-      "from": "exec_actions",
-      "to": "collect_trace",
-      "label": "动作完成",
-      "variant": "default"
+      "id": "replay-actions",
+      "from": "device_driver",
+      "to": "recorder",
+      "label": "回放 actions",
+      "variant": "emphasis"
     },
     {
-      "id": "traces-back",
-      "from": "collect_trace",
+      "id": "analyze",
+      "from": "recorder",
       "to": "report_gate",
-      "label": "traces（缺则 partial）",
+      "label": "解析 trace",
       "variant": "emphasis"
     },
     {
@@ -219,15 +219,6 @@
       "to": "report_gate",
       "label": "汇总",
       "variant": "default"
-    },
-    {
-      "id": "encore-rerun",
-      "from": "report_gate",
-      "to": "run_tool",
-      "label": "Encore 返场",
-      "variant": "dashed",
-      "route": "auto",
-      "role": "return"
     }
   ],
   "cards": [
@@ -246,16 +237,16 @@
       "items": [
         "缺 trace、缺指标值即降级为 partial",
         "completed 必须能追溯到证据",
-        "阈值与门禁随报告一起输出"
+        "status 与 gate 分离，阈值随报告一起输出"
       ]
     },
     {
       "dot": "amber",
-      "title": "演进路径",
+      "title": "跑在真机上",
       "items": [
-        "现在：4 个底层工具 + Skill 编排",
-        "目标：run_performance_test 一键闭环",
-        "之后：基线与回归门禁"
+        "mobilecli 驱动 UI，devicectl 解析安装与 pid",
+        "xctrace 三 pass 录制，PerfStage 自己解析",
+        "4 个指标一次 Take 约 3 分钟"
       ]
     }
   ],
@@ -269,7 +260,7 @@
     },
     {
       "id": "platform_core",
-      "label": "通用能力内核",
+      "label": "MCP + Runner",
       "lane": "platform",
       "fromCol": 2,
       "toCol": 3,
@@ -277,7 +268,7 @@
     },
     {
       "id": "device_work",
-      "label": "设备侧动作与采集",
+      "label": "设备动作与录制",
       "lane": "platform",
       "fromCol": 4,
       "toCol": 5
