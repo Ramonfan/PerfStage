@@ -1,6 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RunStore } from "../storage/runs.js";
 import { createRunStore } from "../storage/runs.js";
+import type { DeviceDriver } from "../device/types.js";
+import type { TraceRecorder } from "../recording/types.js";
+import type { TraceAnalyzer } from "../runner/execute.js";
 import type {
   ReadyWorkspace,
   WorkspaceManager,
@@ -25,6 +28,10 @@ import {
   analyzePerformanceTrace,
   analyzeTraceInputSchema,
 } from "./analyze.js";
+import {
+  runInputSchema,
+  runPerformanceTest,
+} from "./run.js";
 
 /**
  * Shared options passed to every tool handler.
@@ -54,6 +61,27 @@ export interface RegisterOptions {
   runStore?: RunStore;
   now: () => Date;
   runsRoot?: string;
+  /**
+   * Runner collaborators. Production omits these and the `run_performance_test`
+   * handler builds the real mobilecli/ xctrace adapters on demand; tests inject
+   * fakes so the orchestration can be exercised without a plugged-in iPhone.
+   */
+  device?: DeviceDriver;
+  recorder?: TraceRecorder;
+  analyze?: TraceAnalyzer;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (message: string) => void;
+  settleMs?: number;
+  launchSettleMs?: number;
+  memorySettleMs?: number;
+  passCooldownMs?: number;
+  healthCheck?: boolean;
+  healthCheckSettleMs?: number;
+  foregroundTimeoutMs?: number;
+  postLaunchSampleMs?: number;
+  elementTimeoutMs?: number;
+  /** See `ExecuteTakeDependencies.minimumWindowMs`; mainly a test knob. */
+  minimumWindowMs?: number;
 }
 
 /**
@@ -297,6 +325,32 @@ export function registerTools(
     },
     async (args: unknown) => {
       const result = await analyzePerformanceTrace(args);
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "run_performance_test",
+    {
+      title: "Run Performance Test",
+      description:
+        "一键执行一次 Take：解析场景、驱动真机、按需录制 3 个 pass、解析 trace、做证据门禁并写出报告。返回 status / gate / metrics / reportPath。",
+      inputSchema: runInputSchema.shape,
+    },
+    async (args: unknown) => {
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await runPerformanceTest(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
+      });
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }

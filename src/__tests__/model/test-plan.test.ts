@@ -13,8 +13,9 @@ describe("testPlanSchema", () => {
     });
     expect(plan.metrics.map((metric) => metric.name)).toEqual([
       "hitches",
-      "cpu",
-      "memory",
+      "blockMs",
+      "launchMs",
+      "memoryMB",
     ]);
     expect(plan.diagnostics.collectDeviceLogs).toBe(true);
     expect(plan.diagnostics.collectCrashes).toBe(true);

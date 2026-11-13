@@ -22,6 +22,7 @@ const EXPECTED_TOOLS = [
   "initialize_performance_workspace",
   "list_performance_scenarios",
   "prepare_performance_test",
+  "run_performance_test",
   "analyze_performance_trace",
   "finalize_performance_test",
 ];

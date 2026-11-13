@@ -13,6 +13,13 @@ import {
   finalizePerformanceTest,
   type FinalizePerformanceTestResult,
 } from "../../tools/report.js";
+import {
+  runPerformanceTest,
+  type RunPerformanceTestResult,
+} from "../../tools/run.js";
+import type { DeviceDriver } from "../../device/types.js";
+import type { TraceRecorder } from "../../recording/types.js";
+import type { TraceAnalyzer } from "../../runner/execute.js";
 import { createRunStore, type RunStore } from "../../storage/runs.js";
 
 /**
@@ -102,6 +109,12 @@ metrics:
 
 export async function createTestToolHarness(
   rootOverride?: string,
+  runner: {
+    device?: DeviceDriver;
+    recorder?: TraceRecorder;
+    analyze?: TraceAnalyzer;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<TestToolHarness> {
   const root =
     rootOverride ?? (await mkdtemp(join(tmpdir(), "performance-mcp-")));
@@ -140,6 +153,28 @@ export async function createTestToolHarness(
           scenarioDir,
           runStore,
           now: () => new Date(),
+        })) as T;
+      }
+      if (toolName === "run_performance_test") {
+        return (await runPerformanceTest(args ?? {}, {
+          scenarioDir,
+          runStore,
+          now: () => new Date(),
+          ...(runner.device !== undefined ? { device: runner.device } : {}),
+          ...(runner.recorder !== undefined ? { recorder: runner.recorder } : {}),
+          ...(runner.analyze !== undefined ? { analyze: runner.analyze } : {}),
+          ...(runner.sleep !== undefined ? { sleep: runner.sleep } : {}),
+          // Keep the fake-driven tests fast: the settle windows only exist to
+          // let a real device calm down. Likewise, fake actions complete
+          // instantly, so the production minimum measurement window would
+          // reject every Take; the guard is covered by its own test.
+          settleMs: 0,
+          launchSettleMs: 0,
+          memorySettleMs: 0,
+          passCooldownMs: 0,
+          healthCheck: false,
+          postLaunchSampleMs: 0,
+          minimumWindowMs: 0,
         })) as T;
       }
       throw new Error(`unknown tool "${toolName}"`);
@@ -185,4 +220,4 @@ export function isToolError(value: unknown): value is ToolError {
   );
 }
 
-export type { ListPerformanceScenariosResult, PreparePerformanceTestResult, FinalizePerformanceTestResult };
+export type { ListPerformanceScenariosResult, PreparePerformanceTestResult, FinalizePerformanceTestResult, RunPerformanceTestResult };

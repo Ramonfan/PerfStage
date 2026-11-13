@@ -22,6 +22,22 @@ function hangTableXml(
   return `<trace-query-result><node><schema name="hitches"><col><mnemonic>start</mnemonic></col><col><mnemonic>duration</mnemonic></col></schema>${rowXml}</node></trace-query-result>`;
 }
 
+function frameTableXml(
+  frames: Array<{ startMs: number; durationMs: number; color: string }>,
+): string {
+  const rowXml = frames
+    .map(
+      (frame, index) =>
+        `<row><start-time id="s${index}">${Math.round(
+          frame.startMs * 1e6,
+        )}</start-time><duration id="d${index}">${Math.round(
+          frame.durationMs * 1e6,
+        )}</duration><event-concept id="c${index}">${frame.color}</event-concept></row>`,
+    )
+    .join("");
+  return `<trace-query-result><node><schema name="hitches-frame-lifetimes"><col><mnemonic>start</mnemonic></col><col><mnemonic>duration</mnemonic></col><col><mnemonic>frame-color</mnemonic></col></schema>${rowXml}</node></trace-query-result>`;
+}
+
 describe("analyzeHitchesXml", () => {
   it("derives hitches and blockMs from a real frame-lifetime fixture", async () => {
     const xml = await readFile(fixturePath, "utf8");
@@ -57,6 +73,62 @@ describe("analyzeHitchesXml", () => {
     expect(analysis.topHitches.map((hitch) => hitch.durationMs)).toEqual([
       37.5, 33.3, 33.3,
     ]);
+  });
+
+  it("keeps only frames inside the action window and says how many it dropped", () => {
+    // A `--launch` recording: the cold-launch burst (0.5s) and the tail before
+    // the session stops fall outside the scene window, so they must not be
+    // scored as scene hitches.
+    const xml = frameTableXml([
+      { startMs: 500, durationMs: 300, color: "Purple" },
+      { startMs: 5_000, durationMs: 50, color: "Purple" },
+      { startMs: 10_000, durationMs: 16, color: "Green" },
+      { startMs: 12_000, durationMs: 16, color: "Green" },
+      // Starts exactly at the exclusive end: it belongs to the next window.
+      { startMs: 14_000, durationMs: 50, color: "Purple" },
+    ]);
+
+    const analysis = analyzeHitchesXml(xml, {
+      window: { fromMs: 10_000, toMs: 14_000 },
+    });
+
+    expect(analysis.frameCount).toBe(2);
+    expect(analysis.hitches).toBe(0);
+    expect(analysis.blockMs).toBe(0);
+    expect(analysis.window).toEqual({
+      fromMs: 10_000,
+      toMs: 14_000,
+      framesOutside: 3,
+    });
+    expect(analysis.warnings).toEqual([]);
+  });
+
+  it("rejects a window that cannot contain a measurement", () => {
+    const xml = frameTableXml([
+      { startMs: 1_000, durationMs: 16, color: "Green" },
+    ]);
+    expect(() =>
+      analyzeHitchesXml(xml, { window: { fromMs: 1_000, toMs: 1_000 } }),
+    ).toThrow(/window is empty/);
+    expect(() =>
+      analyzeHitchesXml(xml, { window: { fromMs: 2_000, toMs: 1_000 } }),
+    ).toThrow(/window is empty/);
+  });
+
+  it("warns instead of reporting a clean score when the window misses every frame", () => {
+    const xml = frameTableXml([
+      { startMs: 1_000, durationMs: 16, color: "Green" },
+      { startMs: 2_000, durationMs: 16, color: "Green" },
+    ]);
+    const analysis = analyzeHitchesXml(xml, {
+      window: { fromMs: 30_000, toMs: 31_000 },
+    });
+
+    expect(analysis.frameCount).toBe(0);
+    expect(analysis.hitches).toBe(0);
+    expect(analysis.window?.framesOutside).toBe(2);
+    // A zero here without a warning would look like a perfect score.
+    expect(analysis.warnings.join(" ")).toContain("No frames between");
   });
 
   it("counts a non-green frame as a hitch even below the duration threshold", () => {
@@ -107,6 +179,19 @@ describe("analyzeHitchesXml", () => {
       critical: 0,
     });
     expect(analysis.topHitches[0].startMs).toBe(2000);
+  });
+
+  it("applies the window to the legacy hitches table too", () => {
+    const xml = hangTableXml([
+      { startNs: 1_000_000_000, durationNs: 300_000_000 },
+      { startNs: 10_000_000_000, durationNs: 40_000_000 },
+    ]);
+    const analysis = analyzeHitchesXml(xml, {
+      window: { fromMs: 5_000, toMs: 11_000 },
+    });
+    expect(analysis.hitches).toBe(1);
+    expect(analysis.blockMs).toBe(40);
+    expect(analysis.window?.framesOutside).toBe(1);
   });
 
   it("returns zero metrics for an empty table", () => {

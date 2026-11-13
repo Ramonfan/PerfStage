@@ -88,6 +88,24 @@ export interface JsonReport {
   generatedAt: string;
 }
 
+/**
+ * Drop the inlined device log when the same text already lives in a file.
+ *
+ * `report.json` is read by tools and agents; embedding 5 000 raw log lines
+ * (2 MB on a real device) makes it unreadable and duplicates `device.log`.
+ * The category scan and `lineCount` were already computed, so nothing is lost
+ * except the raw text that `evidencePaths.deviceLog` points at.
+ */
+function withoutDuplicatedLogText(
+  diagnostics: DiagnosticEvidence,
+): DiagnosticEvidence {
+  if (diagnostics.logs.path === undefined || diagnostics.logs.text === undefined) {
+    return diagnostics;
+  }
+  const { text: _text, ...rest } = diagnostics.logs;
+  return { ...diagnostics, logs: rest };
+}
+
 export function evidencePathsArray(
   map: ReportEvidencePaths | undefined,
 ): ReportEvidencePath[] {
@@ -179,7 +197,7 @@ export function buildJsonReport(
     plan: callerPlan,
     actions: run.actions.map(toReportAction),
     metrics: run.metrics.map(toReportMetric),
-    diagnostics,
+    diagnostics: withoutDuplicatedLogText(diagnostics),
     findings: options.findings ? [...options.findings] : [],
     status: run.status,
     gate: options.gate ?? run.gate ?? "unknown",

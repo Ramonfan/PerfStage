@@ -48,7 +48,7 @@ export function deriveFindings(input: {
   for (const reason of input.diagnosticsImpact.reasons) {
     findings.push({
       code: reason,
-      severity: input.diagnosticsImpact.severity,
+      severity: severityFor(reason, input.diagnosticsImpact),
       message: describeDiagnosticReason(reason),
     });
   }
@@ -95,6 +95,12 @@ function describeDiagnosticReason(reason: string): string {
       return "日志检测到内存压力告警。";
     case "device-disconnect":
       return "生命周期事件记录到设备断开。";
+    case "app-exit":
+      return "生命周期事件记录到 App 退出。";
+    case "app-backgrounded":
+      return "生命周期事件记录到 App 退到后台。";
+    case "system-alert":
+      return "生命周期事件记录到系统弹窗。";
     case "crash-detection-unavailable":
       return "无法读取 Crash 列表；本次不能据此判定稳定性。";
     case "log-evidence-unavailable":
@@ -104,4 +110,32 @@ function describeDiagnosticReason(reason: string): string {
     default:
       return reason;
   }
+}
+
+/**
+ * Severity is a property of the individual reason, not of the Take.
+ *
+ * `DiagnosticImpact.severity` is the aggregate ("was this Take trustworthy at
+ * all"), so reusing it for every reason mislabels the evidence warnings: a real
+ * new crash plus an unreadable log produced two `failure` findings, and the log
+ * loss would read as its own defect. Missing evidence is always a warning; only
+ * observed instability is a failure.
+ */
+const WARNING_REASONS = new Set([
+  "crash-detection-unavailable",
+  "log-evidence-unavailable",
+  "lifecycle-evidence-unavailable",
+  "memory-warning",
+  "app-backgrounded",
+  "system-alert",
+]);
+
+function severityFor(
+  reason: string,
+  impact: DiagnosticImpact,
+): ReportFinding["severity"] {
+  if (impact.severity === "none") {
+    return "warning";
+  }
+  return WARNING_REASONS.has(reason) ? "warning" : "failure";
 }

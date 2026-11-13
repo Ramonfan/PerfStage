@@ -26,6 +26,17 @@ export const analyzeTraceInputSchema = z
     pid: z.number().int().positive().optional(),
     /** Animation Hitches table; defaults to the full frame lifetime table. */
     table: z.enum(["hitches-frame-lifetimes", "hitches"]).optional(),
+    /**
+     * Trace-relative measurement window. The Runner sets it for `--launch`
+     * recordings so the cold-launch frames are not scored as scene hitches.
+     */
+    window: z
+      .object({
+        fromMs: z.number().nonnegative(),
+        toMs: z.number().nonnegative(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -123,6 +134,7 @@ export async function analyzePerformanceTrace(
     if (input.template === "hitches") {
       const options: AnimationHitchesOptions = {
         ...(input.table !== undefined ? { table: input.table } : {}),
+        ...(input.window !== undefined ? { window: input.window } : {}),
       };
       const analysis = await analyzeHitchesTrace(input.tracePath, options);
       const { topHitches, ...rest } = analysis;

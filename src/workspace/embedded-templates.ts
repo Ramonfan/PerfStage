@@ -24,15 +24,16 @@ preconditions:
   description: Target app is installed and running on the connected device
 warmup: []
 actions:
-  - id: relaunch
-    type: tap
-    target: relaunch
-    waitAfterMs: 1500
+  # The Runner launches the app itself for the App Launch pass; this action is
+  # only a required placeholder and is skipped for launch-only plans.
+  - id: settle
+    type: wait
+    durationMs: 1000
 metrics:
-  - name: startup
-    instrument: Time Profiler
-  - name: memory
-    instrument: Allocations
+  - name: launchMs
+    instrument: App Launch
+  - name: memoryMB
+    instrument: Activity Monitor
 `,
   },
   {
@@ -61,8 +62,8 @@ actions:
 metrics:
   - name: hitches
     instrument: Animation Hitches
-  - name: cpu
-    instrument: Time Profiler
+  - name: blockMs
+    instrument: Animation Hitches
 `,
   },
 ];

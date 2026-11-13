@@ -33,11 +33,31 @@ export interface SeverityCounts {
   critical: number;
 }
 
+/**
+ * The part of a trace that counts as the measurement.
+ *
+ * The hitches pass records with `xctrace --launch`, so the cold-launch frames
+ * live in the same trace as the scene actions. Without a window the launch
+ * hitch (hundreds of ms) would be scored as a scene regression, and the metric
+ * would change meaning whenever launch time changed.
+ */
+export interface HitchWindow {
+  /** Inclusive start, relative to the trace start. */
+  fromMs: number;
+  /** Exclusive end, relative to the trace start. */
+  toMs: number;
+}
+
 export interface AnimationHitchesAnalysis {
   template: "Animation Hitches";
   /** Table the analyzer read: `hitches-frame-lifetimes` or `hitches`. */
   table: "hitches-frame-lifetimes" | "hitches";
   frameCount: number;
+  /**
+   * Window the metric was computed over. Absent means "the whole trace",
+   * which is only correct for `--attach`/`--all-processes` recordings.
+   */
+  window?: HitchWindow & { framesOutside: number };
   /** Median frame duration, used as the observed vsync target. */
   targetFrameMs: number;
   /** Frames above this duration are hitches even when colored green. */
@@ -62,6 +82,11 @@ export interface AnimationHitchesOptions {
   table?: "hitches-frame-lifetimes" | "hitches";
   /** Keep at most this many of the longest hitches in `topHitches`. */
   topLimit?: number;
+  /**
+   * Restrict the metric to this trace-relative window. Required for
+   * `--launch` recordings so the cold-start frames are not scored.
+   */
+  window?: HitchWindow;
 }
 
 const NS_PER_MS = 1_000_000;
@@ -134,6 +159,7 @@ function isHitched(color: string | null, durationMs: number, thresholdMs: number
 function analyzeFrameLifetimes(
   table: TraceTable,
   topLimit: number,
+  window?: HitchWindow,
 ): AnimationHitchesAnalysis {
   const warnings: string[] = [];
   let skippedRows = 0;
@@ -144,7 +170,7 @@ function analyzeFrameLifetimes(
     color: string | null;
   }
 
-  const frames: Frame[] = [];
+  let frames: Frame[] = [];
   for (const row of table.rows) {
     const durationNs = columnNumber(table, row, "duration");
     const startNs = columnNumber(table, row, "start");
@@ -165,6 +191,28 @@ function analyzeFrameLifetimes(
     );
   }
 
+  // Frames before `fromMs` are the cold-launch burst: they are real hitches,
+  // they just do not belong to the scene. Frames after `toMs` are the tail of
+  // the recording (the session is stopped after the last action).
+  let framesOutside = 0;
+  if (window !== undefined) {
+    if (!(window.toMs > window.fromMs)) {
+      throw new Error(
+        `Animation Hitches window is empty (${window.fromMs}ms..${window.toMs}ms); the scenario actions must occupy measurable time`,
+      );
+    }
+    const inside = frames.filter(
+      (frame) => frame.startMs >= window.fromMs && frame.startMs < window.toMs,
+    );
+    framesOutside = frames.length - inside.length;
+    frames = inside;
+    if (frames.length === 0) {
+      warnings.push(
+        `No frames between ${window.fromMs}ms and ${window.toMs}ms; the window missed the recorded interaction.`,
+      );
+    }
+  }
+
   if (frames.length === 0) {
     return {
       template: "Animation Hitches",
@@ -179,6 +227,7 @@ function analyzeFrameLifetimes(
       severityCounts: emptySeverityCounts(),
       topHitches: [],
       warnings: [...warnings, "No frame rows in the trace."],
+      ...(window !== undefined ? { window: { ...window, framesOutside } } : {}),
     };
   }
 
@@ -224,6 +273,7 @@ function analyzeFrameLifetimes(
       .sort((a, b) => b.durationMs - a.durationMs)
       .slice(0, topLimit),
     warnings,
+    ...(window !== undefined ? { window: { ...window, framesOutside } } : {}),
   };
 }
 
@@ -234,12 +284,20 @@ function analyzeFrameLifetimes(
 function analyzeHangRows(
   table: TraceTable,
   topLimit: number,
+  window?: HitchWindow,
 ): AnimationHitchesAnalysis {
   const warnings: string[] = [];
   const durations: number[] = [];
   const hitches: HitchEvent[] = [];
   const severityCounts = emptySeverityCounts();
   let skippedRows = 0;
+  let framesOutside = 0;
+
+  if (window !== undefined && !(window.toMs > window.fromMs)) {
+    throw new Error(
+      `Animation Hitches window is empty (${window.fromMs}ms..${window.toMs}ms); the scenario actions must occupy measurable time`,
+    );
+  }
 
   for (const row of table.rows) {
     const durationNs = columnNumber(table, row, "duration");
@@ -248,12 +306,20 @@ function analyzeHangRows(
       continue;
     }
     const startNs = columnNumber(table, row, "start") ?? 0;
+    const startMs = startNs / NS_PER_MS;
+    if (
+      window !== undefined &&
+      (startMs < window.fromMs || startMs >= window.toMs)
+    ) {
+      framesOutside += 1;
+      continue;
+    }
     const durationMs = durationNs / NS_PER_MS;
     const severity = classifyHitch(durationMs);
     durations.push(durationMs);
     severityCounts[severity] += 1;
     hitches.push({
-      startMs: round(startNs / NS_PER_MS, 1),
+      startMs: round(startMs, 1),
       durationMs: round(durationMs, 1),
       color: null,
       severity,
@@ -263,6 +329,11 @@ function analyzeHangRows(
   if (skippedRows > 0) {
     warnings.push(
       `Skipped ${skippedRows} hang row(s) without a usable duration.`,
+    );
+  }
+  if (window !== undefined && hitches.length === 0) {
+    warnings.push(
+      `No frames between ${window.fromMs}ms and ${window.toMs}ms; the window missed the recorded interaction.`,
     );
   }
 
@@ -284,6 +355,7 @@ function analyzeHangRows(
       .sort((a, b) => b.durationMs - a.durationMs)
       .slice(0, topLimit),
     warnings,
+    ...(window !== undefined ? { window: { ...window, framesOutside } } : {}),
   };
 }
 
@@ -296,10 +368,10 @@ export function analyzeHitchesXml(
   const topLimit = options.topLimit ?? 20;
 
   if (table.schemaName === "hitches-frame-lifetimes") {
-    return analyzeFrameLifetimes(table, topLimit);
+    return analyzeFrameLifetimes(table, topLimit, options.window);
   }
   if (table.schemaName === "hitches") {
-    return analyzeHangRows(table, topLimit);
+    return analyzeHangRows(table, topLimit, options.window);
   }
   throw new Error(
     `Unsupported Animation Hitches table "${table.schemaName || "(unknown)"}".`,

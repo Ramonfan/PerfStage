@@ -117,6 +117,26 @@ function renderEvidence(report: JsonReport): string {
     .join("\n");
 }
 
+/**
+ * Runner notes carry measurement facts that do not fit a metric row, such as
+ * the trace-relative window the hitches metric was computed over, analyzer
+ * warnings, and post-launch probe results. They must be visible in the human
+ * report: a reader has to be able to tell a healthy scene from a window that
+ * missed the interaction.
+ */
+function renderNotes(report: JsonReport): string {
+  const notes = report.run.notes;
+  if (typeof notes !== "string" || notes.trim().length === 0) {
+    return "- 无执行备注。";
+  }
+  return notes
+    .split(" | ")
+    .map((note) => note.trim())
+    .filter((note) => note.length > 0)
+    .map((note) => `- ${note}`)
+    .join("\n");
+}
+
 function renderLimits(report: JsonReport): string {
   const limits: string[] = [];
   if (report.run.endedAt === "unknown") {
@@ -206,6 +226,9 @@ export function renderMarkdownReport(report: JsonReport): string {
     "",
     "## 性能指标",
     renderMetricSection(report),
+    "",
+    "## 执行记录",
+    renderNotes(report),
     "",
     "## 稳定性诊断",
     stabilitySection,

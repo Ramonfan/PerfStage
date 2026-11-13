@@ -3,12 +3,15 @@
   "description": "PerfStage — iOS performance testing platform. Define once, perform every time.",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "cli": "node dist/cli/bin.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
@@ -19,5 +22,8 @@
     "@types/node": "latest",
     "typescript": "latest",
     "vitest": "4.1.12"
+  },
+  "bin": {
+    "perfstage": "dist/cli/bin.js"
   }
 }

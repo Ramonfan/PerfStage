@@ -1,29 +1,45 @@
 id: community-home-scroll
-name: 社区首页来回滚动
+name: 社区首页上滑滚动（5 次）
 app:
   bundleId: com.nndev.im
 device: {}
 preconditions:
   foregroundBundleId: com.nndev.im
   accessibilityText: 社区
-warmup:
-  - id: open-community
-    type: tap
-    target: 社区
-    waitAfterMs: 1500
+# The app launches straight into NNCommunity.CommunityHomeNextVC, so no warmup
+# tap is needed (and tapping a non-existent 社区 label fails the Take).
+warmup: []
 actions:
   - id: scroll-up-1
     type: swipe
     direction: up
     distance: 700
     durationMs: 500
-    waitAfterMs: 1500
-  - id: scroll-down-1
+    waitAfterMs: 500
+  - id: scroll-up-2
     type: swipe
-    direction: down
+    direction: up
     distance: 700
     durationMs: 500
-    waitAfterMs: 1500
+    waitAfterMs: 500
+  - id: scroll-up-3
+    type: swipe
+    direction: up
+    distance: 700
+    durationMs: 500
+    waitAfterMs: 500
+  - id: scroll-up-4
+    type: swipe
+    direction: up
+    distance: 700
+    durationMs: 500
+    waitAfterMs: 500
+  - id: scroll-up-5
+    type: swipe
+    direction: up
+    distance: 700
+    durationMs: 500
+    waitAfterMs: 500
 metrics:
   - name: hitches
     instrument: Animation Hitches

@@ -107,10 +107,18 @@ export const analysisFocusSchema = z.enum([
 ]);
 export type AnalysisFocus = z.infer<typeof analysisFocusSchema>;
 
+/**
+ * Default metric set for a Take.
+ *
+ * These are the four canonical iOS metrics PerfStage actually collects
+ * (D11–D13). The previous `cpu`/`memory` pair predated the M1 vocabulary and
+ * silently asked the Runner for metrics it cannot measure.
+ */
 const defaultMetrics: MetricRequest[] = [
   { name: "hitches" },
-  { name: "cpu" },
-  { name: "memory" },
+  { name: "blockMs" },
+  { name: "launchMs" },
+  { name: "memoryMB" },
 ];
 
 export const testPlanSchema = z.object({

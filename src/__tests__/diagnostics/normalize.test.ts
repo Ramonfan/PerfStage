@@ -48,6 +48,8 @@ describe("normalizeDiagnostics", () => {
           "ProcessAssertion::acquireSync Trying to take RBS assertion 'XPCConnectionTerminationWatchdog'",
           "Watchdog monitoring: starting monitor",
           "Watchdog monitoring: watchdog enabled, no assertion active",
+          'registering method "defaultWatchdogBehavior" from extension FBSSceneSettingsCore',
+          'registering method "setWatchdogTransitionContext:" from extension FBSSceneTransitionContextCore',
         ].join("\n"),
         crashIdsBefore: ["old"],
         crashIdsAfter: ["old"],
@@ -58,6 +60,55 @@ describe("normalizeDiagnostics", () => {
     );
     expect(evidence.logs.categories.watchdog).toBe(false);
     expect(classifyDiagnosticImpact(evidence).reasons).not.toContain("watchdog");
+  });
+
+  it("ignores WebKit memory-pressure relief when looking for warnings", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText:
+          "WebContent[7288] Memory pressure relief: Total: res = 12025856/11026432/-999424",
+        crashIdsBefore: ["old"],
+        crashIdsAfter: ["old"],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-11-13T03:53:17.445Z" }],
+      },
+      "2026-11-13T03:53:00.000Z",
+      "2026-11-13T03:56:00.000Z",
+    );
+    expect(evidence.logs.categories.memoryWarning).toBe(false);
+  });
+
+  it("still flags a real memory warning", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "Received memory warning (level 1)",
+        crashIdsBefore: ["old"],
+        crashIdsAfter: ["old"],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-11-13T03:53:17.445Z" }],
+      },
+      "2026-11-13T03:53:00.000Z",
+      "2026-11-13T03:56:00.000Z",
+    );
+    expect(evidence.logs.categories.memoryWarning).toBe(true);
+  });
+
+  it("ignores FrontBoard method registration that mentions jetsamPriority", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: [
+          'registering method "jetsamPriority" from extension FBSSceneSettingsCore',
+          'registering method "setJetsamPriority:" from extension FBSSceneSettingsCore',
+          // CFPreferences key lookup: the app asking whether the pref exists.
+          'found no value for key LogMemoryJetsamDetails in CFPrefsSearchListSource',
+        ].join("\n"),
+        crashIdsBefore: ["old"],
+        crashIdsAfter: ["old"],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-11-13T03:53:17.445Z" }],
+      },
+      "2026-11-13T03:53:00.000Z",
+      "2026-11-13T03:56:00.000Z",
+    );
+    expect(evidence.logs.categories.jetsam).toBe(false);
+    expect(classifyDiagnosticImpact(evidence).reasons).not.toContain("jetsam");
   });
 
   it("still flags a real watchdog termination line", () => {
@@ -75,7 +126,8 @@ describe("normalizeDiagnostics", () => {
     expect(classifyDiagnosticImpact(evidence).reasons).toContain("watchdog");
   });
 
-  it("makes an incomplete Crash query unavailable rather than clean", () => {    const evidence = normalizeDiagnostics(
+  it("makes an incomplete Crash query unavailable rather than clean", () => {
+    const evidence = normalizeDiagnostics(
       { crashQueryError: "device disconnected" },
       "2026-10-17T00:00:00.000Z",
       "2026-10-17T00:01:00.000Z",
@@ -220,6 +272,26 @@ describe("classifyDiagnosticImpact", () => {
         "crash-detection-unavailable",
         "lifecycle-evidence-unavailable",
       ]),
+    );
+  });
+
+  it("treats an explicitly queried empty crash list as available, not missing", () => {
+    // A healthy device has zero crashes. Presence of the arrays means "we
+    // asked"; their length must not decide whether the query happened.
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "",
+        crashIdsBefore: [],
+        crashIdsAfter: [],
+        lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }],
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.crashes.status).toBe("available");
+    expect(evidence.crashes.newIds).toEqual([]);
+    expect(classifyDiagnosticImpact(evidence).reasons).not.toContain(
+      "crash-detection-unavailable",
     );
   });
 

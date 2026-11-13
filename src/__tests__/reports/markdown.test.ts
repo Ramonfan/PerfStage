@@ -156,6 +156,7 @@ describe("renderMarkdownReport", () => {
       "## 测试计划",
       "## 动作时间线",
       "## 性能指标",
+      "## 执行记录",
       "## 稳定性诊断",
       "## 证据文件",
       "## 限制与未知项",
@@ -172,6 +173,27 @@ describe("renderMarkdownReport", () => {
     const md = renderMarkdownReport(makeReport({ status: "invalid" }));
     expect(md).toContain("未知");
     expect(md).toContain("结束时间");
+  });
+
+  it("renders runner notes so the measurement window is part of the report", () => {
+    const md = renderMarkdownReport(
+      makeReport({
+        run: makeRun({
+          notes:
+            "hitches window 5951–13443ms of the trace | hitches analysis: No frames between 9000ms and 10000ms",
+        }),
+      }),
+    );
+    expect(md).toContain("## 执行记录");
+    // The window and the analyzer warning are evidence: without them a low
+    // count is indistinguishable from a window that missed the interaction.
+    expect(md).toContain("hitches window 5951–13443ms");
+    expect(md).toContain("No frames between 9000ms and 10000ms");
+  });
+
+  it("says so when there are no runner notes", () => {
+    const md = renderMarkdownReport(makeReport({ run: makeRun({ notes: undefined }) }));
+    expect(md).toContain("无执行备注");
   });
 
   it("includes the unavailability caveat when crash listing is unavailable", () => {

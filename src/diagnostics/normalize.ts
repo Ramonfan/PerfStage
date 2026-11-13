@@ -135,13 +135,25 @@ function scanCategories(logText: string | undefined): LogCategories {
 
 /**
  * Some category words appear in benign framework chatter. The most common is
- * `watchdog`: WebKit's `XPCConnectionTerminationWatchdog` assertion and
- * hangtracer's `Watchdog monitoring` debug line are not watchdog terminations.
- * Excluding those lines keeps the watchdog signal meaningful instead of
- * failing every Take that touches WebKit.
+ * `watchdog`: WebKit's `XPCConnectionTerminationWatchdog` assertion, FrontBoard
+ * method-registration debug lines (`defaultWatchdogBehavior`,
+ * `watchdogTransitionContext`) and hangtracer's `Watchdog monitoring` line are
+ * not watchdog terminations. Excluding those lines keeps the watchdog signal
+ * meaningful instead of failing every Take that touches WebKit.
+ *
+ * `jetsam` has the same problem: `registering method "jetsamPriority"` is a
+ * FrontBoard debug line, and `LogMemoryJetsamDetails` is a CFPreferences key
+ * lookup (the app asking whether that pref exists), not a memory kill. The
+ * full-log path (which no longer keeps only the tail) surfaces these early
+ * startup lines, so they must be filtered by name rather than by position.
  */
 const CATEGORY_LINE_EXCLUDES: Partial<Record<keyof LogCategories, RegExp>> = {
-  watchdog: /[A-Za-z]Watchdog\b|Watchdog monitoring/i,
+  watchdog:
+    /XPCConnectionTerminationWatchdog|Watchdog monitoring|defaultWatchdogBehavior|watchdogTransitionContext/i,
+  jetsam: /jetsamPriority|LogMemoryJetsamDetails/i,
+  // WebKit logs a routine "Memory pressure relief" after reclaiming memory;
+  // it is the response, not a warning delivered to the app.
+  memoryWarning: /memory pressure relief/i,
 };
 
 function matchesCategory(
@@ -259,8 +271,18 @@ export function normalizeDiagnostics(
   const beforeIds = input.crashIdsBefore ?? [];
   const afterIds = input.crashIdsAfter ?? [];
   const reports = input.crashReports ?? [];
+  /**
+   * Presence, not length, decides whether the crash query succeeded.
+   *
+   * A healthy device has an empty crash list. Treating `[]` as "no evidence"
+   * made every Take on a clean device `partial` — the exact false negative the
+   * evidence gate exists to prevent. An omitted field still means "we never
+   * asked".
+   */
   const hasCrashEvidence =
-    beforeIds.length > 0 || afterIds.length > 0 || reports.length > 0;
+    input.crashIdsBefore !== undefined ||
+    input.crashIdsAfter !== undefined ||
+    reports.length > 0;
 
   const crashes: CrashEvidence = input.crashQueryError
     ? {
