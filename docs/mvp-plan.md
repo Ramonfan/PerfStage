@@ -147,10 +147,11 @@ MVP 只有全部满足才算完成：
 | D6 | `status` 与 `gate` 分离 | `status` 表示测试是否有效，`gate` 表示指标是否达标 | 需要调整现有 `deriveFinalStatus` 语义 |
 | D7 | 继续用文件系统，不引入数据库 | 单项目数据量小；M4 再考虑索引 | 跨 run 查询靠目录扫描 |
 | D8 | 配置向后兼容，新增可选 `adapters` | 不影响已初始化项目 | 需要 schema 版本处理 |
-| D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 26 人日 |
+| D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 28.5 人日 |
 | D10 | **真机优先**，模拟器仅补位（已确认） | 卡顿/Hitches 在模拟器上不可信 | 需要一台稳定真机 |
 | D11 | `blockMs` 改由 Animation Hitches 的 hang 时长推导 | 少一轮回放，避免 release 包符号化 | 语义从「主线程阻塞」变为「最长 hang」 |
 | D12 | `memoryMB` 改用 Activity Monitor 的 `phys_footprint` | Allocations 在 Xcode 27.2 / iOS 27 上系统性失效 | 全进程录制，需按进程名筛选 |
+| D13 | **PerfStage 自解析全部 trace 指标**，instruments-mcp 只负责录制 | 行为一致；不必 fork 依赖；解析口径由产品自己掌握 | 需要自己维护 4 个指标的解析器 |
 
 ### D4 的具体后果
 
@@ -199,6 +200,12 @@ src/
 │   │   └── evidence.ts       # 日志 / Crash / 生命周期收尾
 │   └── errors.ts             # 可重试 / 不可重试 / 设备断开
 ├── analysis/
+│   ├── trace/
+│   │   ├── xml.ts            # xctrace XML：列顺序 / id-ref / sentinel
+│   │   └── export.ts         # xctrace export --xpath / --toc
+│   ├── parsers/
+│   │   ├── app-launch.ts     # life-cycle-period + dyld-activity-interval
+│   │   └── activity-monitor.ts # phys_footprint 序列与斜率
 │   ├── thresholds.ts         # warn/fail → verdict，汇总 gate
 │   └── metrics.ts            # 指标标准化（名称、单位、来源）
 ├── tools/
@@ -328,7 +335,7 @@ export interface CollectedMetric {
 | --- | --- | --- | --- | --- |
 | `hitches` | Animation Hitches | `totalHangs` | 次 | 已验证：滑动下可采到 903 hangs |
 | `blockMs` | Animation Hitches | `max(hangs[].durationMs)` | ms | **改为与 hitches 同 pass**，避免 Time Profiler 符号化 |
-| `launchMs` | App Launch | `life-cycle-period` | ms | 模板可录；解析器需适配（见 E0-7） |
+| `launchMs` | App Launch | `life-cycle-period` | ms | 已适配，实测 274.3ms（cold） |
 | `memoryMB` | Activity Monitor | 目标进程 `phys_footprint` 中位数 | MB | `--all-processes`；已验证 113.35 MiB |
 
 约束：
@@ -508,15 +515,15 @@ perfstage report <runId>
 - [x] GitHub Actions：Node 20，`npm ci && npm run build && npm test`
 - [x] 补齐 `.gitignore`、README 链接、MVP 文档
 - [x] 真机 `start_profiling` 验证：`launch_path` 冷启动稳定，产出 trace + JSON
-- [ ] `start_profiling` 失败即报错（E0-6）
-- [ ] App Launch 解析器适配（E0-7）
-- [x] 内存口径验证：Allocations 不可用，Activity Monitor 可用（解析移植见 E0-8）
+- [x] `start_profiling` 失败即报错（E0-6）
+- [x] App Launch 解析器适配（E0-7）：`life-cycle-period`，实测 274.3ms
+- [x] Activity Monitor TS 解析移植（E0-8）：实测 NNIM 113.5 MiB
 - [ ] 录制 `mobile_list_elements_on_screen` 与 `stop_profiling` fixture（E0-4）
 - [ ] 验证独立 client 并发日志采集（E0-5）
 
 **交付物：** 绿色 CI；`docs/spikes/m0-device-spike.md`；指标可行性结论。
 
-**验收：** 新克隆仓库可一键构建与测试；真机可稳定产出至少 3 个指标。
+**验收：** 新克隆仓库可一键构建与测试；真机可稳定产出至少 4 个指标。
 
 ### M1 — 可信单次（5 人日）
 
@@ -621,7 +628,7 @@ perfstage report <runId>
 | E3-2 | DeviceDriver 接口 | P0 | 0.5d | — | 类型冻结 |
 | E3-3 | mobile-mcp 适配器 | P0 | 1.5d | E3-2 | 动作全部可执行 |
 | E3-4 | MetricCollector 接口 | P0 | 0.5d | — | 类型冻结 |
-| E3-5 | instruments 适配器 | P0 | 1.5d | E3-4 | 4 指标可采集 |
+| E3-5 | instruments 适配器（录制 + PerfStage 解析） | P0 | 1.5d | E3-4 | 4 指标可采集 |
 | E3-6 | 证据适配器 | P0 | 1d | E3-3 | 日志/Crash/生命周期 |
 | E3-7 | Runner 编排 | P0 | 1d | E3-3..6 | 全链路可跑 |
 | E3-8 | `run_performance_test` | P0 | 1d | E3-7 | 返回契约完整 |
@@ -635,6 +642,8 @@ perfstage report <runId>
 | E5-1 | 运行历史索引 | P2 | 2d | v0.1 | 可列出历史 |
 | E5-2 | 基线对比 | P2 | 2d | E5-1 | 可对比两次 |
 
+> 2026-11-13：E0-6（start fail-fast）、E0-7（App Launch 解析）、E0-8（Activity Monitor 解析）已完成，见 `docs/spikes/m0-device-spike.md` 第 8 节。M0 剩余 E0-4（fixtures）与 E0-5（并发日志）。
+
 合计 P0：约 28.5 人日（6 周，含缓冲）；P2 另行 4 人日。
 
 ---
@@ -643,7 +652,7 @@ perfstage report <runId>
 
 | 周 | 主要工作 | 演示节点 |
 | --- | --- | --- |
-| W1 | M0 收尾 + M1 前半 | CI 绿；3 个指标在真机可采；缺 trace 时 `partial` |
+| W1 | M0 收尾 + M1 前半 | CI 绿；4 个指标在真机可采；缺 trace 时 `partial` |
 | W2 | M1 收尾 + M2 | 同一 Skill 连续 3 次；阈值 gate 生效 |
 | W3 | M3 前半（client / 适配器） | Runner 跑通一个动作 + 一个指标 |
 | W4 | M3 后半（编排 / 工具 / 测试） | 一键执行 2 个场景 |

@@ -9,7 +9,7 @@
 | 被测 App | NN（`com.nndev.im`） |
 | 工程 | `/Users/leigod/雷神/App改造/nnios`（NNIM.xcworkspace） |
 | 工作区 | `/Users/leigod/雷神/App改造/.performance-test`（5 个场景） |
-| 结论 | **执行链路与 4 个指标均可行；有 2 个必须修的代码缺口** |
+| 结论 | **执行链路与 4 个指标均可行；3 个代码缺口已修复** |
 
 ## 1. 结论摘要
 
@@ -19,9 +19,10 @@
 | `start_profiling` / `stop_profiling` | 可用，但 stop 必须放宽客户端超时 |
 | Time Profiler（CPU） | 可用；`launch_path` 方式有符号，`attach` 方式在 release 包上常无符号 |
 | Animation Hitches | 可用；真实滑动下采到 903 个 hang |
-| App Launch | 能录到 trace，但解析器返回 `0ms / unknown`，**必须修** |
+| App Launch | 可用；PerfStage 解析冷启动 **274.3ms** |
 | Allocations（内存） | **不可用**：TOC 里没有任何 allocation 表 |
-| Activity Monitor（内存） | **可用**：`--all-processes` + `phys_footprint`，NNIM 113.35 MiB |
+| Activity Monitor（内存） | **可用**：`--all-processes` + `phys_footprint`，PerfStage 解析 NNIM 113.5 MiB |
+| 指标解析归属 | **PerfStage 自解析 4 个指标**；instruments-mcp 只负责录制 |
 | attach 稳定性 | 有竞态；推荐 `launch_path` 冷启动录制 |
 | 失败时的 MCP server | 原实现会直接崩溃，**已修复** |
 
@@ -49,7 +50,7 @@
 | --- | --- | --- | --- |
 | `hitches` | Animation Hitches | 空闲 0；滑动后 903 hangs（1 minor 100ms + 902 micro） | ✅ |
 | `blockMs`（原方案） | Time Profiler | `mainThreadBlockers` 为空；release 包 attach 时 `needsSymbolication=true`，hotspots 为 0 | ⚠️ 需改方案 |
-| `launchMs` | App Launch | trace 有 `life-cycle-period` / `dyld-activity-interval` / `time-profile`，解析器却返回 `0ms / unknown` | ❌ 需修解析器 |
+| `launchMs` | App Launch | trace 有 `life-cycle-period` / `dyld-activity-interval`；PerfStage 解析 **274.3ms（cold）** | ✅ |
 | `memoryMB`（原方案） | Allocations | 直接 attach、挂起后 attach、`--launch` 三种方式都没有 allocation 表；伴随 `dylibs overlap` 告警 | ❌ 工具链问题 |
 | `memoryMB`（新方案） | Activity Monitor | `--all-processes` 产出 `activity-monitor-process-live` 表；`analyze_memory.py` 读到 NNIM 113.35 MiB | ✅ |
 
@@ -126,31 +127,53 @@ Node.js v22.16.0
 
 已改为 `.finally(...).catch(() => {})`，并重新构建 `dist/`。修复后同样场景返回结构化错误 `No active recording`，server 不再退出。
 
-### P0-2：`start_profiling` 对“立即失败”仍返回 `recording`
+### P0-2：`start_profiling` 失败即报错（已修复）
 
-即使 `xctrace` 已经报错退出，工具仍返回：
+原实现即使 `xctrace` 已经报错退出，工具仍返回：
 
 ```json
 { "status": "recording", "tracePath": "…" }
 ```
 
-Runner 无法从返回值判断 attach 是否真的成功。建议 M0 补一个 fail-fast 窗口（启动后 1–2s 内检查子进程是否已非零退出），否则 Runner 只能靠“stop 时报 No active recording”兜底。
+Runner 无法从返回值判断 attach 是否真的成功。现已在 `instruments-mcp-server/src/tools/simulator.ts` 增加 **2.5s fail-fast 窗口**：启动后若 xctrace 已非零退出，直接返回结构化 `isError`，不再写入 `activeRecording`。
 
-### P0-3：App Launch 解析器与 TOC 表名不匹配
+验证：
 
-TOC 实际表名是 `life-cycle-period`，解析器查找的是 `app-launch` / `lifecycle` / `os-signpost`，因此返回：
+```text
+# 负向：进程不存在
+start => { "error": "xctrace exited before the recording started",
+           "detail": "xctrace recording failed (exit 19): Cannot find process matching name: NOPE" }
+stop  => No active recording（server 存活）
+
+# 正向：bundleId 冷启动
+start => { "status": "recording", "template": "Time Profiler", ... }
+stop  => 1864 samples
+```
+
+该修改位于 sibling 仓库 `instruments-mcp-server`，目前**未提交**（该仓库存在用户未提交的 WIP 改动，仅修改了 `src/tools/simulator.ts` 并重建 `dist/`）。补丁已归档到 [`docs/patches/instruments-mcp-start-fail-fast.patch`](../patches/instruments-mcp-start-fail-fast.patch)，可在该仓库用 `git apply` 应用。
+
+### P0-3：App Launch 解析器已适配 `life-cycle-period`（已修复）
+
+原解析器查找 `app-launch` / `lifecycle` / `os-signpost`，但 TOC 实际表名是 `life-cycle-period`，因此返回：
 
 ```text
 === App Launch === severity: [OK] total: 0ms type: unknown
 ```
 
-需要按 `life-cycle-period` + `dyld-activity-interval` 重写取值逻辑，并用这份 trace 做 fixture。
+PerfStage 新增 `src/analysis/parsers/app-launch.ts`，按 `life-cycle-period` 的 `start` / `duration` / `period` / `process` 列计算：
+
+- `launchMs` = 首个 launch 周期开始 → 最后一个 launch 周期结束（排除 Foreground / Background）；
+- `launchType` = 出现 `Initializing` 判为 cold；
+- `phases` 保留每一条生命周期记录；
+- 附带 `dyld-activity-interval` 的 pre-main 摘要。
+
+用 `/tmp/launch2.trace` 实测：**274.3ms / cold / 11 个 launch 阶段**。
 
 ### P0-4：Allocations 不可用，改用 Activity Monitor（已解决）
 
 Allocations 在当前 Xcode / iOS 组合上系统性地产不出 allocation 表，非热更新 App 同样失败。**不再尝试修 Allocations**，内存指标改用 Activity Monitor + `phys_footprint`，复用 `analyze_memory.py` 的解析口径。
 
-遗留工作：把 Python 解析逻辑移植到 TypeScript，按进程名选目标，输出 `memoryMB` 与 `netGrowth` / `slope`。
+Python 口径已移植到 TypeScript（`src/analysis/parsers/activity-monitor.ts`）：按 pid / 进程名选择目标，输出 `memoryMB`（median footprint）、`netGrowth`、`slope` 与逐样本序列。
 
 ## 4. 对 Runner 的直接影响
 
@@ -208,8 +231,9 @@ node scripts/spike-attach.mjs \
 # 录制期间驱动 UI（两个 MCP 并行）
 node scripts/spike-run.mjs
 
-# 解析已有 trace
-# profile_hitches({ trace_path: "<path>" })
+# 解析已有 trace（PerfStage 自解析）
+node scripts/analyze-trace.mjs --template launch --trace /tmp/launch2.trace --process NN
+node scripts/analyze-trace.mjs --template memory --trace /tmp/actmon4.trace --pid 6764
 ```
 
 ## 7. 证据文件
@@ -224,3 +248,41 @@ node scripts/spike-run.mjs
 | `spike-run-hitches.json` | 12 次滑动期间录制；stop 超时，trace 后续单独解析 |
 | `hitches-with-swipes.txt` | 316MB trace 的解析结果：903 hangs |
 | `activity-monitor-memory.json` | Activity Monitor 全进程内存序列，NNIM 113.35 MiB |
+| `perfstage-parse-launch.json` | PerfStage 自解析结果：274.3ms / cold |
+| `perfstage-parse-memory.json` | PerfStage 自解析结果：NNIM 113.5 MiB / 9 samples |
+
+## 8. M0 修正落地（2026-11-13）
+
+按「**PerfStage 自解析全部 trace 指标，instruments-mcp 只负责录制**」的决策，M0 的三个代码缺口已落地：
+
+| 任务 | 实现 | 验证 |
+| --- | --- | --- |
+| E0-6 | `instruments-mcp-server` 的 `start_profiling` 增加 2.5s fail-fast 窗口 | 负向 attach 返回 `isError`；server 存活；正向冷启动 1864 samples |
+| E0-7 | `src/analysis/parsers/app-launch.ts` 解析 `life-cycle-period` + `dyld-activity-interval` | 真实 trace：`launchMs=274.3`、`launchType=cold`、11 个阶段 |
+| E0-8 | `src/analysis/parsers/activity-monitor.ts` 移植 Python 口径 | 真实 trace：NNIM `median=113.5 MiB`、`slope=-8.628 MiB/min`、9 samples |
+
+配套模块：
+
+| 模块 | 职责 |
+| --- | --- |
+| `src/analysis/trace/xml.ts` | 解析 xctrace XML，处理 `<schema>` 列顺序、`id`/`ref` 去重、`<sentinel/>` |
+| `src/analysis/trace/export.ts` | `xcrun xctrace export --xpath` / `--toc` 封装 |
+| `scripts/analyze-trace.mjs` | 对已有 trace 复跑两个解析器，产出 JSON |
+
+复跑命令：
+
+```bash
+# App Launch
+node scripts/analyze-trace.mjs --template launch \
+  --trace /tmp/launch2.trace --process NN \
+  --out docs/spikes/perfstage-parse-launch.json
+
+# Activity Monitor
+node scripts/analyze-trace.mjs --template memory \
+  --trace /tmp/actmon4.trace --pid 6764 \
+  --out docs/spikes/perfstage-parse-memory.json
+```
+
+`launchMs` 的口径说明：life-cycle 表是层级结构，同一周期标签会出现在多条子记录中，因此解析器**不做按标签合并**，而是保留每条生命周期记录，并用「首个 launch 周期开始 → 最后一个 launch 周期结束」计算总时长。`Foreground - Active` 等前台周期被排除，避免把整段录制算成启动时间。
+
+`memoryMB` 的口径：取目标进程 `phys_footprint` 的**中位数**；`slope` 用真实采样时间戳做最小二乘，而不是假设固定 1s 间隔。

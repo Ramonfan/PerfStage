@@ -1,0 +1,257 @@
+{
+  "analyzedAt": "2026-11-13T03:09:08.338Z",
+  "trace": "/tmp/actmon4.trace",
+  "template": "memory",
+  "elapsedMs": 2667,
+  "result": {
+    "template": "Activity Monitor",
+    "pid": 6764,
+    "processName": "NNIM",
+    "summary": {
+      "sampleCount": 9,
+      "firstMiB": 114.85,
+      "lastMiB": 113.5,
+      "minMiB": 113.5,
+      "maxMiB": 114.85,
+      "medianMiB": 113.5,
+      "netGrowthMiB": -1.35,
+      "slopeMiBPerMin": -8.628,
+      "realLastMiB": 244.86,
+      "realMaxMiB": 244.86,
+      "privateLastMiB": 99.91,
+      "privateMaxMiB": 102.44
+    },
+    "seriesMiB": [
+      114.85,
+      114.69,
+      113.5,
+      113.5,
+      113.5,
+      113.5,
+      113.5,
+      113.5,
+      113.5
+    ],
+    "processes": [
+      {
+        "pid": 6183,
+        "name": "smoba",
+        "summary": {
+          "sampleCount": 5,
+          "firstMiB": 936.32,
+          "lastMiB": 936.32,
+          "minMiB": 936.32,
+          "maxMiB": 936.32,
+          "medianMiB": 936.32,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 14.13,
+          "realMaxMiB": 14.13,
+          "privateLastMiB": 0.03,
+          "privateMaxMiB": 17592186044414.69
+        }
+      },
+      {
+        "pid": 6024,
+        "name": "News",
+        "summary": {
+          "sampleCount": 5,
+          "firstMiB": 555.3,
+          "lastMiB": 555.3,
+          "minMiB": 555.3,
+          "maxMiB": 555.3,
+          "medianMiB": 555.3,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 20.94,
+          "realMaxMiB": 20.94,
+          "privateLastMiB": 6.91,
+          "privateMaxMiB": 7.03
+        }
+      },
+      {
+        "pid": 73,
+        "name": "backboardd",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 240.28,
+          "lastMiB": 198.35,
+          "minMiB": 198.35,
+          "maxMiB": 240.41,
+          "medianMiB": 207.89,
+          "netGrowthMiB": -41.93,
+          "slopeMiBPerMin": -261.656,
+          "realLastMiB": 77.27,
+          "realMaxMiB": 78.7,
+          "privateLastMiB": 42.19,
+          "privateMaxMiB": 73.97
+        }
+      },
+      {
+        "pid": 0,
+        "name": "kernel",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 135.19,
+          "lastMiB": 135.14,
+          "minMiB": 135.14,
+          "maxMiB": 135.19,
+          "medianMiB": 135.14,
+          "netGrowthMiB": -0.05,
+          "slopeMiBPerMin": -0.162,
+          "realLastMiB": 0,
+          "realMaxMiB": 0,
+          "privateLastMiB": 0,
+          "privateMaxMiB": 0
+        }
+      },
+      {
+        "pid": 5005,
+        "name": "SpringBoard",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 131,
+          "lastMiB": 131.06,
+          "minMiB": 131,
+          "maxMiB": 131.06,
+          "medianMiB": 131.06,
+          "netGrowthMiB": 0.06,
+          "slopeMiBPerMin": 0.216,
+          "realLastMiB": 109.14,
+          "realMaxMiB": 109.28,
+          "privateLastMiB": 72.95,
+          "privateMaxMiB": 76.66
+        }
+      },
+      {
+        "pid": 6764,
+        "name": "NNIM",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 114.85,
+          "lastMiB": 113.5,
+          "minMiB": 113.5,
+          "maxMiB": 114.85,
+          "medianMiB": 113.5,
+          "netGrowthMiB": -1.35,
+          "slopeMiBPerMin": -8.628,
+          "realLastMiB": 244.86,
+          "realMaxMiB": 244.86,
+          "privateLastMiB": 99.91,
+          "privateMaxMiB": 102.44
+        }
+      },
+      {
+        "pid": 2487,
+        "name": "Preferences",
+        "summary": {
+          "sampleCount": 5,
+          "firstMiB": 68.64,
+          "lastMiB": 68.64,
+          "minMiB": 68.64,
+          "maxMiB": 68.64,
+          "medianMiB": 68.64,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 4.33,
+          "realMaxMiB": 4.33,
+          "privateLastMiB": 0.06,
+          "privateMaxMiB": 0.09
+        }
+      },
+      {
+        "pid": 71,
+        "name": "cameracaptured",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 61.67,
+          "lastMiB": 61.67,
+          "minMiB": 61.67,
+          "maxMiB": 61.67,
+          "medianMiB": 61.67,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 10.66,
+          "realMaxMiB": 10.69,
+          "privateLastMiB": 1.09,
+          "privateMaxMiB": 17592186044415.83
+        }
+      },
+      {
+        "pid": 6401,
+        "name": "Music",
+        "summary": {
+          "sampleCount": 5,
+          "firstMiB": 53.36,
+          "lastMiB": 53.36,
+          "minMiB": 53.36,
+          "maxMiB": 53.36,
+          "medianMiB": 53.36,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 4.92,
+          "realMaxMiB": 4.92,
+          "privateLastMiB": 0.03,
+          "privateMaxMiB": 17592186044415.97
+        }
+      },
+      {
+        "pid": 146,
+        "name": "appleh16camerad",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 53.16,
+          "lastMiB": 53.13,
+          "minMiB": 53.13,
+          "maxMiB": 53.99,
+          "medianMiB": 53.16,
+          "netGrowthMiB": -0.03,
+          "slopeMiBPerMin": -3.172,
+          "realLastMiB": 4.88,
+          "realMaxMiB": 4.91,
+          "privateLastMiB": 1.56,
+          "privateMaxMiB": 2.39
+        }
+      },
+      {
+        "pid": 5012,
+        "name": "MercuryPosterExtension",
+        "summary": {
+          "sampleCount": 5,
+          "firstMiB": 52.69,
+          "lastMiB": 52.69,
+          "minMiB": 52.69,
+          "maxMiB": 52.69,
+          "medianMiB": 52.69,
+          "netGrowthMiB": 0,
+          "slopeMiBPerMin": 0,
+          "realLastMiB": 2.89,
+          "realMaxMiB": 2.89,
+          "privateLastMiB": 0.02,
+          "privateMaxMiB": 17592186044415.95
+        }
+      },
+      {
+        "pid": 503,
+        "name": "DTServiceHub",
+        "summary": {
+          "sampleCount": 9,
+          "firstMiB": 48.53,
+          "lastMiB": 49.89,
+          "minMiB": 48.53,
+          "maxMiB": 49.89,
+          "medianMiB": 49.53,
+          "netGrowthMiB": 1.36,
+          "slopeMiBPerMin": 9.219,
+          "realLastMiB": 118.89,
+          "realMaxMiB": 118.89,
+          "privateLastMiB": 275.53,
+          "privateMaxMiB": 275.53
+        }
+      }
+    ],
+    "selection": "pid",
+    "warnings": [],
+    "processCount": 578
+  }
+}

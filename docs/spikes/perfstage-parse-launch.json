@@ -1,0 +1,89 @@
+{
+  "analyzedAt": "2026-11-13T03:07:36.738Z",
+  "trace": "/tmp/launch2.trace",
+  "template": "launch",
+  "elapsedMs": 5612,
+  "result": {
+    "template": "App Launch",
+    "processName": "NN",
+    "launchType": "cold",
+    "launchMs": 274.3,
+    "phases": [
+      {
+        "name": "Initializing - System Interface Initialization",
+        "startMs": 393.75,
+        "endMs": 460.66,
+        "durationMs": 66.91
+      },
+      {
+        "name": "Initializing - Static Runtime Initialization",
+        "startMs": 460.66,
+        "endMs": 484.08,
+        "durationMs": 23.42
+      },
+      {
+        "name": "Launching - UIKit Initialization",
+        "startMs": 486.4,
+        "endMs": 493.47,
+        "durationMs": 7.07
+      },
+      {
+        "name": "Launching - UIKit Scene Creation",
+        "startMs": 493.47,
+        "endMs": 495.7,
+        "durationMs": 2.23
+      },
+      {
+        "name": "Launching - didFinishLaunchingWithOptions()",
+        "startMs": 495.7,
+        "endMs": 495.76,
+        "durationMs": 0.06
+      },
+      {
+        "name": "Launching - UIKit Scene Creation",
+        "startMs": 495.76,
+        "endMs": 500.33,
+        "durationMs": 4.57
+      },
+      {
+        "name": "Launching - sceneWillConnectTo()",
+        "startMs": 500.33,
+        "endMs": 632.4,
+        "durationMs": 132.07
+      },
+      {
+        "name": "Launching - UIKit Scene Creation",
+        "startMs": 632.4,
+        "endMs": 632.53,
+        "durationMs": 0.13
+      },
+      {
+        "name": "Launching - sceneWillEnterForeground()",
+        "startMs": 632.53,
+        "endMs": 632.53,
+        "durationMs": 0
+      },
+      {
+        "name": "Launching - UIKit Scene Creation",
+        "startMs": 632.53,
+        "endMs": 632.99,
+        "durationMs": 0.45
+      },
+      {
+        "name": "Launching - Initial Frame Rendering",
+        "startMs": 632.99,
+        "endMs": 668.06,
+        "durationMs": 35.07
+      }
+    ],
+    "rowCount": 12,
+    "dyld": {
+      "activityCount": 1778,
+      "firstStartMs": 398.05,
+      "lastEndMs": 1091.77,
+      "spanMs": 693.72,
+      "launchExecutableMs": 86.03
+    },
+    "warnings": []
+  }
+}

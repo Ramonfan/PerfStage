@@ -1,0 +1,95 @@
+diff --git a/src/tools/simulator.ts b/src/tools/simulator.ts
+index efbdd0b..cefb682 100644
+--- a/src/tools/simulator.ts
++++ b/src/tools/simulator.ts
+@@ -103,6 +103,11 @@ let activeRecording: (ActiveRecording & {
+   attachProcess?: string;
+ }) | null = null;
+ 
++// How long start_profiling waits before declaring the recording live. xctrace
++// fails fast for a bad process name, a missing device, or a locked kperf; the
++// window turns those into a real tool error instead of a phantom "recording".
++const START_FAIL_FAST_WINDOW_MS = 2_500;
++
+ // ── Tool registration ──────────────────────────────────────────────
+ 
+ export function registerSimulatorTools(server: McpServer): void {
+@@ -420,6 +425,43 @@ Max recording time is 5 minutes (safety limit). Recording stops automatically if
+           timeLimit: max_duration,
+         });
+ 
++        const targetLabel = process || launch_path || "all processes";
++        const deviceLabel = resolvedDevice || "host Mac";
++
++        // Fail fast: xctrace exits within a few hundred milliseconds when it
++        // cannot attach or the device is unavailable. Returning
++        // `status: "recording"` in that case leaves the Runner with an empty
++        // pass that only fails later, at stop_profiling.
++        const startup = await Promise.race([
++          recording.completion.then(
++            () => ({ kind: "exited" as const, message: "xctrace exited with status 0" }),
++            (error: unknown) => ({
++              kind: "failed" as const,
++              message: error instanceof Error ? error.message : String(error),
++            }),
++          ),
++          new Promise<{ kind: "running" }>((resolve) => {
++            setTimeout(() => resolve({ kind: "running" }), START_FAIL_FAST_WINDOW_MS);
++          }),
++        ]);
++
++        if (startup.kind !== "running") {
++          return {
++            content: [{
++              type: "text" as const,
++              text: JSON.stringify({
++                error: "xctrace exited before the recording started",
++                template,
++                process: targetLabel,
++                device: deviceLabel,
++                detail: startup.message,
++                hint: "Verify the device is connected and unlocked, the process or launch path exists, and no other xctrace recording is running.",
++              }, null, 2),
++            }],
++            isError: true,
++          };
++        }
++
+         activeRecording = {
+           ...recording,
+           device: resolvedDevice,
+@@ -427,13 +469,17 @@ Max recording time is 5 minutes (safety limit). Recording stops automatically if
+         };
+ 
+         // Auto-clear activeRecording when the recording completes on its own
+-        // (e.g., max duration reached or xctrace exits unexpectedly)
++        // (e.g., max duration reached or xctrace exits unexpectedly).
++        // Swallow rejections here: start_profiling already returned, and an
++        // unhandled rejection would terminate the whole MCP server.
+         const recordingRef = recording;
+-        recording.completion.finally(() => {
+-          if (activeRecording && activeRecording.startTime === recordingRef.startTime) {
+-            activeRecording = null;
+-          }
+-        });
++        recording.completion
++          .finally(() => {
++            if (activeRecording && activeRecording.startTime === recordingRef.startTime) {
++              activeRecording = null;
++            }
++          })
++          .catch(() => {});
+ 
+         return {
+           content: [{
+@@ -441,8 +487,8 @@ Max recording time is 5 minutes (safety limit). Recording stops automatically if
+             text: JSON.stringify({
+               status: "recording",
+               template,
+-              process: process || launch_path || "all processes",
+-              device: resolvedDevice || "host Mac",
++              process: targetLabel,
++              device: deviceLabel,
+               tracePath: recording.tracePath,
+               maxDuration: max_duration,
+               hint: "Recording started. The user should interact with the app now. Call stop_profiling when done.",
