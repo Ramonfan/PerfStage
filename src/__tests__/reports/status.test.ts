@@ -87,7 +87,7 @@ describe("deriveFinalStatus", () => {
     ).toBe("failed");
   });
 
-  it("returns partial when there is a metric failure", () => {
+  it("keeps status completed when a metric exceeds its fail threshold (D6)", () => {
     expect(
       deriveFinalStatus({
         requestedStatus: "completed",
@@ -95,7 +95,7 @@ describe("deriveFinalStatus", () => {
         missingEvidence: [],
         metricFailures: ["hitches"],
       }),
-    ).toBe("partial");
+    ).toBe("completed");
   });
 
   it("returns completed when no impact, evidence, or failure", () => {

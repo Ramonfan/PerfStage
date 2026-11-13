@@ -13,6 +13,29 @@ export const runStatusSchema = z.enum([
 
 export type RunStatus = z.infer<typeof runStatusSchema>;
 
+/**
+ * `status` and `gate` answer two different questions (D6):
+ *
+ * - `status` — was this Take valid and trustworthy?
+ * - `gate`   — did the measured metrics meet their thresholds?
+ *
+ * A threshold miss keeps `status=completed` and sets `gate=fail`; it must not
+ * pretend the evidence itself was incomplete.
+ */
+export const gateResultSchema = z.enum(["pass", "warn", "fail", "unknown"]);
+
+export type GateResult = z.infer<typeof gateResultSchema>;
+
+export const metricVerdictSchema = z.enum([
+  "pass",
+  "warn",
+  "fail",
+  "unknown",
+  "skipped",
+]);
+
+export type MetricVerdict = z.infer<typeof metricVerdictSchema>;
+
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
   "completed",
   "partial",
@@ -74,8 +97,10 @@ export const metricResultSchema = z
     name: z.string().min(1),
     value: z.unknown().optional(),
     unit: z.string().optional(),
+    instrument: z.string().optional(),
+    tracePath: z.string().optional(),
     threshold: metricThresholdSchema.optional(),
-    verdict: z.enum(["pass", "warn", "fail", "skipped"]).optional(),
+    verdict: metricVerdictSchema.optional(),
     measuredAt: z.string().datetime().optional(),
   })
   .passthrough();
@@ -114,6 +139,8 @@ export const testRunSchema = z.object({
   durationMs: z.number().int().nonnegative().optional(),
   repetitions: z.number().int().positive().default(1),
   currentRepetition: z.number().int().nonnegative().default(0),
+  /** Threshold gate outcome; independent from `status` (D6). */
+  gate: gateResultSchema.optional(),
   actions: z.array(actionRecordSchema).default([]),
   metrics: z.array(metricResultSchema).default([]),
   evidence: diagnosticEvidenceSchema.prefault({}),

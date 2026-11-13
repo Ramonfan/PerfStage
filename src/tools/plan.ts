@@ -126,6 +126,11 @@ export interface PreparePerformanceTestResult {
   planId: string;
   runPath: string;
   planPath: string;
+  /**
+   * The resolved plan, inlined so a Skill or CLI caller can execute the Take
+   * without re-reading `plan.json` (M1).
+   */
+  plan: TestPlan;
   execution: ExecutionMode;
   analysisFocus: AnalysisFocus[];
   metricOverrides?: MetricRequest[];
@@ -424,6 +429,7 @@ export async function preparePerformanceTest(
     planId,
     runPath: buildRunRelativePath(options.runsRoot, runId, RUN_FILE_NAME),
     planPath: planRelative,
+    plan,
     execution: plan.execution,
     analysisFocus: plan.analysisFocus,
     metricOverrides,

@@ -1,36 +1,21 @@
 import { existsSync, promises as fs } from "node:fs";
 import { posix } from "node:path";
-import { z } from "zod";import {
-  normalizeDiagnostics,
-  classifyDiagnosticImpact,
+import { z } from "zod";
+import {
   crashReportSchema,
   lifecycleEventSchema,
   type DiagnosticEvidence,
-  type DiagnosticInput,
 } from "../diagnostics/normalize.js";
-import { deriveFinalStatus } from "../reports/status.js";
-import {
-  buildJsonReport,
-  evidencePathsArray,
-  type JsonReport,
-  type ReportEvidencePath,
-  type ReportEvidencePaths,
-  type ReportFinding,
+import type {
+  ReportEvidencePath,
+  ReportEvidencePaths,
+  ReportFinding,
 } from "../reports/json.js";
-import { renderMarkdownReport } from "../reports/markdown.js";
-import {
-  type TestRun,
-  type ActionRecord,
-  runStatusSchema,
-  actionRecordSchema,
-} from "../model/test-run.js";
-import type { TestPlan } from "../model/test-plan.js";
+import { finalizeRun } from "../runner/finalize.js";
+import type { GateResult, TestRun } from "../model/test-run.js";
+import type { TestPlan as PlanDocument } from "../model/test-plan.js";
+import { runStatusSchema, actionRecordSchema } from "../model/test-run.js";
 import type { RegisterOptions } from "./index.js";
-import {
-  deriveFindings,
-  deriveMissingMetricEvidence,
-  deriveMetricFailures,
-} from "../reports/findings.js";
 
 const evidencePathInputSchema = z
   .object({
@@ -84,7 +69,9 @@ export const finalizeInputSchema = z
               })
               .strict()
               .optional(),
-            verdict: z.enum(["pass", "warn", "fail", "skipped"]).optional(),
+            verdict: z
+              .enum(["pass", "warn", "fail", "unknown", "skipped"])
+              .optional(),
             measuredAt: z.string().datetime().optional(),
           })
           .passthrough(),
@@ -103,6 +90,11 @@ export interface FinalizePerformanceTestError {
 export interface FinalizePerformanceTestResult {
   runId: string;
   status: TestRun["status"];
+  /**
+   * Threshold gate, independent from `status` (D6). A complete Take with a
+   * metric above its fail threshold is `status=completed` + `gate=fail`.
+   */
+  gate: GateResult;
   runPath: string;
   planPath: string;
   jsonPath: string;
@@ -133,46 +125,10 @@ const TERMINAL_STATUSES: ReadonlySet<TestRun["status"]> = new Set([
   "cancelled",
 ]);
 
-/**
- * Test whether `path` looks safe to embed in a run-relative evidence
- * reference. Anything that begins with a POSIX `/`, has a Windows drive
- * letter, or contains a parent reference (`..`) is rejected so the
- * persisted / rendered reports never leak the absolute paths the caller
- * may have supplied in their `sourcePath`.
- */
-function isSafeRunRelative(path: string): boolean {
-  if (typeof path !== "string" || path.length === 0) return false;
-  if (path.startsWith("/")) return false;
-  if (/^[a-zA-Z]:[\\/]/.test(path)) return false;
-  if (path.includes("..")) return false;
-  // Disallow any segment that still carries a backslash — that would
-  // indicate the caller forgot to translate Windows separators.
-  if (path.includes("\\")) return false;
-  return true;
-}
-
-function sanitizeEvidencePaths(
-  map: Record<string, string | undefined>,
-): ReportEvidencePaths {
-  const out: ReportEvidencePaths = {};
-  for (const [key, value] of Object.entries(map)) {
-    if (typeof value === "string" && isSafeRunRelative(value)) {
-      out[key] = value;
-    }
-  }
-  return out;
-}
-
-function isError(
-  value: HandlerResult,
-): value is FinalizePerformanceTestError {
-  return typeof (value as { error?: unknown }).error === "string";
-}
-
 async function loadStoredPlan(
   options: RegisterOptions,
   runId: string,
-): Promise<TestPlan | null> {
+): Promise<PlanDocument | null> {
   if (!options.runStore) {
     return null;
   }
@@ -184,87 +140,57 @@ async function loadStoredPlan(
   }
   try {
     const text = await fs.readFile(planAbs, "utf8");
-    return JSON.parse(text) as TestPlan;
+    return JSON.parse(text) as PlanDocument;
   } catch {
     return null;
   }
 }
 
 /**
- * Resolve the canonical action reference from the plan so the persisted
- * action record always carries the validated, defaulted action shape
- * rather than free-form `z.unknown` blobs.
- */
-function pickAction(
-  action: z.infer<typeof actionRecordSchema>,
-  plan: TestPlan | null,
-): ActionRecord {
-  const planAction = plan?.actions.find((a) => a.id === action.actionId);
-  return {
-    actionId: action.actionId,
-    ...(planAction !== undefined ? { action: planAction } : {}),
-    outcome: action.outcome,
-    attempts: action.attempts,
-    startedAt: action.startedAt,
-    endedAt: action.endedAt ?? null,
-    durationMs: action.durationMs,
-    error: action.error,
-    notes: action.notes,
-  };
-}
-
-/**
  * Build a one-sentence, human-readable summary that the tool surfaces to
- * Claude. It always identifies the run id, the final status, and the most
- * notable stability signal (new crash, jetsam/watchdog, missing evidence,
- * unavailable diagnostics, or simply "clean").
+ * Claude. It always identifies the run id, the final status, the gate, and
+ * the most notable stability signal.
  */
 function buildSummary(
   result: {
     runId: string;
     status: TestRun["status"];
+    gate: GateResult;
     evidencePaths: ReportEvidencePath[];
     findings: ReportFinding[];
     diagnostics: DiagnosticEvidence;
   },
 ): string {
-  const hasNewCrash = result.findings.some((f) => f.code === "new-crash");
-  const hasUnavailableDiagnostics = result.findings.some((f) =>
-    f.code.endsWith("-unavailable"),
+  const hasNewCrash = result.findings.some((finding) => finding.code === "new-crash");
+  const hasUnavailableDiagnostics = result.findings.some((finding) =>
+    finding.code.endsWith("-unavailable"),
   );
   const failureReasons = result.findings
-    .filter((f) => f.severity === "failure")
-    .map((f) => f.code);
+    .filter((finding) => finding.severity === "failure")
+    .map((finding) => finding.code);
   const evidenceCount = result.evidencePaths.length;
   if (hasNewCrash) {
-    return `Run ${result.runId} ended at ${result.status}: new crash detected during the run.`;
+    return `Run ${result.runId} ended at ${result.status} (gate: ${result.gate}): new crash detected during the run.`;
   }
   if (failureReasons.length > 0) {
-    return `Run ${result.runId} ended at ${result.status} due to: ${failureReasons.join(", ")}.`;
+    return `Run ${result.runId} ended at ${result.status} (gate: ${result.gate}) due to: ${failureReasons.join(", ")}.`;
   }
   if (hasUnavailableDiagnostics) {
-    return `Run ${result.runId} ended at ${result.status}: diagnostics incomplete (${result.findings.length} caveats).`;
+    return `Run ${result.runId} ended at ${result.status} (gate: ${result.gate}): diagnostics incomplete (${result.findings.length} caveats).`;
   }
   if (result.status === "completed") {
-    return `Run ${result.runId} completed cleanly with ${evidenceCount} piece(s) of evidence saved.`;
+    return `Run ${result.runId} completed with gate ${result.gate} and ${evidenceCount} piece(s) of evidence saved.`;
   }
-  return `Run ${result.runId} ended at ${result.status}.`;
+  return `Run ${result.runId} ended at ${result.status} (gate: ${result.gate}).`;
 }
 
 /**
  * Shared handler for both the production MCP tool and the test harness.
  *
- * Concurrency safety: persistence of `run.json` (and the on-persist hook
- * used to write report.json / report.md) is fenced by an exclusive lock
- * file inside the run directory. Concurrent `finalize` calls cannot both
- * pass the prepared-status check: the loser observes `concurrent` and
- * returns a structured tool error.
- *
- * Workspace safety: the handler refuses to copy evidence, write the
- * report, or mkdir the run directory until the workspace manager has
- * confirmed the run is owned by the current workspace AND the run
- * directory passes the symlink-escape guard. Any failure short-circuits
- * with a structured tool error before any side effect on disk.
+ * The handler is a thin adapter around `finalizeRun`: it validates input,
+ * loads the stored plan, guards the workspace, copies caller-supplied
+ * evidence into the run directory, and maps the shared outcome to tool
+ * results or structured errors.
  */
 export async function finalizePerformanceTest(
   rawInput: unknown,
@@ -287,13 +213,6 @@ export async function finalizePerformanceTest(
   }
   const input = parsed.data;
 
-  // Reject prepared/running requests outright. `finalize` is only
-  // meaningful for terminal outcomes: the run state must already be
-  // non-terminal in `runStore.tryFinalize` (the call would return
-  // `terminal`/`missing`), so accepting a `prepared`/`running`
-  // `requestedStatus` here would silently coerce a non-final value
-  // into a terminal status. Instead we surface a clear tool error
-  // and require the caller to choose a terminal status.
   if (input.requestedStatus === "prepared" || input.requestedStatus === "running") {
     return {
       error: `finalize_performance_test refuses requestedStatus "${input.requestedStatus}"; supply a terminal status (completed, partial, failed, invalid, or cancelled).`,
@@ -302,75 +221,20 @@ export async function finalizePerformanceTest(
 
   const plan = await loadStoredPlan(options, input.runId);
 
-  // Build the mutator closure inside the constant block so the
-  // transition rules apply uniformly regardless of which caller reaches it
-  // first.
-  const pendingEvidence: Array<{
-    kind: string;
-    sourcePath: string;
-    relativePath: string;
-  }> = input.evidencePaths ?? [];
-  /**
-   * Cumulative run-relative evidence paths keyed by evidence kind. Also
-   * stores per-index entries for screenshot_<n> / traceArchive_<n> so the
-   * same map shape can describe list evidence faithfully. The map is
-   * what gets embedded in the JSON report (matching the e2e contract
-   * `reportJson.evidencePaths.deviceLog`).
-   */
-  const copiedEvidenceMap: ReportEvidencePaths = {};
-  /**
-   * Per-kind list of run-relative paths. Used internally while building
-   * the `updatedRun.evidence` update — list-valued evidence in
-   * `TestRun.evidence` (screenshotPaths, traceArchivePaths) still uses
-   * parallel arrays, so we keep both views.
-   */
+  const copiedEvidence: ReportEvidencePaths = {};
   const copiedByKind: Record<string, string[]> = {};
-  const pushCopy = (kind: string, rel: string): void => {
-    copiedEvidenceMap[kind] = rel;
+  const pushCopy = (kind: string, relativePath: string): void => {
+    copiedEvidence[kind] = relativePath;
     if (kind === "screenshot" || kind === "traceArchive") {
       const list = copiedByKind[kind] ?? [];
-      list.push(rel);
+      list.push(relativePath);
       copiedByKind[kind] = list;
     }
-  };
-  const diagnosticInput: DiagnosticInput = {
-    ...(input.diagnostics.logText !== undefined
-      ? { logText: input.diagnostics.logText }
-      : {}),
-    ...(input.diagnostics.logPath !== undefined
-      ? { logPath: input.diagnostics.logPath }
-      : {}),
-    ...(input.diagnostics.logFilters !== undefined
-      ? { logFilters: input.diagnostics.logFilters }
-      : {}),
-    ...(input.diagnostics.crashIdsBefore !== undefined
-      ? { crashIdsBefore: input.diagnostics.crashIdsBefore }
-      : {}),
-    ...(input.diagnostics.crashIdsAfter !== undefined
-      ? { crashIdsAfter: input.diagnostics.crashIdsAfter }
-      : {}),
-    ...(input.diagnostics.crashReports !== undefined
-      ? { crashReports: input.diagnostics.crashReports }
-      : {}),
-    ...(input.diagnostics.lifecycle !== undefined
-      ? { lifecycle: input.diagnostics.lifecycle }
-      : {}),
-    ...(input.diagnostics.crashQueryError !== undefined
-      ? { crashQueryError: input.diagnostics.crashQueryError }
-      : {}),
-    ...(input.diagnostics.logQueryError !== undefined
-      ? { logQueryError: input.diagnostics.logQueryError }
-      : {}),
-    ...(input.diagnostics.lifecycleQueryError !== undefined
-      ? { lifecycleQueryError: input.diagnostics.lifecycleQueryError }
-      : {}),
   };
 
   // Guard first: confirm the run is owned by the current workspace and
   // that the run directory path passes the symlink-escape guard before
-  // we copy any evidence or write any report file. Any failure here
-  // surfaces as a structured tool error and leaves the run directory
-  // untouched.
+  // we copy any evidence or write any report file.
   try {
     await runStore.ensureSafeRun(input.runId);
   } catch (error) {
@@ -381,10 +245,8 @@ export async function finalizePerformanceTest(
     };
   }
 
-  // Guard second: refuse to copy any evidence until we have confirmed
-  // the run exists and has not already reached a terminal status. This
-  // keeps a missing/terminal run from accruing orphan evidence files on
-  // disk.
+  // Guard second: refuse to copy any evidence until the run exists and has
+  // not already reached a terminal status.
   try {
     const existing = await runStore.read(input.runId);
     if (TERMINAL_STATUSES.has(existing.status)) {
@@ -400,18 +262,14 @@ export async function finalizePerformanceTest(
     };
   }
 
-  // Copy phase: now that we know the run is valid and startable, copy
-  // each requested evidence file into the run directory. The source
-  // paths are never persisted; only the run-relative return values of
-  // `runStore.copyEvidence` flow downstream.
-  for (const evidence of pendingEvidence) {
+  for (const evidence of input.evidencePaths ?? []) {
     try {
-      const rel = await runStore.copyEvidence(
+      const relativePath = await runStore.copyEvidence(
         input.runId,
         evidence.sourcePath,
         evidence.relativePath,
       );
-      pushCopy(evidence.kind, rel);
+      pushCopy(evidence.kind, relativePath);
     } catch (error) {
       return {
         error: `复制证据 ${evidence.kind} 失败：${
@@ -421,195 +279,23 @@ export async function finalizePerformanceTest(
     }
   }
 
-  // We deliberately do NOT leak the absolute `input.diagnostics.logPath`
-  // into updatedRun.evidence. If the caller supplied a device log we use
-  // its derived run-relative location (when it was just copied) or omit it
-  // entirely when no copy happened, leaving the absolute path out of any
-  // persisted run state.
-  const copiedLogRel = copiedEvidenceMap.deviceLog;
-
-  let derivedStatus: TestRun["status"] = "completed";
-  let derivedImpact: ReturnType<typeof classifyDiagnosticImpact> = {
-    severity: "none",
-    reasons: [],
-  };
-  let derivedMissing: string[] = [];
-  let derivedFailures: string[] = [];
-  let derivedEvidence: DiagnosticEvidence | null = null;
-  let derivedFindings: ReportFinding[] = [];
-  let derivedUpdatedRun: TestRun | null = null;
-  let derivedMarkdown: string | null = null;
-  let derivedJsonReport: JsonReport | null = null;
-
-  const outcome = await runStore.tryFinalize(input.runId, {
-    mutate: async (current): Promise<TestRun> => {
-      const startedAt = current.startedAt;
-      const endedAt = options.now().toISOString();
-      const evidence: DiagnosticEvidence = normalizeDiagnostics(
-        diagnosticInput,
-        startedAt,
-        endedAt,
-      );
-      // Sanitize any absolute log path that may have been supplied via
-      // `diagnostics.logPath` so it cannot leak into the persisted
-      // `report.json` / `report.md`. The diagnostic evidence object
-      // surfaces `path` for downstream callers; if it points outside
-      // the run directory we drop it rather than echoing an unsafe
-      // string. The `logs.categories`, line count, and status are
-      // preserved.
-      if (
-        typeof evidence.logs.path === "string" &&
-        !isSafeRunRelative(evidence.logs.path)
-      ) {
-        evidence.logs = {
-          ...evidence.logs,
-          path: undefined,
-        };
-      }
-      derivedEvidence = evidence;
-      const impact = classifyDiagnosticImpact(evidence);
-      derivedImpact = impact;
-
-      const missing = deriveMissingMetricEvidence(plan, input.metrics);
-      const failures = deriveMetricFailures(input.metrics);
-      derivedMissing = missing;
-      derivedFailures = failures;
-
-      const status = deriveFinalStatus({
-        requestedStatus: input.requestedStatus,
-        diagnosticsImpact: impact,
-        missingEvidence: missing,
-        metricFailures: failures,
-      });
-      derivedStatus = status;
-
-      const actionRecords: ActionRecord[] = input.actions.map((action) =>
-        pickAction(action, plan),
-      );
-
-      const newEvidence: TestRun["evidence"] = {
-        ...current.evidence,
-        screenshotPaths: [
-          ...(current.evidence.screenshotPaths ?? []),
-          ...(copiedByKind.screenshot ?? []),
-        ],
-        traceArchivePaths: [
-          ...(current.evidence.traceArchivePaths ?? []),
-          ...(copiedByKind.traceArchive ?? []),
-        ],
-      };
-      const crashCopy = copiedEvidenceMap.crashReport;
-      if (crashCopy) newEvidence.crashReportPath = crashCopy;
-      const networkCopy = copiedEvidenceMap.networkCapture;
-      if (networkCopy) newEvidence.networkCapturePath = networkCopy;
-      const lifecycleCopy = copiedEvidenceMap.lifecycleTrace;
-      if (lifecycleCopy) newEvidence.lifecycleTracePath = lifecycleCopy;
-      if (copiedLogRel) newEvidence.deviceLogPath = copiedLogRel;
-
-      const updated: TestRun = {
-        ...current,
-        status,
-        endedAt,
-        durationMs: Math.max(
-          0,
-          new Date(endedAt).getTime() - new Date(startedAt).getTime(),
-        ),
-        actions: actionRecords,
-        metrics: input.metrics.map((metric) => ({
-          name: metric.name,
-          value: metric.value,
-          unit: metric.unit,
-          threshold: metric.threshold,
-          verdict: metric.verdict,
-          measuredAt: metric.measuredAt,
-          // Preserve any extra fields (notably `tracePath`, `instrument`,
-          // and the unknown `result.raw` payload) verbatim so the
-          // persisted run record never silently drops metric metadata
-          // the caller collected via instruments-mcp-server.
-          ...Object.fromEntries(
-            Object.entries(metric).filter(
-              ([key]) =>
-                ![
-                  "name",
-                  "value",
-                  "unit",
-                  "threshold",
-                  "verdict",
-                  "measuredAt",
-                ].includes(key),
-            ),
-          ),
-        })),
-        evidence: newEvidence,
-        notes: input.notes ?? current.notes,
-      };
-      derivedUpdatedRun = updated;
-      return updated;
+  const outcome = await finalizeRun(
+    {
+      runId: input.runId,
+      requestedStatus: input.requestedStatus,
+      plan,
+      actions: input.actions,
+      metrics: input.metrics,
+      diagnostics: input.diagnostics,
+      copiedEvidence,
+      copiedByKind,
+      ...(input.diagnostics.logPath !== undefined
+        ? { fallbackLogPath: input.diagnostics.logPath }
+        : {}),
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
     },
-    acceptStatus: (status) => !TERMINAL_STATUSES.has(status),
-    onPersisted: async (persisted) => {
-      if (!derivedUpdatedRun || persisted.id !== derivedUpdatedRun.id) {
-        // Defensive — should never fire because the mutator and the hook
-        // share the same closure, but a type guard keeps us honest.
-        return;
-      }
-      const findings = deriveFindings({
-        diagnosticsImpact: derivedImpact,
-        missingEvidence: derivedMissing,
-        metricFailures: derivedFailures,
-        requestedStatus: input.requestedStatus,
-        finalStatus: derivedStatus,
-      });
-      derivedFindings = findings;
-
-      // Build the report's evidencePaths map from any of the available
-      // sources, in priority order. A successful copy is always the
-      // preferred source because it is guaranteed run-relative. When no
-      // copy is made (i.e. the caller supplied a path directly through
-      // `diagnostics.logPath`) we fall back to that value so the
-      // interactive-contract e2e test, which only passes a log path,
-      // still finds `reportJson.evidencePaths.deviceLog` populated.
-      // Each candidate is filtered through `sanitizeEvidencePaths` so
-      // absolute paths or paths containing parent references cannot
-      // leak into either `report.json` or `report.md`.
-      const rawMap = {
-        ...(typeof input.diagnostics.logPath === "string"
-          ? { deviceLog: input.diagnostics.logPath }
-          : {}),
-        ...(persisted.evidence.deviceLogPath !== undefined
-          ? { deviceLog: persisted.evidence.deviceLogPath }
-          : {}),
-        ...(persisted.evidence.crashReportPath !== undefined
-          ? { crashReport: persisted.evidence.crashReportPath }
-          : {}),
-        ...(persisted.evidence.networkCapturePath !== undefined
-          ? { networkCapture: persisted.evidence.networkCapturePath }
-          : {}),
-        ...(persisted.evidence.lifecycleTracePath !== undefined
-          ? { lifecycleTrace: persisted.evidence.lifecycleTracePath }
-          : {}),
-        ...copiedEvidenceMap,
-      };
-      const reportMap = sanitizeEvidencePaths(rawMap);
-
-      const jsonReport = buildJsonReport(persisted, derivedEvidence!, {
-        plan,
-        findings,
-        evidencePaths: reportMap,
-      });
-      derivedJsonReport = jsonReport;
-
-      const markdown = renderMarkdownReport(jsonReport);
-      derivedMarkdown = markdown;
-
-      await runStore.writeText(
-        input.runId,
-        "report.json",
-        JSON.stringify(jsonReport, null, 2),
-      );
-      await runStore.writeText(input.runId, "report.md", markdown);
-    },
-  });
+    { runStore, now: options.now },
+  );
 
   if (outcome.kind !== "ok") {
     switch (outcome.kind) {
@@ -636,16 +322,18 @@ export async function finalizePerformanceTest(
     }
   }
 
+  const finalized = outcome.result;
   const result = {
     runId: input.runId,
-    status: derivedStatus,
+    status: finalized.status,
+    gate: finalized.gate,
     runPath: posix.join("run.json"),
     planPath: posix.join("plan.json"),
     jsonPath: posix.join("report.json"),
     markdownPath: posix.join("report.md"),
-    evidencePaths: evidencePathsArray(copiedEvidenceMap),
-    findings: derivedFindings,
-    diagnostics: derivedEvidence!,
+    evidencePaths: finalized.evidencePaths,
+    findings: finalized.findings,
+    diagnostics: finalized.diagnostics,
   };
 
   return {
@@ -653,5 +341,3 @@ export async function finalizePerformanceTest(
     summary: buildSummary(result),
   };
 }
-
-void isError;

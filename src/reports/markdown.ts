@@ -172,6 +172,7 @@ export function renderMarkdownReport(report: JsonReport): string {
     `**开始时间**：${report.run.startedAt}`,
     `**结束时间**：${report.run.endedAt === "unknown" ? UNKNOWN : report.run.endedAt}`,
     `**最终状态**：\`${report.status}\``,
+    `**门禁结果**：\`${report.gate ?? "unknown"}\``,
   ].join("\n");
 
   const stabilitySection = [

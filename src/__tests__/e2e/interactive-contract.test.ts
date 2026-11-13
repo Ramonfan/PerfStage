@@ -154,9 +154,9 @@ describe("interactive contract (offline e2e)", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
         evidencePaths: [
@@ -243,9 +243,9 @@ describe("interactive contract (offline e2e)", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           crashIdsBefore: [],

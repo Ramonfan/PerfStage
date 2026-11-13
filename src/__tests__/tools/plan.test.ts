@@ -35,6 +35,10 @@ describe("prepare_performance_test", () => {
     expect(isToolError(result)).toBe(false);
     expect(result.runId).toEqual(expect.any(String));
     expect(result.scenarioId).toBe("community-home-scroll");
+    // M1: the resolved plan is inlined so a Skill/CLI caller does not need
+    // to re-read plan.json before executing the Take.
+    expect(result.plan.id).toBe("community-home-scroll");
+    expect(result.plan.metrics.map((metric) => metric.name)).toContain("hitches");
     expect(result.nextSteps).toEqual(
       expect.arrayContaining([
         expect.stringContaining("mobile_get_device_logs"),

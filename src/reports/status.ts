@@ -5,7 +5,12 @@ export interface FinalStatusInput {
   requestedStatus: RunStatus;
   diagnosticsImpact: DiagnosticImpact;
   missingEvidence: string[];
-  metricFailures: string[];
+  /**
+   * Deprecated for status derivation (D6). Threshold misses no longer
+   * downgrade `status`; they are reported through `gate`. Kept in the type so
+   * stored callers and older tests keep compiling.
+   */
+  metricFailures?: string[];
   interrupted?: boolean;
 }
 
@@ -27,14 +32,18 @@ export interface StatusDerivationInput extends FinalStatusInput {}
  * 2. Diagnostic `failure` impact OR a requested `failed` collapses everything
  *    to `failed` — a new Crash, jetsam, watchdog, or device disconnect means
  *    the run cannot be considered successful in any form.
- * 3. Missing trace/metric evidence or any metric failure downgrades the run
- *    to at least `partial`. If the test flow was interrupted the result is
- *    `failed`, otherwise `partial` so the user understands the test ended
- *    without the full picture.
+ * 3. Missing trace/metric evidence downgrades the run to at least `partial`.
+ *    If the test flow was interrupted the result is `failed`, otherwise
+ *    `partial` so the user understands the test ended without the full
+ *    picture.
  * 4. Warning/unavailable diagnostics still marks the run `partial` — we never
  *    claim a clean pass when logs or crash listings could not be verified.
- * 5. Only a `completed` request, with no missing evidence, no metric failures,
- *    and no diagnostic impact, stays `completed`.
+ * 5. Only a `completed` request, with no missing evidence and no diagnostic
+ *    impact, stays `completed`.
+ *
+ * Threshold failures are deliberately NOT part of this function (D6). A
+ * complete, trustworthy Take with a metric above its threshold is
+ * `status=completed` and `gate=fail`; see `deriveRunOutcome`.
  *
  * Input validation: `requestedStatus` is required, but `diagnosticsImpact`,
  * `missingEvidence`, `metricFailures`, and `interrupted` all have sane
@@ -68,7 +77,6 @@ export function deriveFinalStatus(input: FinalStatusInput): RunStatus {
     reasons: [],
   };
   const missingEvidence = input.missingEvidence ?? [];
-  const metricFailures = input.metricFailures ?? [];
   const interrupted = input.interrupted ?? false;
 
   const hasFailureImpact = impact.severity === "failure";
@@ -78,8 +86,8 @@ export function deriveFinalStatus(input: FinalStatusInput): RunStatus {
     return "failed";
   }
 
-  const hasMissingCritical =
-    missingEvidence.length > 0 || metricFailures.length > 0;
+  // Metric threshold failures intentionally do not participate here (D6).
+  const hasMissingCritical = missingEvidence.length > 0;
   if (hasMissingCritical) {
     return interrupted ? "failed" : "partial";
   }

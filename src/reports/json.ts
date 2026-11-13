@@ -1,5 +1,10 @@
 import type { TestPlan } from "../model/test-plan.js";
-import type { TestRun, MetricResult, ActionRecord } from "../model/test-run.js";
+import type {
+  TestRun,
+  MetricResult,
+  ActionRecord,
+  GateResult,
+} from "../model/test-run.js";
 import type { DiagnosticEvidence, DiagnosticImpact } from "../diagnostics/normalize.js";
 
 /**
@@ -72,6 +77,8 @@ export interface JsonReport {
   diagnostics: DiagnosticEvidence;
   findings: ReportFinding[];
   status: TestRun["status"];
+  /** Threshold gate outcome, independent from `status` (D6). */
+  gate: GateResult;
   /**
    * Map of evidence-kind → run-relative POSIX path. Always includes
    * `deviceLog` when a device log was supplied and copied into the run
@@ -175,6 +182,7 @@ export function buildJsonReport(
     diagnostics,
     findings: options.findings ? [...options.findings] : [],
     status: run.status,
+    gate: options.gate ?? run.gate ?? "unknown",
     evidencePaths,
     generatedAt,
   };
@@ -196,6 +204,11 @@ export interface BuildJsonReportOptions {
    * code can always rely on `findings` being defined.
    */
   findings?: ReportFinding[];
+  /**
+   * Inject the threshold gate result. Defaults to `run.gate`, then
+   * `unknown`.
+   */
+  gate?: GateResult;
   /**
    * Inject run-relative evidence paths as a kind→path map. When
    * omitted, the report falls back to whatever `run.evidence` exposes.

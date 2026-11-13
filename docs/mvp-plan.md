@@ -144,7 +144,7 @@ MVP 只有全部满足才算完成：
 | D3 | 通过 MCP stdio 调 `mobile-mcp` / `instruments-mcp` | 复用现有能力；未来换实现只改适配器 | 多两个子进程，启动有开销 |
 | D4 | 采集使用 `start_profiling` / `stop_profiling`，**一次只录一个模板** | Instruments 一次只能录一个模板；这是硬约束 | 多指标需要顺序多 pass |
 | D5 | 证据门禁优先于「跑通」 | 假 `completed` 会摧毁产品可信度 | 初期 `partial` 比例会偏高 |
-| D6 | `status` 与 `gate` 分离 | `status` 表示测试是否有效，`gate` 表示指标是否达标 | 需要调整现有 `deriveFinalStatus` 语义 |
+| D6 | `status` 与 `gate` 分离 | `status` 表示测试是否有效，`gate` 表示指标是否达标 | 已调整 `deriveFinalStatus` 语义，新增 `deriveRunOutcome` |
 | D7 | 继续用文件系统，不引入数据库 | 单项目数据量小；M4 再考虑索引 | 跨 run 查询靠目录扫描 |
 | D8 | 配置向后兼容，新增可选 `adapters` | 不影响已初始化项目 | 需要 schema 版本处理 |
 | D9 | **CLI 纳入 MVP**（已确认） | 退出码让脚本可直接消费，且 CLI 只是 Runner 薄封装 | +2 人日，MVP 约 28.5 人日 |
@@ -374,6 +374,10 @@ value >= threshold.warn  → verdict = warn
 gate = fail 若任一 fail；否则 warn 若任一 warn；否则 pass
 ```
 
+阈值来源按「结果自带 `threshold` → 场景/计划 `threshold`」合并；只有完全没有
+阈值时才使用调用方显式给出的 `verdict`。`skipped` 指标不参与 `gate` 聚合。
+任一证据缺口都会把 `gate` 固定为 `unknown`，不参与阈值比较。
+
 ### 4.7 Skill 级输出契约
 
 ```json
@@ -529,13 +533,27 @@ perfstage report <runId>
 
 **目标：** 即使仍然由 Claude 编排，也不会再出现「假通过」。
 
-- [ ] `prepare_performance_test` 返回完整 `plan`
-- [ ] 证据门禁：缺值 / 缺 trace / 查询失败
-- [ ] 阈值 verdict 与 `gate`
-- [ ] `status` 与 `gate` 分离
-- [ ] 指标标准化模块
-- [ ] 抽出共享 `finalizeRun()`（工具与 Runner 共用）
-- [ ] 补充测试（≥ 15 个）
+- [x] `prepare_performance_test` 返回完整 `plan`
+- [x] 证据门禁：缺值 / 缺 trace / 查询失败
+- [x] 阈值 verdict 与 `gate`
+- [x] `status` 与 `gate` 分离
+- [x] 指标标准化模块
+- [x] 抽出共享 `finalizeRun()`（工具与 Runner 共用）
+- [x] 补充测试（≥ 15 个）：新增 52 个，套件 235 个用例通过
+
+**实现落点：**
+
+| 关注点 | 模块 |
+| --- | --- |
+| 指标词表与归一化 | `src/analysis/metrics.ts` |
+| 阈值判定与 `gate` 聚合 | `src/analysis/thresholds.ts` |
+| 证据门禁（缺指标 / 缺值 / 缺 trace） | `src/reports/evidence.ts` |
+| `status` 与 `gate` 优先级 | `src/reports/outcome.ts` |
+| 共享收尾管线 | `src/runner/finalize.ts` |
+| 工具薄适配 | `src/tools/report.ts` |
+
+`prepare_performance_test` 现在内联返回完整 `TestPlan`，Skill 无需再读取
+`plan.json` 的文件布局。
 
 **交付物：** 可信的 `finalize` 与报告。
 

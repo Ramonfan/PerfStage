@@ -64,9 +64,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 2, verdict: "pass" },
-          { name: "cpu", value: 35, unit: "%", verdict: "pass" },
-          { name: "memory", value: 187, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 2, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 35, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 187, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           logText: "everything is fine",
@@ -79,6 +79,7 @@ describe("finalize_performance_test", () => {
     );
     if (isToolError(result)) throw new Error(result.error);
     expect(result.status).toBe("completed");
+    expect(result.gate).toBe("pass");
     expect(result.jsonPath).toBe("report.json");
     expect(result.markdownPath).toBe("report.md");
     expect(result.runPath).toBe("run.json");
@@ -115,7 +116,7 @@ describe("finalize_performance_test", () => {
             endedAt: "2026-10-17T00:00:11.500Z",
           },
         ],
-        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" }],
         diagnostics: {
           crashIdsBefore: [],
           crashIdsAfter: ["crash-1"],
@@ -172,7 +173,7 @@ describe("finalize_performance_test", () => {
             endedAt: "2026-10-17T00:00:11.500Z",
           },
         ],
-        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" }],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
@@ -193,7 +194,7 @@ describe("finalize_performance_test", () => {
           error: "device disconnected",
         },
       ],
-      metrics: [{ name: "hitches", value: 99, verdict: "fail" }],
+      metrics: [{ name: "hitches", value: 99, verdict: "fail", tracePath: "traces/hitches.trace" }],
       diagnostics: {
         crashIdsBefore: [],
         crashIdsAfter: ["crash-1"],
@@ -295,9 +296,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 25, unit: "%", verdict: "pass" },
-          { name: "memory", value: 187, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 25, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 187, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
@@ -616,7 +617,7 @@ describe("finalize_performance_test", () => {
             endedAt: "2026-10-17T00:00:11.500Z",
           },
         ],
-        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" }],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       }),
       harness.call("finalize_performance_test", {
@@ -631,7 +632,7 @@ describe("finalize_performance_test", () => {
             endedAt: "2026-10-17T00:00:11.500Z",
           },
         ],
-        metrics: [{ name: "hitches", value: 0, verdict: "pass" }],
+        metrics: [{ name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" }],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       }),
     ]);
@@ -662,7 +663,7 @@ describe("finalize_performance_test", () => {
           },
         ],
         // Only hitches is provided; cpu/memory are missing. hitches fails its threshold.
-        metrics: [{ name: "hitches", value: 7, verdict: "fail" }],
+        metrics: [{ name: "hitches", value: 7, verdict: "fail", tracePath: "traces/hitches.trace" }],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
     );
@@ -671,6 +672,49 @@ describe("finalize_performance_test", () => {
     expect(codes).toEqual(expect.arrayContaining(["metric:cpu", "metric:memory", "metric:hitches"]));
     const hitchesFinding = result.findings.find((f) => f.code === "metric:hitches");
     expect(hitchesFinding?.severity).toBe("failure");
+  });
+
+  it("keeps status completed while reporting gate=fail when a threshold is missed (D6)", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const prepared = await prepareCommunity(harness);
+    const result = await harness.call<FinalizePerformanceTestResult>(
+      "finalize_performance_test",
+      {
+        runId: prepared.runId,
+        requestedStatus: "completed",
+        actions: [
+          {
+            actionId: "scroll-up-1",
+            outcome: "executed",
+            attempts: 1,
+            startedAt: "2026-10-17T00:00:10.000Z",
+            endedAt: "2026-10-17T00:00:11.500Z",
+          },
+        ],
+        metrics: [
+          {
+            name: "hitches",
+            value: 7,
+            threshold: { warn: 3, fail: 5 },
+            tracePath: "traces/hitches.trace",
+          },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
+        ],
+        diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(result.status).toBe("completed");
+    expect(result.gate).toBe("fail");
+    const json = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(json.status).toBe("completed");
+    expect(json.gate).toBe("fail");
   });
 
   it("agrees with report.json on the final status (regression)", async () => {
@@ -691,9 +735,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: { logText: "everything is fine", crashIdsBefore: ["pre-existing"], crashIdsAfter: ["pre-existing"], lifecycle: [{ kind: "foreground", occurredAt: "2026-10-17T00:00:30.000Z" }] },
       },
@@ -729,9 +773,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           crashIdsBefore: [],
@@ -776,9 +820,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           crashIdsBefore: ["pre-existing"],
@@ -891,9 +935,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           logText: "everything is fine",
@@ -909,7 +953,7 @@ describe("finalize_performance_test", () => {
     expect(result.status).toBe("partial");
   });
 
-  it("preserves an explicitly requested partial status even when a new crash is detected (no coercion to failed)", async () => {
+  it("escalates an explicitly requested partial to failed when a new crash is detected", async () => {
     if (!harness) throw new Error("harness not initialized");
     const prepared = await prepareCommunity(harness);
     const result = await harness.call<FinalizePerformanceTestResult>(
@@ -936,7 +980,10 @@ describe("finalize_performance_test", () => {
       },
     );
     if (isToolError(result)) throw new Error(result.error);
-    expect(result.status).toBe("partial");
+    // Evidence-gate precedence: a new Crash always fails the Take, regardless
+    // of the caller's requested status (MVP plan 4.6, row 2).
+    expect(result.status).toBe("failed");
+    expect(result.gate).toBe("fail");
   });
 
   it.each(["prepared", "running"])(
@@ -957,9 +1004,9 @@ describe("finalize_performance_test", () => {
           },
         ],
         metrics: [
-          { name: "hitches", value: 0, verdict: "pass" },
-          { name: "cpu", value: 20, unit: "%", verdict: "pass" },
-          { name: "memory", value: 200, unit: "MB", verdict: "pass" },
+          { name: "hitches", value: 0, verdict: "pass", tracePath: "traces/hitches.trace" },
+          { name: "cpu", value: 20, unit: "%", verdict: "pass", tracePath: "traces/cpu.trace" },
+          { name: "memory", value: 200, unit: "MB", verdict: "pass", tracePath: "traces/memory.trace" },
         ],
         diagnostics: {
           logText: "everything is fine",

@@ -51,7 +51,7 @@ PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用
 | 平台 | **PerfStage** | 提供通用能力 |
 | 项目场景 | **Scene** | 一个 YAML + 一个 Skill |
 | 一次运行 | **Take** | 一次完整的测试执行 |
-| 重复执行 | **Encore** | 复跑同一 Scene；历史对比与门禁规划中 |
+| 重复执行 | **Encore** | 复跑同一 Scene；阈值门禁已可用，历史对比规划中 |
 | 项目场景集合 | **Repertoire** | 一个项目的全部 Scene |
 | 报告 | **Scorecard** | `report.md` / `report.json` |
 
@@ -68,11 +68,13 @@ PerfStage 目前是一个**可用的控制面**，还不是完整的自动化执
 | 场景加载与校验 | ✅ 可用 | YAML → TestPlan，未知动作直接报错 |
 | 运行目录与证据落盘 | ✅ 可用 | 每次 Take 独立目录，路径边界与原子写 |
 | 诊断归一化 | ✅ 可用 | 日志三态、Crash 差集、生命周期分类 |
+| 证据门禁 | ✅ 可用 | 缺指标 / 缺值 / 缺 trace → `partial` + `gate=unknown` |
+| 阈值判定与 `gate` | ✅ 可用 | 场景阈值自动推导 `pass` / `warn` / `fail` |
 | 报告生成 | ✅ 可用 | `report.json` + 中文 `report.md` |
 | 工作区隔离 | ✅ 可用 | 以项目为边界，不跨项目读写 |
 | Skill 模板与契约 | ⏳ 规划中 | 本文第 6 节给出目标契约 |
 | 一键执行 `run_performance_test` | ⏳ 规划中 | 目前由 Skill / Claude 按 `nextSteps` 编排 |
-| 基线、对比、门禁 | ⏳ 规划中 | 当前只有单次报告 |
+| 基线、历史对比 | ⏳ 规划中 | 当前只有单次报告与阈值门禁 |
 
 **现在的真实执行链路是：**
 
@@ -204,9 +206,9 @@ Skill 会完成一次 Take，并返回 `runId`、状态、指标、报告路径�
 1. **定义**：Scene YAML 描述 App、前置条件、warmup、actions、metrics；Scene Skill 描述如何执行它。
 2. **执行**：调用 PerfStage MCP 创建运行，按计划驱动 `mobile-mcp` 完成 UI 动作。
 3. **采集**：通过 `instruments-mcp-server` 获取 xctrace 与指标，同时保存日志、Crash 与生命周期证据。
-4. **判定**：`finalize` 汇总证据并生成报告。设计规则是「证据不足即降级为 `partial`」；当前的证据校验尚未完全强制，见[路线图](#11-边界与路线图)。
+4. **判定**：`finalize` 汇总证据、计算阈值门禁并生成报告。证据不足即降级为 `partial`（`gate=unknown`），指标超阈值则是 `completed` + `gate=fail`。
 
-**返场（Encore）** 是同一个流程的再次执行。规划中的基线对比与门禁会接在报告之后，用历史结果判断本次是否回归。
+**返场（Encore）** 是同一个流程的再次执行。阈值门禁已经接在报告之后，规划中的基线对比会进一步判断本次相对历史是否回归。
 
 ---
 
@@ -242,15 +244,28 @@ Skill 是项目资产，不是平台资产。它应该足够短：只描述「�
   "runId": "2026-11-13T06-20-00.000Z-a1b2",
   "sceneId": "community-home-scroll",
   "status": "completed",
-  "metrics": { "hitches": 3, "cpu": 28.4, "memory": 186 },
+  "metrics": {
+    "hitches": 3,
+    "blockMs": 84.2,
+    "launchMs": 274.3,
+    "memoryMB": 113.5
+  },
   "findings": [],
   "reportPath": ".performance-test/runs/<runId>/report.md",
-  "gate": "unknown"
+  "gate": "pass"
 }
 ```
 
 - `status`：`completed` / `partial` / `failed` / `invalid` / `cancelled`
-- `gate`：规划中；当前固定为 `unknown`，门禁落地后为 `pass` / `fail`
+- `gate`：阈值门禁结果 `pass` / `warn` / `fail` / `unknown`
+
+`status` 与 `gate` 回答两个不同问题：`status` 表示这次 Take 是否有效可信，
+`gate` 表示指标是否达标。指标超过阈值时仍是 `status=completed` +
+`gate=fail`，不会把测试本身判成 `partial`。
+
+指标名使用 MVP 规范词表（`hitches` / `blockMs` / `launchMs` / `memoryMB`），
+旧名 `memory`、`launch`、`blockingMs` 会被自动归一化。每个指标都应带
+`tracePath`，否则证据门禁会认为本次 Take 不完整。
 
 ### 6.4 示例 `SKILL.md`
 
@@ -272,8 +287,8 @@ description: 社区首页上下滚动性能测试。用于回归卡顿、CPU 与
 1. 调用 `list_performance_scenarios`，确认 `community-home-scroll` 存在。
 2. 调用 `prepare_performance_test`：
    `{ "scenarioId": "community-home-scroll", "device": { "id": "<deviceId>" } }`
-3. 读取返回的 `runPath`，并读取同目录下的 `plan.json` 获取本次解析后的
-   `preconditions`、`warmup`、`actions`、`metrics`。
+3. 读取返回值中的 `plan`（完整解析计划已内联，包含
+   `preconditions`、`warmup`、`actions`、`metrics`）。
 4. 按 `nextSteps` 顺序执行：
    - 先启动设备日志，记录测试前 Crash 列表；
    - 用 `mobile-mcp` 依次执行 warmup 与 actions，遵守 `waitAfterMs`；
@@ -318,9 +333,9 @@ PerfStage 目前提供 4 个底层原语。它们稳定、可测试，也是未�
 }
 ```
 
-返回字段：`runId`、`scenarioId`、`planId`、`runPath`、`planPath`、`execution`、`analysisFocus`、`metricOverrides`、`nextSteps`。
+返回字段：`runId`、`scenarioId`、`planId`、`runPath`、`planPath`、`plan`、`execution`、`analysisFocus`、`metricOverrides`、`nextSteps`。
 
-> 已知限制：`prepare` 不直接返回 `actions` / `warmup` / `metrics`，完整计划需要读取 `planPath` 指向的 `plan.json`。这是 Skill 目前需要感知文件布局的原因，也是后续要修的点。
+`plan` 是完整解析后的 `TestPlan`，Skill 与 CLI 无需再读取文件布局即可执行本次 Take。
 
 也可以传 `adHocPlan` 做一次性测试；临时计划不会自动沉淀为长期场景。
 
@@ -370,7 +385,12 @@ PerfStage 目前提供 4 个底层原语。它们稳定、可测试，也是未�
 - 证据会复制进运行目录，报告中只出现相对路径。
 - 查询失败必须填写对应的 `*QueryError`，不能伪造为空结果。
 - 新增 Crash、watchdog、jetsam、设备断连都会阻止结果被标记为普通成功。
-- **目标规则**：证据缺失时最终状态不得高于 `partial`。当前实现尚未完全强制这一点——缺 trace 仍可能得到 `completed`，这是第二阶段要修的第一项。
+- **证据门禁已强制**：计划中的指标必须全部出现、必须有值；由 Instruments
+  生产的指标还必须有 `tracePath`。任一缺失都会把 `status` 降为 `partial`、`gate` 置为 `unknown`。
+- **阈值自动判定**：`value` + `threshold` 会推导 `verdict`（`fail` > `warn` > `pass`）；
+  阈值来自场景/计划，指标结果只需携带测量值。
+- **`status` 与 `gate` 分离**：指标超过 `fail` 阈值时返回 `status=completed` + `gate=fail`；
+  证据不完整才是 `status=partial`。
 
 ---
 
@@ -408,11 +428,25 @@ actions:
 metrics:
   - name: hitches
     instrument: Animation Hitches
-  - name: cpu
-    instrument: Time Profiler
-  - name: memory
-    instrument: Allocations
+    threshold: { warn: 3, fail: 5 }
+  - name: blockMs
+    instrument: Animation Hitches
+    threshold: { warn: 50, fail: 100 }
+  - name: launchMs
+    instrument: App Launch
+    threshold: { warn: 400, fail: 800 }
+  - name: memoryMB
+    instrument: Activity Monitor
+    threshold: { warn: 200, fail: 320 }
 ```
+
+`hitches` 与 `blockMs` 来自同一次 Animation Hitches 采集；`launchMs` 与
+`memoryMB` 分别来自 App Launch 与 Activity Monitor。MVP 规范词表见
+`src/analysis/metrics.ts`。
+
+> 仓库内现有的两个示例场景仍使用旧指标名（`cpu` / `memory`）与旧模板
+> （`Time Profiler` / `Allocations`）。Allocations 在 Xcode 27.2 + iOS 27
+> 上不可用，场景 DSL 会在 M2 迁移到上表的四指标。
 
 支持的动作类型：
 
@@ -468,7 +502,7 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 | `invalid` | 前置条件、场景结构、参数或证据格式不合法 |
 | `cancelled` | 主动终止 |
 
-平台的判定原则是：`completed` 必须建立在**可追溯的证据**上。如果一个指标没有值或没有 trace，结果就不应被当作完整成功——这是重复测试可信度的底线。当前实现尚未完全强制这条规则（见路线图），使用时应主动检查报告的「限制与未知项」。
+平台的判定原则是：`completed` 必须建立在**可追溯的证据**上。如果一个指标没有值或没有 trace，结果就会被降级为 `partial` 且 `gate=unknown`——这是重复测试可信度的底线，已经由 `finalize` 强制。
 
 ---
 
@@ -480,7 +514,7 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 - **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
 - **执行仍靠编排。** 没有内置 Runner，Skill / Claude 负责调用 `mobile-mcp` 与 `instruments-mcp-server`。
 - **只有单次报告。** 没有历史索引、基线、趋势与 CI 门禁。
-- **阈值只透传。** `threshold` 已建模，但尚未自动计算 verdict。
+- **阈值已自动判定。** `threshold` 会推导 `verdict` 并汇总为 `gate`；基线对比仍属规划。
 
 ### 路线图
 
@@ -489,8 +523,9 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 **第一阶段：让一次 Take 可重复**
 
 - [ ] 固化 Scene Skill 模板与输出契约（本文第 6 节）
-- [ ] `prepare_performance_test` 返回完整解析计划
-- [ ] `finalize_performance_test` 证据硬校验：缺 trace / 缺值不得 `completed`
+- [x] `prepare_performance_test` 返回完整解析计划
+- [x] `finalize_performance_test` 证据硬校验：缺 trace / 缺值不得 `completed`
+- [x] 阈值 verdict 与 `gate`，并把 `status` 与 `gate` 分离
 - [ ] 用真实场景连续跑 3 次，确认结果稳定
 
 **第二阶段：让一次 Take 自动化**
