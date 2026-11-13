@@ -250,6 +250,7 @@ node scripts/analyze-trace.mjs --template memory --trace /tmp/actmon4.trace --pi
 | `activity-monitor-memory.json` | Activity Monitor 全进程内存序列，NNIM 113.35 MiB |
 | `perfstage-parse-launch.json` | PerfStage 自解析结果：274.3ms / cold |
 | `perfstage-parse-memory.json` | PerfStage 自解析结果：NNIM 113.5 MiB / 9 samples |
+| `perfstage-parse-hitches.json` | PerfStage 自解析结果：1175 帧 / 764 hitches / blockMs 91.7 |
 
 ## 8. M0 修正落地（2026-11-13）
 
@@ -260,6 +261,7 @@ node scripts/analyze-trace.mjs --template memory --trace /tmp/actmon4.trace --pi
 | E0-6 | `instruments-mcp-server` 的 `start_profiling` 增加 2.5s fail-fast 窗口 | 负向 attach 返回 `isError`；server 存活；正向冷启动 1864 samples |
 | E0-7 | `src/analysis/parsers/app-launch.ts` 解析 `life-cycle-period` + `dyld-activity-interval` | 真实 trace：`launchMs=274.3`、`launchType=cold`、11 个阶段 |
 | E0-8 | `src/analysis/parsers/activity-monitor.ts` 移植 Python 口径 | 真实 trace：NNIM `median=113.5 MiB`、`slope=-8.628 MiB/min`、9 samples |
+| E0-9 | `src/analysis/parsers/animation-hitches.ts` 解析帧生命周期 | 真实 trace：1175 帧、764 hitches、`blockMs=91.7` |
 
 配套模块：
 
@@ -281,6 +283,11 @@ node scripts/analyze-trace.mjs --template launch \
 node scripts/analyze-trace.mjs --template memory \
   --trace /tmp/actmon4.trace --pid 6764 \
   --out docs/spikes/perfstage-parse-memory.json
+
+# Animation Hitches
+node scripts/analyze-trace.mjs --template hitches \
+  --trace "/Users/leigod/雷神/性能分析/explore-traces/nn-community-hitches.trace" \
+  --out docs/spikes/perfstage-parse-hitches.json
 ```
 
 `launchMs` 的口径说明：life-cycle 表是层级结构，同一周期标签会出现在多条子记录中，因此解析器**不做按标签合并**，而是保留每条生命周期记录，并用「首个 launch 周期开始 → 最后一个 launch 周期结束」计算总时长。`Foreground - Active` 等前台周期被排除，避免把整段录制算成启动时间。

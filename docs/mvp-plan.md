@@ -501,7 +501,7 @@ perfstage report <runId>
 
 | 项 | 策略 |
 | --- | --- |
-| 现有 4 个工具 | 签名不变，`prepare` 只做加法（内联 `plan`） |
+| 现有 5 个工具 | 签名不变，`prepare` 只做加法（内联 `plan`），新增 `analyze_performance_trace` |
 | 现有报告结构 | 保留字段，新增 `gate` / `passes` |
 | 数据目录 | 继续 `.performance-test/`，不迁移 |
 | MCP server 名 | 继续 `performance-test`，避免重新注册 |
@@ -563,11 +563,18 @@ perfstage report <runId>
 
 **目标：** 用一个真实场景连续跑 3 次，验证 H1。
 
-- [ ] `templates/SKILL.md`：可复制的 Skill 模板
-- [ ] 示例项目 Skill（1 个场景）
+- [x] `templates/SKILL.md`：可复制的 Skill 模板
+- [x] 示例项目 Skill（1 个场景）：`examples/skills/perf-community-scroll/SKILL.md`
 - [ ] 运行 3 次，记录状态与指标波动
-- [ ] 修正场景 DSL 中不合理的部分
-- [ ] 文档：Skill 契约与编写规则
+- [x] 修正场景 DSL 中不合理的部分（四指标规范词表 + 阈值；移除 Allocations）
+- [x] 文档：Skill 契约与编写规则（README 第 6 节 + Skill 模板）
+
+**实现落点：**
+
+- `src/tools/analyze.ts` + `analyze_performance_trace`：PerfStage 自解析 trace，
+  输出 `hitches` / `blockMs` / `launchMs` / `memoryMB`（D13）。
+- `src/analysis/parsers/animation-hitches.ts`：Animation Hitches 帧生命周期解析。
+- `scenarios/*.yaml`：示例场景迁移到四指标。
 
 **交付物：** 可重复执行的 Thick Skill + 3 次运行记录。
 

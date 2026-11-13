@@ -21,6 +21,10 @@ import {
   initializePerformanceWorkspace,
   initializeWorkspaceInputSchema,
 } from "./workspace.js";
+import {
+  analyzePerformanceTrace,
+  analyzeTraceInputSchema,
+} from "./analyze.js";
 
 /**
  * Shared options passed to every tool handler.
@@ -276,6 +280,23 @@ export function registerTools(
         runStore: resolved.runStore,
         runsRoot: resolved.runsRoot,
       });
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "analyze_performance_trace",
+    {
+      title: "Analyze Performance Trace",
+      description:
+        "用 PerfStage 自己的解析器读取 instruments-mcp 录制的 xctrace，返回 finalize 可直接消费的规范指标（hitches/blockMs、launchMs、memoryMB）。",
+      inputSchema: analyzeTraceInputSchema.shape,
+    },
+    async (args: unknown) => {
+      const result = await analyzePerformanceTrace(args);
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }

@@ -3,6 +3,7 @@
  * Analyze an existing xctrace file with PerfStage's own parsers.
  *
  * Usage:
+ *   node scripts/analyze-trace.mjs --template hitches --trace /tmp/hitches.trace
  *   node scripts/analyze-trace.mjs --template launch --trace /tmp/launch.trace --process NN
  *   node scripts/analyze-trace.mjs --template memory --trace /tmp/actmon.trace --pid 6764
  *
@@ -17,11 +18,15 @@ import {
 import {
   analyzeActivityMonitorTrace,
 } from "../dist/analysis/parsers/activity-monitor.js";
+import {
+  analyzeHitchesTrace,
+} from "../dist/analysis/parsers/animation-hitches.js";
 
 const DEFAULTS = {
   template: "launch",
   process: "",
   pid: undefined,
+  table: "",
   out: "",
 };
 
@@ -47,6 +52,10 @@ function parseArgs(argv) {
         args.pid = Number(value);
         index += 1;
         break;
+      case "--table":
+        args.table = value;
+        index += 1;
+        break;
       case "--out":
         args.out = value;
         index += 1;
@@ -66,7 +75,11 @@ async function main() {
   const startedAt = Date.now();
 
   let result;
-  if (args.template === "launch") {
+  if (args.template === "hitches") {
+    result = await analyzeHitchesTrace(args.trace, {
+      ...(args.table ? { table: args.table } : {}),
+    });
+  } else if (args.template === "launch") {
     result = await analyzeAppLaunchTrace(args.trace, {
       ...(args.process ? { processName: args.process } : {}),
     });
@@ -89,7 +102,7 @@ async function main() {
       processCount: analysis.processes.length,
     };
   } else {
-    throw new Error(`Unsupported --template "${args.template}" (use launch or memory)`);
+    throw new Error(`Unsupported --template "${args.template}" (use hitches, launch or memory)`);
   }
 
   const payload = {

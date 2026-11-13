@@ -1,0 +1,153 @@
+{
+  "analyzedAt": "2026-11-13T03:18:29.032Z",
+  "trace": "/Users/leigod/雷神/性能分析/explore-traces/nn-community-hitches.trace",
+  "template": "hitches",
+  "elapsedMs": 4462,
+  "result": {
+    "template": "Animation Hitches",
+    "table": "hitches-frame-lifetimes",
+    "frameCount": 1175,
+    "targetFrameMs": 29.17,
+    "hitchThresholdMs": 37.92,
+    "hitches": 764,
+    "blockMs": 91.7,
+    "estimatedHitchTimeMs": 569.3,
+    "colorCounts": {
+      "green": 415,
+      "purple": 413,
+      "brown": 347,
+      "yellow": 0,
+      "other": 0,
+      "none": 0
+    },
+    "severityCounts": {
+      "micro": 764,
+      "minor": 0,
+      "warning": 0,
+      "critical": 0
+    },
+    "topHitches": [
+      {
+        "startMs": 34416,
+        "durationMs": 91.7,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 35203.6,
+        "durationMs": 91.7,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 31261.3,
+        "durationMs": 79.2,
+        "color": "Green",
+        "severity": "micro"
+      },
+      {
+        "startMs": 30594.5,
+        "durationMs": 54.2,
+        "color": "Green",
+        "severity": "micro"
+      },
+      {
+        "startMs": 30582,
+        "durationMs": 50,
+        "color": "Brown",
+        "severity": "micro"
+      },
+      {
+        "startMs": 35549.5,
+        "durationMs": 45.8,
+        "color": "Brown",
+        "severity": "micro"
+      },
+      {
+        "startMs": 38500,
+        "durationMs": 45.8,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 40029.4,
+        "durationMs": 45.8,
+        "color": "Green",
+        "severity": "micro"
+      },
+      {
+        "startMs": 29894.4,
+        "durationMs": 41.7,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 31503,
+        "durationMs": 41.7,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 32303.1,
+        "durationMs": 41.7,
+        "color": "Green",
+        "severity": "micro"
+      },
+      {
+        "startMs": 40608.7,
+        "durationMs": 41.7,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 29127.6,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 33857.6,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 35532.8,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 37733.2,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 39271,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 40621.2,
+        "durationMs": 37.5,
+        "color": "Brown",
+        "severity": "micro"
+      },
+      {
+        "startMs": 40842.1,
+        "durationMs": 37.5,
+        "color": "Purple",
+        "severity": "micro"
+      },
+      {
+        "startMs": 34484.4,
+        "durationMs": 35.8,
+        "color": "Brown",
+        "severity": "micro"
+      }
+    ],
+    "warnings": []
+  }
+}

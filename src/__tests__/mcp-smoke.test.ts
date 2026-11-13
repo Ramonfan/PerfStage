@@ -22,6 +22,7 @@ const EXPECTED_TOOLS = [
   "initialize_performance_workspace",
   "list_performance_scenarios",
   "prepare_performance_test",
+  "analyze_performance_trace",
   "finalize_performance_test",
 ];
 
@@ -39,7 +40,7 @@ afterEach(async () => {
 });
 
 describe("MCP server smoke", () => {
-  it("exposes exactly the four named tools via the MCP protocol", async () => {
+  it("exposes exactly the five named tools via the MCP protocol", async () => {
     if (!root) throw new Error("root not initialized");
     const server = new McpServer(
       { name: "performance-test-mcp", version: "0.1.0" },

@@ -27,7 +27,25 @@ actions:
 metrics:
   - name: hitches
     instrument: Animation Hitches
-  - name: cpu
-    instrument: Time Profiler
-  - name: memory
-    instrument: Allocations
+    threshold:
+      warn: 5
+      fail: 15
+  - name: blockMs
+    instrument: Animation Hitches
+    threshold:
+      warn: 100
+      fail: 250
+  - name: launchMs
+    instrument: App Launch
+    threshold:
+      warn: 800
+      fail: 1500
+  - name: memoryMB
+    instrument: Activity Monitor
+    threshold:
+      warn: 300
+      fail: 500
+analysisFocus:
+  - jank
+  - startup
+  - memory

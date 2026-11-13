@@ -72,7 +72,7 @@ PerfStage 目前是一个**可用的控制面**，还不是完整的自动化执
 | 阈值判定与 `gate` | ✅ 可用 | 场景阈值自动推导 `pass` / `warn` / `fail` |
 | 报告生成 | ✅ 可用 | `report.json` + 中文 `report.md` |
 | 工作区隔离 | ✅ 可用 | 以项目为边界，不跨项目读写 |
-| Skill 模板与契约 | ⏳ 规划中 | 本文第 6 节给出目标契约 |
+| Skill 模板与契约 | ✅ 可用（Thick Skill） | `templates/SKILL.md` 与示例项目 Skill；一键执行仍待 Runner |
 | 一键执行 `run_performance_test` | ⏳ 规划中 | 目前由 Skill / Claude 按 `nextSteps` 编排 |
 | 基线、历史对比 | ⏳ 规划中 | 当前只有单次报告与阈值门禁 |
 
@@ -274,7 +274,7 @@ Skill 是项目资产，不是平台资产。它应该足够短：只描述「�
 ```markdown
 ---
 name: perf-community-scroll
-description: 社区首页上下滚动性能测试。用于回归卡顿、CPU 与内存。
+description: 社区首页上下滚动性能测试。用于回归卡顿、冷启动与内存。
 ---
 
 # 社区首页滚动性能测试
@@ -292,12 +292,18 @@ description: 社区首页上下滚动性能测试。用于回归卡顿、CPU 与
 4. 按 `nextSteps` 顺序执行：
    - 先启动设备日志，记录测试前 Crash 列表；
    - 用 `mobile-mcp` 依次执行 warmup 与 actions，遵守 `waitAfterMs`；
-   - 用 `instruments-mcp-server` 采集 plan 中声明的每个指标，并记录 tracePath；
+   - 用 `instruments-mcp-server` 按模板顺序录制 trace（Hitches / App Launch /
+     Activity Monitor）；
+   - 用 `analyze_performance_trace` 把每条 trace 解析成规范指标，
+     不要手工填数值；
    - 采集执行后日志、Crash 差集与生命周期事件。
 5. 调用 `finalize_performance_test`，提交 `runId`、`requestedStatus`、
    `actions`、`metrics`、`diagnostics` 与 `evidencePaths`。
-6. 输出：`runId`、`status`、指标摘要、`reportPath`。
+6. 输出：`runId`、`status`、`gate`、指标摘要、`reportPath`。
    若 `status` 不是 `completed`，明确列出缺失的证据。
+
+> 完整可复制版本见 [`templates/SKILL.md`](templates/SKILL.md) 与
+> [`examples/skills/perf-community-scroll/SKILL.md`](examples/skills/perf-community-scroll/SKILL.md)。
 ```
 
 ### 6.5 编写 Skill 的三条规则
@@ -310,7 +316,7 @@ description: 社区首页上下滚动性能测试。用于回归卡顿、CPU 与
 
 ## 7. MCP 工具参考
 
-PerfStage 目前提供 4 个底层原语。它们稳定、可测试，也是未来 `run_performance_test` 的实现基础。
+PerfStage 目前提供 5 个底层原语。它们稳定、可测试，也是未来 `run_performance_test` 的实现基础。
 
 ### `initialize_performance_workspace`
 
@@ -338,6 +344,29 @@ PerfStage 目前提供 4 个底层原语。它们稳定、可测试，也是未�
 `plan` 是完整解析后的 `TestPlan`，Skill 与 CLI 无需再读取文件布局即可执行本次 Take。
 
 也可以传 `adHocPlan` 做一次性测试；临时计划不会自动沉淀为长期场景。
+
+### `analyze_performance_trace`
+
+用 PerfStage 自己的解析器读取 `instruments-mcp-server` 录制的 trace，返回
+`finalize_performance_test` 可直接消费的规范指标。这是 D13 的落地：
+录制归 `instruments-mcp`，解析归 PerfStage。
+
+```json
+{
+  "template": "hitches",
+  "tracePath": "/tmp/take-hitches.trace",
+  "processName": "NN"
+}
+```
+
+| `template` | 产出指标 | 关键参数 |
+| --- | --- | --- |
+| `hitches` | `hitches`、`blockMs` | 可选 `table`（默认 `hitches-frame-lifetimes`） |
+| `launch` | `launchMs` | `processName`（默认选启动进程） |
+| `memory` | `memoryMB` | `processName: "NNIM"` 或 `pid` |
+
+返回 `metrics` 数组（含 `unit`、`instrument`、`tracePath`）以及精简后的
+`analysis` 与 `warnings`。指标没有值时不会补 0，交给证据门禁判 `partial`。
 
 ### `finalize_performance_test`
 
@@ -442,11 +471,8 @@ metrics:
 
 `hitches` 与 `blockMs` 来自同一次 Animation Hitches 采集；`launchMs` 与
 `memoryMB` 分别来自 App Launch 与 Activity Monitor。MVP 规范词表见
-`src/analysis/metrics.ts`。
-
-> 仓库内现有的两个示例场景仍使用旧指标名（`cpu` / `memory`）与旧模板
-> （`Time Profiler` / `Allocations`）。Allocations 在 Xcode 27.2 + iOS 27
-> 上不可用，场景 DSL 会在 M2 迁移到上表的四指标。
+`src/analysis/metrics.ts`。仓库内的示例场景已迁移到这四个指标，Allocations
+在 Xcode 27.2 + iOS 27 上不可用，已不再使用。
 
 支持的动作类型：
 
@@ -522,7 +548,7 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 
 **第一阶段：让一次 Take 可重复**
 
-- [ ] 固化 Scene Skill 模板与输出契约（本文第 6 节）
+- [x] 固化 Scene Skill 模板与输出契约（本文第 6 节）
 - [x] `prepare_performance_test` 返回完整解析计划
 - [x] `finalize_performance_test` 证据硬校验：缺 trace / 缺值不得 `completed`
 - [x] 阈值 verdict 与 `gate`，并把 `status` 与 `gate` 分离
