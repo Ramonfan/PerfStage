@@ -1,0 +1,438 @@
+{
+  "generatedAt": "2026-11-16T01:49:04.128Z",
+  "device": "00008150-001E49E40128C01C",
+  "bundleId": "com.nndev.im",
+  "scenarios": [
+    "community-home-scroll",
+    "message-list-scroll"
+  ],
+  "workspace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace",
+  "takes": [
+    {
+      "scenarioId": "community-home-scroll",
+      "runNumber": 1,
+      "runId": "2026-11-16T01-20-02.598Z-WOdH-nXM",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-20-02.598Z-WOdH-nXM",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 484,
+        "blockMs": 104.2,
+        "launchMs": 295.51,
+        "memoryMB": 111.38
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 1634,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-2",
+          "outcome": "executed",
+          "durationMs": 1594,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-3",
+          "outcome": "executed",
+          "durationMs": 1598,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-4",
+          "outcome": "executed",
+          "durationMs": 1614,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-5",
+          "outcome": "executed",
+          "durationMs": 1574,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-20-02.598Z-WOdH-nXM/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-20-02.598Z-WOdH-nXM/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-20-02.598Z-WOdH-nXM/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 6174–14191ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 137013,
+        "launchMs": 37067,
+        "memoryMs": 16190,
+        "totalMs": 259572
+      }
+    },
+    {
+      "scenarioId": "community-home-scroll",
+      "runNumber": 2,
+      "runId": "2026-11-16T01-24-58.671Z-qQ-IeKqF",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-24-58.671Z-qQ-IeKqF",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 483,
+        "blockMs": 37.5,
+        "launchMs": 311.31,
+        "memoryMB": 113.53
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 1618,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-2",
+          "outcome": "executed",
+          "durationMs": 1603,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-3",
+          "outcome": "executed",
+          "durationMs": 1589,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-4",
+          "outcome": "executed",
+          "durationMs": 1599,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-5",
+          "outcome": "executed",
+          "durationMs": 1609,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-24-58.671Z-qQ-IeKqF/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-24-58.671Z-qQ-IeKqF/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-24-58.671Z-qQ-IeKqF/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 6088–14112ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 127903,
+        "launchMs": 35190,
+        "memoryMs": 16216,
+        "totalMs": 249217
+      }
+    },
+    {
+      "scenarioId": "community-home-scroll",
+      "runNumber": 3,
+      "runId": "2026-11-16T01-29-44.406Z-ORhQklNf",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-29-44.406Z-ORhQklNf",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 448,
+        "blockMs": 91.7,
+        "launchMs": 344.76,
+        "memoryMB": 111.77
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 1625,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-2",
+          "outcome": "executed",
+          "durationMs": 1600,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-3",
+          "outcome": "executed",
+          "durationMs": 1599,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-4",
+          "outcome": "executed",
+          "durationMs": 1606,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-5",
+          "outcome": "executed",
+          "durationMs": 1613,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-29-44.406Z-ORhQklNf/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-29-44.406Z-ORhQklNf/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-29-44.406Z-ORhQklNf/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 6132–14183ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 132051,
+        "launchMs": 34431,
+        "memoryMs": 16531,
+        "totalMs": 256913
+      }
+    },
+    {
+      "scenarioId": "message-list-scroll",
+      "runNumber": 1,
+      "runId": "2026-11-16T01-34-37.966Z-ZLvN9dZ2",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-34-37.966Z-ZLvN9dZ2",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 94,
+        "blockMs": 37.5,
+        "launchMs": 452.97,
+        "memoryMB": 113.52
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "open-message-tab",
+          "outcome": "executed",
+          "durationMs": 3472,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2581,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2573,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-34-37.966Z-ZLvN9dZ2/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-34-37.966Z-ZLvN9dZ2/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-34-37.966Z-ZLvN9dZ2/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 9584–14739ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 83326,
+        "launchMs": 36648,
+        "memoryMs": 17000,
+        "totalMs": 206129
+      }
+    },
+    {
+      "scenarioId": "message-list-scroll",
+      "runNumber": 2,
+      "runId": "2026-11-16T01-38-40.757Z-dI5uSEcg",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-38-40.757Z-dI5uSEcg",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 84,
+        "blockMs": 41.7,
+        "launchMs": 315.99,
+        "memoryMB": 112.49
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "open-message-tab",
+          "outcome": "executed",
+          "durationMs": 3271,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2574,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2573,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-38-40.757Z-dI5uSEcg/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-38-40.757Z-dI5uSEcg/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-38-40.757Z-dI5uSEcg/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 9096–14245ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 109038,
+        "launchMs": 33681,
+        "memoryMs": 16740,
+        "totalMs": 230536
+      }
+    },
+    {
+      "scenarioId": "message-list-scroll",
+      "runNumber": 3,
+      "runId": "2026-11-16T01-43-07.918Z-gZB8WRmv",
+      "runDirectory": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-43-07.918Z-gZB8WRmv",
+      "status": "completed",
+      "gate": "fail",
+      "metrics": {
+        "hitches": 89,
+        "blockMs": 37.5,
+        "launchMs": 485.24,
+        "memoryMB": 112.11
+      },
+      "findings": [
+        {
+          "code": "metric:hitches",
+          "severity": "failure",
+          "message": "指标 hitches 未通过阈值。"
+        }
+      ],
+      "actions": [
+        {
+          "actionId": "open-message-tab",
+          "outcome": "executed",
+          "durationMs": 3306,
+          "error": null
+        },
+        {
+          "actionId": "scroll-up-1",
+          "outcome": "executed",
+          "durationMs": 2563,
+          "error": null
+        },
+        {
+          "actionId": "scroll-down-1",
+          "outcome": "executed",
+          "durationMs": 2548,
+          "error": null
+        }
+      ],
+      "passes": {
+        "hitches": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-43-07.918Z-gZB8WRmv/traces/hitches.trace",
+          "attempts": 1
+        },
+        "launch": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-43-07.918Z-gZB8WRmv/traces/launch.trace",
+          "attempts": 1
+        },
+        "memory": {
+          "trace": "/Users/leigod/雷神/性能分析/perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-43-07.918Z-gZB8WRmv/traces/memory.trace",
+          "attempts": 1
+        }
+      },
+      "notes": [
+        "hitches window 9176–14289ms of the trace",
+        "post-launch foreground probe found no app in front (xctrace ends App Launch by backgrounding it)"
+      ],
+      "timings": {
+        "hitchesMs": 131003,
+        "launchMs": 34395,
+        "memoryMs": 16825,
+        "totalMs": 251919
+      }
+    }
+  ]
+}

@@ -5,6 +5,12 @@
 > 证据都可重复；`hitches` 的场景内波动仍然最大，单次值不足以判断回归（与 M2
 > 结论一致，M4 处理）。
 
+> **状态（2026-11-16）：矩阵已完成并通过。** 2 场景 × 3 Take 全部
+> `status=completed`，跑在同一个固定构建上（HEAD `0c6b77a`，`dist` 构建于
+> 08:54:26）；`docs/m3-takes.json` 已生成，§2 结果与 §3 验收对照已补齐。
+> `gate=fail` 来自占位阈值的 `hitches` 线，是预期结果。矩阵途中排除的两次
+> 失败——主机侧 `xctrace` 保存崩溃、系统级 `JetsamEvent` 误判——见 §5。
+
 - **设备**：`Ra的iPhone`（iPhone18,3，iOS 27.0.1，UDID `00008150-001E49E40128C01C`）
 - **被测应用**：`com.nndev.im` 6.7.1（可执行名 `NNIM`，显示名 `NN`）
 - **工具链**：macOS 26.7.1、Xcode 27.2、`xctrace` 27.2、Node 20+
@@ -47,12 +53,12 @@ runTake
 矩阵脚本按场景串行执行 3 次；同一时刻只有一台设备、一个 `xctrace` 会话。
 机器可读汇总见 [`m3-takes.json`](m3-takes.json)。
 
-设备侧有两个**前置条件**：
+设备与工作区前置条件：
 
-1. 同一可执行文件名（`NNIM`）只能有一个进程在跑。hitches pass 已不再 attach，
-   不受影响；但 **memory pass** 要按容器 UUID 解析出唯一 pid，两份 NN 同时
-   运行会报 `duplicate-process`。矩阵脚本在每个 Take 前检查并终止另一份 NN
-   （`com.nnhuyu.im`）。
+1. 同名可执行文件的第二份构建可以并存运行。hitches pass 用 `--launch`，不受
+   影响；memory pass 按容器 UUID 选择进程（`0c6b77a`），也不再要求单实例。
+   矩阵脚本仍会在每个 Take 前终止另一份 NN（`com.nnhuyu.im`），作为保守清理；
+   双构建并存的 memory pass 尚未在真机复测，M4 需补证据。
 2. 设备必须处于干净的前台状态：别的 App 的系统弹窗会让被测 App 拿不到前台，
    `--launch` 录制同样会因等不到前台而失败（原因见 §4.3 / §4.4）。
 
@@ -69,11 +75,78 @@ runTake
 
 ## 2. 结果
 
-<!-- RESULTS -->
+全部 6 个 Take 在**同一个固定构建**上完成：`performance-test-mcp` HEAD `0c6b77a`，
+`dist/cli/bin.js` 构建于 2026-11-16 08:54:26，矩阵期间没有重建、没有换构建。
+设备 `Ra的iPhone`（iPhone18,3，iOS 27.0.1，UDID `00008150-001E49E40128C01C`）。
+机器可读记录见 [`m3-takes.json`](m3-takes.json)，其中 `passes` 指向每个 Take 的
+实际 trace 文件。
+
+### 2.1 每 Take 结果
+
+| 场景 | Take | status | gate | hitches | blockMs | launchMs | memoryMB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `community-home-scroll` | T1 | completed | fail | 484 | 104.2 | 295.51 | 111.38 |
+| `community-home-scroll` | T2 | completed | fail | 483 | 37.5 | 311.31 | 113.53 |
+| `community-home-scroll` | T3 | completed | fail | 448 | 91.7 | 344.76 | 111.77 |
+| `message-list-scroll` | T1 | completed | fail | 94 | 37.5 | 452.97 | 113.52 |
+| `message-list-scroll` | T2 | completed | fail | 84 | 41.7 | 315.99 | 112.49 |
+| `message-list-scroll` | T3 | completed | fail | 89 | 37.5 | 485.24 | 112.11 |
+
+**6/6 为 `status=completed`**，没有一个是靠放宽阈值或改写状态得到的。
+`gate=fail` 全部来自 `hitches` 的占位阈值（fail 线 15），是预期结果，
+不代表产品回归——本次**没有**为了变绿而改任何阈值。
+
+完整 runId 见 `m3-takes.json`；原始产物在
+`perfstage-m3-workspace/.performance-test/runs/<runId>/`（`run.json`、
+`plan.json`、`report.json`、`report.md`、`device.log`、`traces/`）。Crash 报告
+只以 id 形式记录在 `report.json` 的 `diagnostics.crashes` 里，运行目录下没有
+单独的报告副本。
+
+`m3-takes.json` 与 `m2-takes.json` 同构，只有一处不同：本次覆盖两个场景，
+所以顶层用 `scenarios`、每条记录带自己的 `scenarioId`（M2 只有一个场景，
+用的是顶层 `scenarioId`）。
+
+### 2.2 采集完整性
+
+| 检查 | 结果 |
+| --- | --- |
+| 动作 | `community-home-scroll` 5/5 `executed`（`swipe 201,699 → 201,175 on 402x874`）；`message-list-scroll` 3/3（`open-message-tab` + 上滑 + 下滑） |
+| pass | 每 Take 3 个 pass（hitches / launch / memory）全部成功，`attempts` 均为 1 |
+| trace | `duration` 17.247584–17.745639s，`end-reason` 全部为 `User pressed Stop` |
+| 动作窗口 | community 6.09–14.19s；message 9.10–14.74s（均落在 trace 内，未截断） |
+| 新 Crash | 6/6 的 `newIds` 为空 |
+| 日志 | `lineCount` 202–30 457，三态均为 `available`（差异原因见 §5） |
+
+### 2.3 波动
+
+| 指标 | community 中位数 | 极差 | message 中位数 | 极差 |
+| --- | --- | --- | --- | --- |
+| `hitches` | 483 | 448–484（36，7.5%） | 89 | 84–94（10，11.2%） |
+| `blockMs` | 91.7 | 37.5–104.2（66.7） | 37.5 | 37.5–41.7（4.2） |
+| `launchMs` | 311.31 | 295.51–344.76（49.25） | 452.97 | 315.99–485.24（169.25） |
+| `memoryMB` | 111.77 | 111.38–113.53（2.15） | 112.49 | 112.11–113.52（1.41） |
+| 单 Take 墙钟 | 257s | 249–260 | 231s | 206–252 |
+
+两个场景的 `hitches` Take 间波动分别是 7.5% 和 11.2%，而两场景之间的绝对值差了
+约 5 倍（483 vs 89）。这说明**场景差异远大于同一场景的 Take 间波动**，
+用单次 `hitches` 跨场景比较没有意义；同场景多 Take 的中位数与极差可用，
+这也再次印证 M4 的基线必须按场景分别建立。
 
 ## 3. 验收对照
 
-<!-- ACCEPTANCE -->
+| 编号 | 验收项 | 结论 | 证据 |
+| --- | --- | --- | --- |
+| A2 | 一次调用完成，无中间人工步骤 | 通过 | 每个 Take 只执行一条 `perfstage run <scene> --device … --dir … --json`；6/6 `completed`，矩阵脚本无人工介入 |
+| A3 | 至少 4 个指标带 trace 落盘 | 通过 | 每 Take 3 个 trace：`hitches.trace`（`hitches`/`blockMs`）、`launch.trace`（`launchMs`）、`memory.trace`（`memoryMB`）；路径记录在 `m3-takes.json` 的 `passes` |
+| A8 | 单次运行 ≤ 8 分钟（15s 场景 + 4 指标） | 通过 | 墙钟 206–260s（3.4–4.3 分钟），最慢 260s |
+| A9 | 既有用例保持通过，新增 ≥ 30 | 通过 | `npm test` → 40 files / 360 tests 全通过（2026-11-16 09:49，源码未变） |
+| A10 | 2 个真实场景在真机跑通 | 通过 | 2 场景 × 3 Take，6/6 `completed` |
+| A6 | 同一场景连续 3 次结果有效 | 观察（支持，不计入本 change 主张） | 两个场景各 3 次均为 `completed`，无采集/设备错误；波动见 §2.3。M3 的验收行只列 A2/A3/A8/A9/A10，这里只作观察，不单独声明通过 |
+| A5 | 新增 Crash 时状态为 `failed` | 观察到的真实实例 | `community-home-scroll` T1 第 1 次尝试因新增 `JetsamEvent-2026-11-16-091522.ips` 被判 `failed`、未计入矩阵（见 §5）；这是真实触发，但没有用一次 App 自身 Crash 构造用例 |
+
+**结论：M3 的矩阵验收通过。** 6 个 Take 全部来自同一固定构建、证据完整、
+无假通过。`gate=fail` 是占位阈值的预期结果；阈值重标定按路线图留到 M4，
+本次不调整。
 
 ## 4. 本次暴露并修复的问题
 
@@ -173,14 +246,17 @@ pid 再试一次。
 所以这不是 PerfStage 的 bug，而是设备侧 Instruments 进程表以**可执行文件名**
 索引造成的冲突；只要两份 `NNIM` 同时存在，该名字下的 pid 就查不到。
 
-修复：`resolvePid` 在解析目标 pid 时检查是否还有别的进程共用同一个可执行
+当时的修复：`resolvePid` 在解析目标 pid 时检查是否还有别的进程共用同一个可执行
 文件名，命中就抛 `duplicate-process`，消息里带上两个 pid，直接告诉操作者
 “有另一份同名进程在跑”。这比录 3 次、每次等 30 秒再报一个含糊的
-`cannot find process` 有用得多。测试见
-`src/__tests__/device/mobilecli.test.ts`（`resolvePid duplicate detection`）。
+`cannot find process` 有用得多。
 
-D15 之后 hitches pass 不再 attach，所以这个冲突只剩 **memory pass** 会撞到；
-检测与报错保持不变，矩阵脚本的单实例前置检查也仍然保留。
+D15 之后 hitches pass 不再 attach，这个冲突只剩 **memory pass** 会碰到。
+`0c6b77a` 进一步把 `resolvePid` 改为按容器 UUID 选择目标进程（容器 UUID
+唯一标识一次安装），同名构建因此不再被判为致命，`duplicate-process` 不再
+触发；测试见 `src/__tests__/device/mobilecli.test.ts`
+（`resolvePid container selection`）。双构建并存的 memory pass 还没有真机
+复测，矩阵脚本的单实例前置终止保留为保守清理，而不是硬性前置条件。
 
 ### 4.5 工具链既有行为（已在 M2 记录，本次再次确认）
 
@@ -388,9 +464,12 @@ status:signal(2) code:SIGTRAP(5)          // 启动 1.2s 后
    收尾并抛 `aborted`（不可重试），hitches 的 `--time-limit` 同时从 60s
    降到 **40s**，作为第二道闸。健康路径约 14 秒，正常 trace 仍在
    400MB–1.4GB 量级（取决于内容），但一次卡住最多 30 秒。
-4. **矩阵脚本把这类失败也算作设备不健康**（`Document Missing Template Error`、
-   `Export failed`、`did not finish within`、`could not verify that`），
-   命中即中止，不再重试。
+4. **设备侧不健康信号命中即中止**（`instruments-wedged`、`Failed starting
+   ktrace session`、malformed trace、`did not finish within`、
+   `could not verify that` 等）。`Document Missing Template Error` /
+   `Export failed` 是症状而不是归因：只有本次尝试期间新产生 `xctrace-*.ips`
+   时（最多等 15 秒让它落盘）才认定为主机侧崩溃并重试该 Take（D7）；没有新
+   崩溃报告时按设备侧失败立即中止，不盲目重试。
 
 测试：`src/__tests__/device/mobilecli.test.ts`（孙进程占住管道仍能返回、
 超时 reject）、`src/__tests__/recording/xctrace.test.ts`（`during` 卡住时
@@ -412,19 +491,24 @@ SIGINT 收尾）、`src/__tests__/runner/run.test.ts`（前台查询不返回 �
   等 1.5s。网络慢时录制窗口可能覆盖列表仍在加载的阶段，这是 `hitches`
   波动的一个来源。项目可以在场景里加更长的 `waitAfterMs`，平台暂不提供
   “等元素出现再开始”的录制原语。
-- **日志流可能“开始得晚”，而不是退出。** T3 只采到 6 500 行（T1/T2 为
-  2 万行以上），但流没有提前退出，现有门禁无法区分“设备日志本来就少”和
-  “订阅生效晚”。日志完整性目前只能靠 `lineCount` 人工判断。
-- **pass 级记录没有落盘。** `attempts`、每 pass 耗时只出现在 CLI/MCP 的
-  `passes` 返回值和 `notes` 里；`run.json` / `report.json` 只保存指标与
-  证据路径。M4 若要做完整审计，应把 `passes` 持久化。
+- **日志量低不等于流断了，但也不能证明订阅及时。** `message-list-scroll` T1
+  报告记 202 行、产物文件 201 行（`lineCount` 比文件实际行数多 1，是本次 6 个
+  run 的普遍现象），而 T2/T3 分别是 16 185 / 10 941 行。核查时间戳可以确认流在
+  09:34:39–09:37:16 一直在推（Take 结束于 09:38:04，最后 48 秒确实无输出），
+  201 行分布在 12 个不同的秒里，属于“App 本身安静”而不是提前退出。但现有
+  门禁仍无法区分“设备日志本来就少”和“订阅生效晚”，完整性只能靠 `lineCount`
+  人工判断。
+- **pass 级记录没有落盘。** `attempts` 与每 pass 耗时只出现在 CLI/MCP 返回的
+  `passes` / `timings` 里；`run.json` / `report.json` 只保存指标与证据路径
+  （本次矩阵另存进 `docs/m3-takes.json`，产品侧没有持久化）。M4 若要做完整
+  审计，应把 `passes` 持久化。
 - **阈值仍是占位值。** `hitches` 的 fail 线（15）比真实值低一到两个数量级，
   `gate=fail` 是预期结果，不代表产品回归。
 - **hitches pass 不再依赖 attach，但 `--launch` 有自己的失败模式。** `--launch`
   在 App 已经运行时可能停在 “Launching process” 之后不再进入 live。录制层会在
   30s live 超时后先 SIGINT、宽限期（5 分钟）后再 SIGKILL，并按既有策略重试；
-  没有 trace 的 Take 会如实失败，不会记成成功。memory pass 仍要按 pid 取数，
-  所以同名可执行文件的单实例前置检查不能省。
+  没有 trace 的 Take 会如实失败，不会记成成功。memory pass 的 pid 解析已改为
+  按容器 UUID 选择（`0c6b77a`），但双构建并存场景尚未在真机复测。
 - **动作时间窗与 trace 起点之间有一个保守的近似。** 窗口用 `during` 回调内的
   主机时间差计算，而 `during` 是会话进入 live 后立刻调用的，因此主机差被当作
   trace 相对时间使用。误差约 ±1s，方向是窗口可能**提前**开始（包含少量
@@ -458,12 +542,39 @@ SIGINT 收尾）、`src/__tests__/runner/run.test.ts`（前台查询不返回 �
   报 `Failed starting ktrace session`，平台**没有**自动恢复手段，只能提示重启
   手机。M4 若要真正做到“无人值守”，需要在录制前加入设备健康检查
   （例如一次极短的探测录制）并在失败时阻止整轮矩阵。
+- **主机侧 `xctrace` 会在保存 trace 时崩溃（本次新发现）。** 2026-11-16 冒烟的
+  第 1 次尝试里，`xctrace` 27.2（64578.328）在保存阶段 SIGSEGV：崩溃线程队列是
+  `com.apple.dt.frame.activity`，栈顶为
+  `XRCallstackFixupOracle fixupCoreProfileCallstack` →
+  `CSSymbolicatorFixupFrames` → `TMMapSymbolOwnerData::symbol_for_address`。
+  `vmRegionInfo` 显示故障地址落在某线程栈区域末尾之后 17 字节（该区域标注为
+  thread 21，不是 faulting thread 8），因此“符号化调用栈时栈溢出”只是**推断**：
+  ips 能证明主机侧 `xctrace` 在处理 Time Profiler 调用栈时崩溃，不能证明具体
+  的溢出机制。
+  保存中断后 `.trace` 只剩 `Trace1.run/Attachments/trace-data.atrc`（5.2 GB
+  原始数据）与 `RunIssues.storedata`，缺 `form.template` / `corespace/` /
+  `instrument_data/`，因此 `xctrace export` 报 `Document Missing Template Error`。
+  设备侧是健康的：崩溃后没有残留录制进程，同一构建紧接着重跑就产出了正常的
+  463 MB trace。这是主机工具链的偶发崩溃，不是设备不健康；矩阵驱动已把这类
+  信号从“立即中止整轮”拆成“确认有本次尝试新产生的 `xctrace-*.ips` 才重试该
+  Take”（`run-final.sh` 的 `HOST_TRACE_CRASH_PATTERN`；同一报错但无新崩溃
+  报告时仍按设备侧失败中止）。平台侧**没有**在录制层校验 trace 是否带
+  `form.template`，这类残包要等到解析阶段才暴露；虽然最终仍如实判 `failed`，
+  但应并入 M4 的 `harden-diagnostics`，在返回 trace 前先做结构校验。证据：
+  `runs/2026-11-16T01-03-39.535Z-inOKZTpQ/xctrace-crash.ips`。
 - **Crash 差集是全设备的，不区分进程。** `crashIds` 取的是设备的完整报告
   列表，因此别的进程留下的 `JetsamEvent-*` 只要恰好出现在 Take 的时间窗内，
-  就会被算成“新增 Crash”并把 Take 降级为 `failed`。本次矩阵设备发生过一次
-  `vm-compressor-thrashing` jetsam（`largestProcess: Runner`），之后再开跑时
-  它已经在“before”基线里，不影响判定。方向是**偏严**（不会漏报），但 M4 应
-  按报告里的 `process` 字段过滤到被测 App。
+  就会被算成“新增 Crash”并把 Take 降级为 `failed`。本次矩阵就撞到一次：
+  `community-home-scroll` T1 第 1 次尝试（run `2026-11-16T01-15-11.686Z-wzOCgRbr`）
+  指标其实齐全（`hitches` 451 / `blockMs` 79.2 / `launchMs` 377.69 /
+  `memoryMB` 111.67），却因为新增 `JetsamEvent-2026-11-16-091522.ips` 被判
+  `failed`。查报告内容：`largestProcess` 是 `News`（30 387 页），**没有任何进程
+  处于 `killed` 状态**，NNIM 是 `frontmost` 且只占 13 页——这是一次系统级内存
+  压力快照，不是 App 崩溃。原始报告已从设备取回，保存在
+  `runs/2026-11-16T01-15-11.686Z-wzOCgRbr/jetsam-2026-11-16-091522.json`
+  （`device crashes get` 的返回，`data.content` 为报告正文）。按规则该尝试
+  不计入矩阵，第 2 次尝试 `completed` 后才计入。方向是**偏严**（不会漏报），
+  但 M4 应按报告里实际被终止的进程过滤，而不是按报告类型过滤。
 
 ## 6. 复现
 
@@ -481,4 +592,5 @@ node /Users/leigod/雷神/性能分析/performance-test-mcp/dist/cli/bin.js \
 
 每个 Take 的产物在 `.performance-test/runs/<runId>/`：
 `run.json`、`plan.json`、`report.json`、`report.md`、`device.log`、
-`traces/{hitches,launch,memory}.trace`、`crashes/`。
+`traces/{hitches,launch,memory}.trace`；Crash 报告 id 仅在
+`report.json` 的 `diagnostics.crashes` 中。
