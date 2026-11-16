@@ -5,6 +5,7 @@ import { createMobilecliDriver } from "../device/mobilecli.js";
 import { createXctraceRecorder } from "../recording/xctrace.js";
 import { runTake, type RunTakeSummary } from "../runner/run.js";
 import { prepareInputSchema, preparePerformanceTest } from "./plan.js";
+import { describeInputIssues } from "../diagnostics/removed-config.js";
 import { resolveReadyWorkspace, type RegisterOptions } from "./index.js";
 
 /**
@@ -53,9 +54,9 @@ export async function runPerformanceTest(
   const parsed = runInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
-      error: `run_performance_test 输入校验失败：${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ")}`,
+      error: `run_performance_test 输入校验失败：${describeInputIssues(
+        parsed.error.issues,
+      )}`,
     };
   }
   const input = parsed.data;

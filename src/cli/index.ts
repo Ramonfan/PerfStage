@@ -13,6 +13,7 @@ import type { RunTakeSummary } from "../runner/run.js";
 import type { TraceAnalyzer } from "../runner/execute.js";
 import type { DeviceDriver } from "../device/types.js";
 import type { TraceRecorder } from "../recording/types.js";
+import { getVersion } from "../version.js";
 import {
   EXIT_ENVIRONMENT,
   EXIT_OK,
@@ -118,7 +119,7 @@ export async function main(
 
   const { values, positionals } = parsed;
   if (values.version === true) {
-    io.out("perfstage 0.1.0");
+    io.out(`perfstage ${getVersion()}`);
     return EXIT_OK;
   }
   if (values.help === true || positionals.length === 0) {

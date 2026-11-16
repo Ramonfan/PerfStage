@@ -1,4 +1,5 @@
 import { z, ZodError } from "zod";
+import { describeInputIssues } from "../diagnostics/removed-config.js";
 import {
   appTargetSchema,
   deviceTargetSchema,
@@ -37,7 +38,7 @@ const scenarioInputSchema = z
     repetitions: z.number().int().positive().optional(),
     notes: z.string().optional(),
   })
-  .passthrough();
+  .strict();
 
 function buildPreconditionFromInput(
   input: z.infer<typeof preconditionInputSchema>,
@@ -65,7 +66,7 @@ function buildPreconditionFromInput(
 
 function describeZodError(error: ZodError, source?: string): string {
   const prefix = source ? `${source}: ` : "";
-  return `${prefix}${error.message}`;
+  return `${prefix}${describeInputIssues(error.issues)}`;
 }
 
 export function parseScenarioDocument(document: unknown, source?: string): TestPlan {

@@ -26,16 +26,6 @@ function makePlan(): TestPlan {
     metrics: [{ name: "hitches" }, { name: "cpu" }, { name: "memory" }],
     analysisFocus: ["jank"],
     repetitions: 1,
-    diagnostics: {
-      collectDeviceLogs: true,
-      collectCrashes: true,
-      lifecycleSampling: true,
-      includedLogSubsystems: [],
-      includedLogCategories: [],
-      excludedLogSubsystems: [],
-      networkCapture: false,
-      screenshotOnFailure: true,
-    },
     createdAt: "2026-10-17T00:00:00.000Z",
     notes: "no notes",
   };

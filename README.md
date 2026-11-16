@@ -42,6 +42,33 @@ PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用
 - **平台不绑定业务。** 新增一个 App 或一个场景，不需要修改 PerfStage 内核。
 - **重复测试成本极低。** 场景稳定后，回归就是「再执行一次 Skill」，而不是重新向助手描述一遍测试步骤。
 
+### 产品定位与边界
+
+PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属如下：
+
+| 能力 | 归属 | 具体内容 |
+| --- | --- | --- |
+| 驱动 | PerfStage | 解析场景、校验计划、按动作序列操作真机 |
+| 采集 | PerfStage | 三 pass 录制（hitches / launch / memory），管理录制会话与 trace 保存 |
+| 分析 | PerfStage | 解析 trace、归一化诊断、计算 verdict 与 `gate` |
+| 报告 | PerfStage | `report.json` / `report.md` 与运行目录证据 |
+| 场景 | 消费项目 | bundleId、动作、指标与阈值（`scenarios/*.yaml`） |
+| 调用契约 | 消费项目 | Thin Skill（`SKILL.md`），说明 agent 如何调用一次工具 |
+
+真实调用链只有一条：
+
+```text
+项目 SKILL.md ──读──▶ Agent ──调──▶ MCP 工具 run_performance_test
+                                  或 CLI  perfstage run <sceneId>
+                                        │
+                                        ▼
+                        驱动真机 → 采集 trace → 解析 → 报告
+```
+
+**边界要说清**：Skill 是 **agent 层**的调用契约，PerfStage 的输入始终是场景 ID（MCP 字段名 `scenarioId`，CLI 位置参数 `<sceneId>`）或 `adHocPlan`。Runner 不解析 `SKILL.md`，也没有 `perfstage run --skill` 这样的入口。这样 Skill 可以自由演进（调整措辞、补前置检查、改输出说明），平台只依赖稳定的工具入参与输出契约。
+
+PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务、历史基线与趋势（最后一项在路线图中）。
+
 ### 命名约定
 
 沿用舞台隐喻，文档和 Skill 中使用同一套词汇：
@@ -102,7 +129,7 @@ PerfStage 自带录制层与 trace 解析器，不再依赖 `instruments-mcp-ser
 ### 3.2 构建与注册
 
 ```bash
-cd "/Users/leigod/雷神/性能分析/performance-test-mcp"
+cd <perfstage-repo>          # 本仓库根目录
 npm install
 npm test
 npm run build
@@ -112,7 +139,7 @@ npm run build
 
 ```bash
 claude mcp add --scope user --transport stdio performance-test -- \
-  node "/Users/leigod/雷神/性能分析/performance-test-mcp/dist/index.js"
+  node "<perfstage-repo>/dist/index.js"
 ```
 
 检查连接：
@@ -123,12 +150,12 @@ claude mcp list
 
 用户级注册只共享**二进制入口**，不共享数据。每个项目仍然拥有自己的 `.performance-test/`。修改代码后需要 `npm run build` 并重启会话。
 
-CLI 与 MCP 共用同一套实现：
+CLI 与 MCP 共用同一套实现。下面的 `perfstage` 命令都假设已经 `npm link`：
 
 ```bash
 node dist/cli/bin.js --help
-# 或安装后直接使用
-npm link && perfstage --help
+npm link                     # 之后可直接使用 perfstage
+perfstage --help
 ```
 
 ### 3.3 初始化项目工作区
@@ -157,16 +184,17 @@ perfstage init --app com.example.app --name "Example App" --copy-scenarios
 
 ```text
 <project>/
-├── .performance-test/
-│   ├── config.json
-│   ├── scenarios/
-│   │   └── community-home-scroll.yaml
-│   └── runs/
-└── .claude/
-    └── skills/
-        └── perf-community-scroll/
-            └── SKILL.md
+└── .performance-test/
+    ├── config.json
+    ├── scenarios/
+    │   ├── scroll-baseline.yaml   # 仅 --copy-scenarios 时植入
+    │   └── start-cold.yaml        # 仅 --copy-scenarios 时植入
+    └── runs/
 ```
+
+`init` 只负责工作区与场景，**不会生成 Skill**。需要 Skill 时，从
+[`templates/SKILL.md`](templates/SKILL.md) 复制一份到项目的
+`.claude/skills/<name>/SKILL.md`（或等价位置），再把场景 ID 与设备参数改成自己的。
 
 ### 3.4 定义一个 Scene
 
@@ -174,11 +202,11 @@ perfstage init --app com.example.app --name "Example App" --copy-scenarios
 
 ### 3.5 执行
 
-命令行一次 Take：
+命令行一次 Take（`<sceneId>` 取自 `perfstage list`）：
 
 ```bash
-perfstage run community-home-scroll --device <UDID>
-perfstage run community-home-scroll --device <UDID> --json
+perfstage run <sceneId> --device <UDID>
+perfstage run <sceneId> --device <UDID> --json
 perfstage report <runId>
 ```
 
@@ -205,7 +233,7 @@ trace 解析、证据门禁与报告。需要回归时再说一次，就是一�
 
 **读图要点：**
 
-- **项目 Scene Skill** 是唯一入口。它属于项目，随项目一起版本化。
+- **项目 Scene Skill** 是 agent 的入口：它属于项目，随项目一起版本化；人也可以直接用 CLI 执行同一个场景。
 - **PerfStage MCP** 是通用能力层：加载场景、校验计划、管理运行、落盘证据、生成报告。
 - **Runner** 是内建执行器。它把一次调用展开为「准备设备 → 按指标录制 → 回放动作 → 解析 trace → 收尾」，重复测试不再依赖现场编排。
 - **Device Driver / Recorder** 是执行层适配器：`mobilecli` + `xcrun devicectl` 驱动设备，`xctrace` 录制 trace；PerfStage 自己解析 trace（D13），不依赖外部 instruments MCP。
@@ -251,7 +279,7 @@ Skill 是项目资产，不是平台资产。它应该足够短：只描述「�
 
 | 输入 | 必填 | 说明 |
 | --- | --- | --- |
-| `sceneId` | 是 | 对应 `.performance-test/scenarios/<sceneId>.yaml` |
+| `sceneId` | 是 | 场景 ID，对应 `.performance-test/scenarios/<sceneId>.yaml`；调用工具时字段名是 `scenarioId` |
 | `deviceId` | 是 | 目标设备 UDID；不要写死在 YAML 里 |
 | `analysisFocus` | 否 | 例如 `["jank", "memory"]`，覆盖场景默认值 |
 | `baselineRunId` | 否 | 规划中：指定对比基线 |
@@ -366,7 +394,7 @@ PerfStage 提供 6 个工具。`run_performance_test` 是一键入口；
 
 ### `list_performance_scenarios`
 
-列出当前项目的场景：ID、名称、Bundle ID、动作数量、指标、诊断配置。无参数。
+列出当前项目的场景：ID、名称、Bundle ID、动作数量、指标、分析重点。无参数。
 
 ### `prepare_performance_test`
 
@@ -547,19 +575,20 @@ metrics:
 
 ```text
 <project>/.performance-test/runs/<run-id>/
-├── run.json                 # 运行状态、动作、指标、证据引用
-├── plan.json                # 本次解析后的完整 TestPlan
+├── run.json                 # 运行状态、动作、指标、notes 与证据路径字段
+├── plan.json                # 本次解析后的完整 TestPlan（不含诊断配置）
 ├── report.json              # 机器可读报告
 ├── report.md                # 中文 Markdown 报告
-├── device.log               # 设备日志（如有）
-├── lifecycle.json           # 生命周期证据（如有）
-├── traces/                  # xctrace 原始产物
-│   ├── hitches.trace
-│   ├── launch.trace
-│   └── memory.trace
-└── crashes/
-    └── <crash-id>.txt       # 测试期间新增的 Crash
+├── device.log               # 设备日志（默认采集；日志流无输出时不存在）
+└── traces/                  # xctrace 原始产物
+    ├── hitches.trace
+    ├── launch.trace
+    └── memory.trace
 ```
+
+Crash 差集与生命周期分类写入 `report.json` 的 `diagnostics`（含降级结论与 Crash ID），
+运行目录不单独落盘；`run.json.notes` 只记录执行备注与失败归因。v0.1 不采集网络抓包，
+也不会在失败时生成截图，因此没有对应的目录。
 
 `report.json` 不重复内联 `device.log` 的正文，只保留分类统计与 `lineCount`，
 原始文本由 `evidencePaths.deviceLog` 指向。`repetitions > 1` 时，
@@ -619,7 +648,7 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 - [x] 落地 `running` 状态与 `repetitions` 中位数聚合
 - [x] 结构化输出稳定为 `status / metrics / findings / reportPath / gate`
 - [x] CLI：`perfstage init/list/run/report`，退出码可被脚本消费
-- [x] 真机矩阵：2 个场景 × 3 次（`docs/m3-validation.md`）
+- [x] 真机矩阵：2 个场景 × 3 次（6/6 `completed`，同一固定构建；结果见 `docs/m3-validation.md` §2/§3）
 
 **第三阶段：让重复测试有意义**
 
@@ -661,7 +690,7 @@ Runner 在第一次录制前就启动日志流，所以正常情况下不会为�
 
 **新增了 Crash**
 
-查看 `runs/<run-id>/crashes/` 与 `report.md`。新增 Crash 会让状态降级，报告会列出 Crash ID、异常信息和降级原因。
+查看 `report.md` 的稳定性诊断段与 `report.json` 的 `diagnostics.crashes`。新增 Crash 会让状态降级，报告会列出 Crash ID、异常信息和降级原因。
 
 **真机上某次 Take 失败**
 
@@ -676,9 +705,9 @@ Runner 在第一次录制前就启动日志流，所以正常情况下不会为�
   这也意味着 `Cannot find process for provided pid` 不会再出现在一键执行里。
   仍可能出现的是：
   - **同名可执行文件在跑**：例如同时装了 `com.nndev.im` 和另一份 NN，两者的进程名
-    都是 `NNIM`。hitches pass 不受影响，但 **memory pass** 按容器 UUID 解析 pid
-    时需要唯一目标，PerfStage 会直接报 `duplicate-process` 并列出冲突的 pid，
-    卸载或关闭另一份即可。
+    都是 `NNIM`。hitches pass 不受影响；**memory pass** 按容器 UUID 从进程表选择
+    目标，同名并存属于正常情况，不会再报 `duplicate-process`。只有当容器 UUID
+    在进程表中找不到时，才会取不到 pid。
   - **`--launch` 在 App 已运行时挂住**：极少数情况下 xctrace 会停在
     “Launching process” 不再进入录制。录制层会在超时后先 SIGINT、宽限期后再
     强制结束，并按既有重试策略再录一次；没有 trace 的 Take 一律不会记成成功。

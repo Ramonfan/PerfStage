@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -71,6 +71,7 @@ describe("prepare_performance_test", () => {
     );
     expect(planText).toContain("community-home-scroll");
     expect(planText).toContain("scroll-up-1");
+    expect(JSON.parse(planText)).not.toHaveProperty("diagnostics");
   });
 
   it("rejects requests when both scenarioId and adHocPlan are supplied", async () => {
@@ -211,6 +212,33 @@ describe("prepare_performance_test", () => {
     expect(result.nextSteps.join("\n")).toContain("Animation Hitches");
     expect(result.nextSteps.join("\n")).toContain("Time Profiler");
     expect(result.nextSteps.join("\n")).toContain("Allocations");
+  });
+
+  it("rejects a diagnostics block instead of silently ignoring it", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const before = await readdir(harness.runsDir).catch(() => [] as string[]);
+    const adHoc = await harness.call("prepare_performance_test", {
+      adHocPlan: {
+        app: { bundleId: "com.nndev.im" },
+        actions: [{ id: "wait-1", type: "wait", durationMs: 100 }],
+        diagnostics: { networkCapture: true },
+      },
+      device: { id: "device-1" },
+    });
+    expect(isToolError(adHoc)).toBe(true);
+    expect((adHoc as { error: string }).error).toMatch(/diagnostics/i);
+    expect((adHoc as { error: string }).error).toMatch(/已在 v0\.1 移除/);
+
+    const overrides = await harness.call("prepare_performance_test", {
+      scenarioId: "community-home-scroll",
+      device: { id: "device-1" },
+      diagnosticOverrides: { screenshotOnFailure: false },
+    });
+    expect(isToolError(overrides)).toBe(true);
+    expect((overrides as { error: string }).error).toMatch(/diagnosticOverrides/i);
+
+    const after = await readdir(harness.runsDir).catch(() => [] as string[]);
+    expect(after).toEqual(before);
   });
 
   it("does not perform any device operation inside the handler", async () => {

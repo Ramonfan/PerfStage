@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registerTools } from "./tools/index.js";
+import { SERVER_INFO } from "./version.js";
 import { createWorkspaceManager } from "./workspace/manager.js";
 
 /**
@@ -21,7 +22,7 @@ import { createWorkspaceManager } from "./workspace/manager.js";
  */
 export function createServer(): McpServer {
   const server = new McpServer(
-    { name: "performance-test-mcp", version: "0.1.0" },
+    SERVER_INFO,
     { capabilities: { tools: {} } },
   );
   const workspaceManager = createWorkspaceManager(process.cwd());
@@ -38,7 +39,7 @@ if (
 ) {
   const workspaceManager = createWorkspaceManager(process.cwd());
   const server = new McpServer(
-    { name: "performance-test-mcp", version: "0.1.0" },
+    SERVER_INFO,
     { capabilities: { tools: {} } },
   );
   registerTools(server, {

@@ -5,7 +5,7 @@
 | 文档版本 | v1.0 |
 | 日期 | 2026-11-13 |
 | 仓库 | [Ramonfan/PerfStage](https://github.com/Ramonfan/PerfStage) |
-| 当前状态 | 控制面可用；执行器未实现 |
+| 当前状态 | 执行器与 CLI 已实现；M3 真机矩阵已通过（2 场景 × 3 Take，见 `docs/m3-validation.md`） |
 | 计划周期 | MVP 6 周（约 28.5 人日，含 CLI 与真机适配），v1.0 再 +2 周 |
 | 估算假设 | 1 名开发者、1 台 iOS 真机（NN / iOS 27.0.1）、可随时用模拟器补位 |
 
@@ -536,8 +536,8 @@ perfstage report <runId>
 - [x] `start_profiling` 失败即报错（E0-6）
 - [x] App Launch 解析器适配（E0-7）：`life-cycle-period`，实测 274.3ms
 - [x] Activity Monitor TS 解析移植（E0-8）：实测 NNIM 113.5 MiB
-- [ ] 录制 `mobile_list_elements_on_screen` 与 `stop_profiling` fixture（E0-4）
-- [ ] 验证独立 client 并发日志采集（E0-5）
+- [x] 录制 `mobile_list_elements_on_screen` 与 `stop_profiling` fixture（E0-4）：元素列表由 `src/__tests__/device/mobilecli.test.ts` 内联 fixture 覆盖；trace 侧已入库 `src/__tests__/fixtures/` 的 4 个 XML；`stop_profiling` 路径由 `src/__tests__/recording/xctrace.test.ts` 的假 `xctrace` 脚本与 M3 真机 trace 覆盖
+- [x] 验证独立 client 并发日志采集（E0-5）：Runner 在 `src/runner/execute.ts` 用独立日志流采集，与 xctrace 录制并行；M3 实跑产出 `device.log`（如 `perfstage-m3-workspace/.performance-test/runs/2026-11-16T01-20-02.598Z-WOdH-nXM/device.log`，11,411,012 字节）
 
 **交付物：** 绿色 CI；`docs/spikes/m0-device-spike.md`；指标可行性结论。
 
@@ -627,12 +627,12 @@ perfstage report <runId>
 - [x] Runner 编排与状态机（`running`、`repetitions`）
 - [x] `run_performance_test` 工具
 - [x] fake 适配器 + 集成测试（≥ 15 个）
-- [x] 真机冒烟：2 个场景 × 3 次
+- [x] 真机矩阵：2 个场景 × 3 次（6/6 `completed`，跑在同一固定构建上）
 - [x] 文档与 Quick Start 更新
 
 **交付物：** `run_performance_test` 可用；示例 Skill 缩短为 1 次调用。
 
-**验收：** A2、A3、A8、A9、A10 通过。真机记录见
+**验收：** A2、A3、A8、A9、A10 通过（`docs/m3-validation.md` §3）。真机记录见
 [`docs/m3-validation.md`](m3-validation.md) 与 [`docs/m3-takes.json`](m3-takes.json)。
 
 ### M3.5 — CLI 薄封装（2 人日）
@@ -668,11 +668,11 @@ perfstage report <runId>
 - 基线对比要区分「设备/系统变化」与「代码回归」，报告中应记录设备型号与
   iOS 版本。
 - M3 真机矩阵暴露的环境级故障已定位两类：设备侧进程表滞后（已用同 pid
-  短退避重试覆盖）与同名可执行文件冲突（已用 `duplicate-process` 明确报错）。
+  短退避重试覆盖）与同名可执行文件冲突（D15 后用 `--launch` 绕开 hitches）。
   M3 后期的 D15 把 hitches pass 从 `--attach <pid>` 改为 `--launch` + 动作
-  时间窗，彻底绕开前者；同名冲突仍会影响 memory pass（按容器 UUID 解析 pid），
-  因此矩阵脚本保留单实例前置检查。M4 可考虑把「同名进程」也做成可自愈的
-  启动前置步骤，而不是让每个 pass 各自报错。
+  时间窗；随后 `resolvePid` 也改为按容器 UUID 选择进程（`0c6b77a`），同名构建
+  不再被视为致命。该路径尚未在真机上复测，M4 需要补一次双构建并存的 memory
+  pass 证据。矩阵脚本仍保留单实例前置终止，作为保守清理而不是硬性前置条件。
 
 ---
 
@@ -722,6 +722,8 @@ perfstage report <runId>
 | E5-2 | 基线对比 | P2 | 2d | E5-1 | 可对比两次 |
 
 > 2026-11-13：E0-6（start fail-fast）、E0-7（App Launch 解析）、E0-8（Activity Monitor 解析）已完成，见 `docs/spikes/m0-device-spike.md` 第 8 节。M0 剩余 E0-4（fixtures）与 E0-5（并发日志）。
+>
+> 2026-11-16：E0-4 与 E0-5 以现有证据关闭（见 M0 清单内证据路径），M0 无未决项；v0.1 收口见 `openSpec/changes/prepare-v0-1-release/`。
 >
 > 2026-11-13：M3 落地时把「MCP client 封装」改为**内建录制层**（`src/recording/`、`src/device/`），E3-3 由 `mobilecli` 适配器承担，E3-5 由 `xctrace` Recorder + PerfStage 自解析承担，不再跨进程调用外部 MCP。任务 ID 保留用于对照原始估算。
 
@@ -817,6 +819,28 @@ perfstage report <runId>
 6. **Day 5**：用示例场景跑一次，确认缺 trace 会降级、阈值会出 gate。
 
 做完这 6 项，MVP 的最大不确定性（真机采集 + 证据可信）就被消掉了，后面的 Runner 与 CLI 只是工程实现。
+
+---
+
+## 12. 2026-11-16 复盘与后续规划
+
+> 本节只做导航；阶段细节、依赖和验收口径以
+> `openSpec/changes/define-perfstage-roadmap/design.md` 为准，冲突时修正本文。
+
+M3 的代码与 CLI 已实现，2 场景 × 3 次真机矩阵已于 2026-11-16 通过
+（6/6 `completed`，跑在同一固定构建上），阶段 A 已归档收口。M4 仍不提前启动，
+当前进入阶段 B 的 v0.1 发布收口。
+后续按四段推进：
+
+| 阶段 | 目标 | 退出标准 | 对应 change |
+| --- | --- | --- | --- |
+| A. M3 收口 | 补齐真机矩阵与验收 | §2/§3 完整；假通过 0；失败 Take 有归因 | `close-out-m3-validation`（已归档） |
+| B. v0.1 发布 | 明确 MVP 交付边界并打 tag | M0 遗留项关闭；诊断配置缺口移除；版本单一来源；CI 绿；tag `v0.1.0` | `prepare-v0-1-release` |
+| C. v1.0 回归闭环 | 让重复测试产生决策价值 | 同设备两次构建可对比；回归门禁可被 CI 消费；阈值来自多 Take 分布 | `add-run-history` → `add-baseline-compare` → `add-regression-gate` → `recalibrate-thresholds`；`harden-diagnostics`、`reduce-trace-footprint` 可并行 |
+| D. post-v1.0 | 暂不排期 | 用户明确立项后才创建 change | 无 |
+
+顺序约束：阈值重标定必须晚于基线设施；v0.1 不夹带 M4；设备恢复前不创建
+v1.0 实现 change。
 
 ---
 

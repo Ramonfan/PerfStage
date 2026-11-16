@@ -23,3 +23,30 @@ it("fails with the source field when the YAML action is invalid", () => {
     actions: [{ id: "x", type: "unknown" }],
   })).toThrow();
 });
+
+it("keeps union branch detail for a mistyped device block", () => {
+  expect(() =>
+    parseScenarioDocument({
+      id: "bad-device",
+      app: { bundleId: "com.nndev.im" },
+      device: { id: 5 },
+      actions: [{ id: "wait", type: "wait", durationMs: 10 }],
+    }),
+  ).toThrow(/device: Invalid input（.*expected string.*number.*）/);
+});
+
+it("rejects a diagnostics block instead of silently dropping it", () => {
+  expect(() =>
+    parseScenarioDocument(
+      {
+        id: "community-home-scroll",
+        app: { bundleId: "com.nndev.im" },
+        actions: [
+          { id: "scroll-up", type: "swipe", direction: "up", distance: 700 },
+        ],
+        diagnostics: { networkCapture: true },
+      },
+      "community-home-scroll.yaml",
+    ),
+  ).toThrow(/community-home-scroll\.yaml[\s\S]*diagnostics[\s\S]*已在 v0\.1 移除/);
+});

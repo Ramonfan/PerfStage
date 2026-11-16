@@ -12,9 +12,9 @@ description: <一句话说明测什么、在什么设备上测、关注哪些指
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `deviceId` | 是 | 目标设备 UDID；**不要写死在场景 YAML 里** |
-| `sceneId` | 是 | 默认 `<scene-id>` |
-| `repeat` | 否 | 重复次数；Runner 取中位数并保留样本 |
+| `deviceId` | 是 | 目标设备 UDID；**不要写死在场景 YAML 里**；对应工具字段 `device.id` |
+| `scenarioId` | 是 | 默认 `<scene-id>` |
+| `repeat` | 否 | 重复次数（工具字段 `repetitions`）；Runner 取中位数并保留样本 |
 | `notes` | 否 | 追加到本次 Take 的备注 |
 
 ## 前置条件
@@ -43,7 +43,7 @@ description: <一句话说明测什么、在什么设备上测、关注哪些指
 ```jsonc
 {
   "runId": "...",
-  "sceneId": "<scene-id>",
+  "scenarioId": "<scene-id>",
   "status": "completed",   // completed | partial | failed | invalid | cancelled
   "gate": "pass",          // pass | warn | fail | unknown
   "metrics": { "hitches": 3, "blockMs": 84.2, "launchMs": 274.3, "memoryMB": 113.5 },

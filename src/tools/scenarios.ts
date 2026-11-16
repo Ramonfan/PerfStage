@@ -16,7 +16,6 @@ export interface ListPerformanceScenariosEntry {
   bundleId: string;
   actionCount: number;
   metricNames: string[];
-  diagnostics: TestPlan["diagnostics"];
   analysisFocus: TestPlan["analysisFocus"];
 }
 
@@ -40,7 +39,6 @@ function toEntry(plan: TestPlan): ListPerformanceScenariosEntry {
     bundleId: plan.app.bundleId,
     actionCount: plan.actions.length,
     metricNames: plan.metrics.map((m) => m.name),
-    diagnostics: plan.diagnostics,
     analysisFocus: plan.analysisFocus,
   };
 }

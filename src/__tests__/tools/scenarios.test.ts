@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 describe("list_performance_scenarios", () => {
-  it("returns sorted scenarios with id, name, bundleId, action count, metric names, and diagnostic defaults", async () => {
+  it("returns sorted scenarios with id, name, bundleId, action count, and metric names", async () => {
     if (!harness) throw new Error("harness not initialized");
     const result = await harness.call("list_performance_scenarios");
     expect(isToolError(result)).toBe(false);
@@ -45,9 +45,7 @@ describe("list_performance_scenarios", () => {
     expect(community.bundleId).toBe("com.nndev.im");
     expect(community.actionCount).toBe(2);
     expect(community.metricNames).toEqual(["hitches", "cpu", "memory"]);
-    const diag = community.diagnostics as Record<string, unknown>;
-    expect(diag.collectDeviceLogs).toBe(true);
-    expect(diag.collectCrashes).toBe(true);
+    expect(community).not.toHaveProperty("diagnostics");
   });
 
   it("returns a structured error containing the path when a scenario is malformed", async () => {

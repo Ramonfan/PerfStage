@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { testPlanSchema } from "../../model/test-plan.js";
 
 describe("testPlanSchema", () => {
-  it("expands default metrics and diagnostics", () => {
+  it("expands default metrics", () => {
     const plan = testPlanSchema.parse({
       source: "ad_hoc",
       app: { bundleId: "com.example.app" },
@@ -17,8 +17,6 @@ describe("testPlanSchema", () => {
       "launchMs",
       "memoryMB",
     ]);
-    expect(plan.diagnostics.collectDeviceLogs).toBe(true);
-    expect(plan.diagnostics.collectCrashes).toBe(true);
   });
 
   it("rejects an unknown action type", () => {

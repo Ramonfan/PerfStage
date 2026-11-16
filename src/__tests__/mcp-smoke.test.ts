@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerTools } from "../tools/index.js";
 import { createWorkspaceManager } from "../workspace/manager.js";
 import { createRunStore } from "../storage/runs.js";
+import { SERVER_INFO } from "../version.js";
 
 interface RegisteredToolSummary {
   name: string;
@@ -44,7 +45,7 @@ describe("MCP server smoke", () => {
   it("exposes exactly the five named tools via the MCP protocol", async () => {
     if (!root) throw new Error("root not initialized");
     const server = new McpServer(
-      { name: "performance-test-mcp", version: "0.1.0" },
+      SERVER_INFO,
       { capabilities: { tools: {} } },
     );
     const workspaceManager = createWorkspaceManager(root);
@@ -81,7 +82,7 @@ describe("MCP server smoke", () => {
   it("returns a tool error (not a thrown exception) when called before workspace initialization", async () => {
     if (!root) throw new Error("root not initialized");
     const server = new McpServer(
-      { name: "performance-test-mcp", version: "0.1.0" },
+      SERVER_INFO,
       { capabilities: { tools: {} } },
     );
     const workspaceManager = createWorkspaceManager(root);

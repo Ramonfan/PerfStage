@@ -11,9 +11,8 @@
  * The contracts asserted here are derived from the design + spec:
  *
  *   1. `list_performance_scenarios` returns sorted entries containing
- *      `id`, `name`, `bundleId`, actionCount, metricNames, and the
- *      diagnostics defaults. A malformed scenario surfaces as a
- *      structured error mentioning its file path.
+ *      `id`, `name`, `bundleId`, actionCount and metricNames. A malformed
+ *      scenario surfaces as a structured error mentioning its file path.
  *
  *   2. `prepare_performance_test` with the community scenario creates a
  *      prepared `TestRun` whose `run.json` exists on disk and whose
@@ -89,9 +88,7 @@ describe("interactive contract (offline e2e)", () => {
     expect(first.name).toBe("社区首页来回滚动");
     expect(first.actionCount).toBe(2);
     expect(first.metricNames).toEqual(["hitches", "cpu", "memory"]);
-    const diagnostics = first.diagnostics as Record<string, unknown>;
-    expect(diagnostics.collectDeviceLogs).toBe(true);
-    expect(diagnostics.collectCrashes).toBe(true);
+    expect(first).not.toHaveProperty("diagnostics");
   });
 
   it("prepare persists a prepared run and emits Claude-executable next steps", async () => {

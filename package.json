@@ -1,5 +1,6 @@
 {
   "name": "perfstage-mcp",
+  "version": "0.1.0",
   "description": "PerfStage — iOS performance testing platform. Define once, perform every time.",
   "private": true,
   "type": "module",

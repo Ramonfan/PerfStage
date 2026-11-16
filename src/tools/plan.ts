@@ -10,13 +10,13 @@ import {
   testPlanSchema,
   type TestPlan,
   type MetricRequest,
-  type DiagnosticSettings,
   type AnalysisFocus,
   type ExecutionMode,
 } from "../model/test-plan.js";
 import { testRunSchema, type TestRun } from "../model/test-run.js";
 import { newRunId, RUN_FILE_NAME } from "../storage/runs.js";
 import { buildRunRelativePath } from "./path-utils.js";
+import { describeInputIssues } from "../diagnostics/removed-config.js";
 import type { RegisterOptions } from "./index.js";
 
 const deviceTargetSchema = z.object({
@@ -42,19 +42,6 @@ const metricRequestSchema = z
   })
   .passthrough();
 
-const diagnosticOverridesSchema = z
-  .object({
-    collectDeviceLogs: z.boolean().optional(),
-    collectCrashes: z.boolean().optional(),
-    lifecycleSampling: z.boolean().optional(),
-    includedLogSubsystems: z.array(z.string()).optional(),
-    includedLogCategories: z.array(z.string()).optional(),
-    excludedLogSubsystems: z.array(z.string()).optional(),
-    networkCapture: z.boolean().optional(),
-    screenshotOnFailure: z.boolean().optional(),
-  })
-  .strict();
-
 const adHocPlanSchema = z
   .object({
     source: z.enum(["ad_hoc", "scenario"]).optional(),
@@ -72,10 +59,9 @@ const adHocPlanSchema = z
     preconditions: z.array(z.unknown()).optional(),
     execution: z.enum(["interactive", "unattended"]).optional(),
     repetitions: z.number().int().positive().optional(),
-    diagnostics: diagnosticOverridesSchema.optional(),
     notes: z.string().optional(),
   })
-  .passthrough();
+  .strict();
 
 /**
  * Input shape for `prepare_performance_test`. The discriminated union enforces
@@ -93,7 +79,6 @@ export const prepareInputSchema = z
     analysisFocus: z
       .array(z.enum(["jank", "startup", "memory", "battery", "network", "general"]))
       .optional(),
-    diagnosticOverrides: diagnosticOverridesSchema.optional(),
     notes: z.string().optional(),
   })
   .strict()
@@ -161,7 +146,6 @@ function planFromAdHoc(adHocPlan: z.infer<typeof adHocPlanSchema>): TestPlan {
       : {}),
     ...(adHocPlan.execution !== undefined ? { execution: adHocPlan.execution } : {}),
     ...(adHocPlan.repetitions !== undefined ? { repetitions: adHocPlan.repetitions } : {}),
-    ...(adHocPlan.diagnostics !== undefined ? { diagnostics: adHocPlan.diagnostics } : {}),
     ...(adHocPlan.notes !== undefined ? { notes: adHocPlan.notes } : {}),
   };
   // parseScenarioDocument enforces the same `scenario` source ruleset, but
@@ -223,21 +207,6 @@ function mergeMetricOverrides(
     }
   }
   return Array.from(byName.values());
-}
-
-function mergeDiagnosticOverrides(
-  base: DiagnosticSettings,
-  overrides:
-    | z.infer<typeof diagnosticOverridesSchema>
-    | undefined,
-): DiagnosticSettings {
-  if (!overrides) {
-    return base;
-  }
-  return {
-    ...base,
-    ...overrides,
-  };
 }
 
 function buildNextSteps(
@@ -323,9 +292,9 @@ export async function preparePerformanceTest(
   const parsed = prepareInputSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
-      error: `prepare_performance_test 输入校验失败：${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ")}`,
+      error: `prepare_performance_test 输入校验失败：${describeInputIssues(
+        parsed.error.issues,
+      )}`,
     };
   }
   const input = parsed.data;
@@ -351,15 +320,9 @@ export async function preparePerformanceTest(
     basePlan.metrics,
     metricOverrides,
   );
-  const mergedDiagnostics = mergeDiagnosticOverrides(
-    basePlan.diagnostics,
-    input.diagnosticOverrides,
-  );
-
   const mergedCandidate: Record<string, unknown> = {
     ...basePlan,
     device: input.device,
-    diagnostics: mergedDiagnostics,
     metrics: mergedMetrics,
   };
   if (input.execution !== undefined) mergedCandidate.execution = input.execution;
