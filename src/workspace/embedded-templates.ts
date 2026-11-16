@@ -66,8 +66,16 @@ actions:
 metrics:
   - name: hitches
     instrument: Animation Hitches
+    # Example tolerance only; C4 replaces it with a distribution-derived value.
+    # worse is required: the gate must not guess whether higher is bad.
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
   - name: blockMs
     instrument: Animation Hitches
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
 `,
   },
 ];

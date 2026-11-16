@@ -125,3 +125,37 @@ it("rejects a description-only precondition instead of reporting it as verified"
     }),
   ).toThrow(/至少需要一个可校验字段/);
 });
+
+it("keeps a regression policy in the parsed plan", () => {
+  const plan = parseScenarioDocument({
+    id: "community-home-scroll",
+    app: { bundleId: "com.nndev.im" },
+    actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+    metrics: [
+      {
+        name: "hitches",
+        instrument: "Animation Hitches",
+        threshold: { warn: 5, fail: 15 },
+        regression: { worse: "higher", maxWorseningPercent: 20 },
+      },
+    ],
+  });
+  expect(plan.metrics[0]?.threshold).toEqual({ warn: 5, fail: 15 });
+  expect(plan.metrics[0]?.regression).toEqual({
+    worse: "higher",
+    maxWorseningPercent: 20,
+  });
+});
+
+it("rejects an invalid regression policy in a scenario", () => {
+  expect(() =>
+    parseScenarioDocument({
+      id: "community-home-scroll",
+      app: { bundleId: "com.nndev.im" },
+      actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+      metrics: [
+        { name: "hitches", regression: { maxWorseningPercent: 20 } },
+      ],
+    }),
+  ).toThrow();
+});

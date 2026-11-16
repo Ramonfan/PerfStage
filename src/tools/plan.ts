@@ -9,6 +9,7 @@ import { parseScenarioDocument } from "../scenario/parser.js";
 import {
   testPlanSchema,
   preconditionSchema,
+  metricRequestSchema,
   type TestPlan,
   type MetricRequest,
 } from "../model/test-plan.js";
@@ -24,22 +25,6 @@ const deviceTargetSchema = z.object({
   osVersion: z.string().optional(),
   modelIdentifier: z.string().optional(),
 });
-
-const metricRequestSchema = z
-  .object({
-    name: z.string().min(1),
-    instrument: z.string().optional(),
-    tracePath: z.string().optional(),
-    result: z.unknown().optional(),
-    threshold: z
-      .object({
-        warn: z.number().optional(),
-        fail: z.number().optional(),
-      })
-      .strict()
-      .optional(),
-  })
-  .passthrough();
 
 const adHocPlanSchema = z
   .object({

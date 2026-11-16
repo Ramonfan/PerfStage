@@ -14,6 +14,9 @@ import type {
   CompareResult,
   MetricComparison,
 } from "../tools/compare.js";
+import { evaluateRegressionGate } from "../tools/regression.js";
+import type { RegressionResult } from "../tools/regression.js";
+import type { RegressionMetric } from "../analysis/regression.js";
 import { runStatusSchema } from "../model/test-run.js";
 import { runPerformanceTest } from "../tools/run.js";
 import type { RunTakeSummary } from "../runner/run.js";
@@ -25,6 +28,7 @@ import {
   EXIT_ENVIRONMENT,
   EXIT_OK,
   exitCodeFor,
+  exitCodeForRegression,
   type ExitCode,
 } from "./exit-codes.js";
 
@@ -56,6 +60,7 @@ const USAGE = `PerfStage — 一次定义，次次上演。
   perfstage run --plan <plan.json> --device <udid> [--json] [--strict] [--dir <path>]
   perfstage runs [--scenario <sceneId>] [--status <status>] [--limit <n>] [--json] [--dir <path>]
   perfstage compare <runId> [--against <runId>] [--samples <n>] [--json] [--dir <path>]
+  perfstage gate <runId> [--against <runId>] [--samples <n>] [--allow-not-evaluated] [--json] [--dir <path>]
   perfstage report <runId> [--json] [--dir <path>]
   perfstage --version | --help
 
@@ -64,6 +69,7 @@ const USAGE = `PerfStage — 一次定义，次次上演。
   1  测试有效，gate=fail（--strict 时 warn 也返回 1）
   2  测试本身不可信（partial / failed / invalid / cancelled）
   3  无法运行（工作区、设备、依赖或输入错误）
+  4  回归门禁失败，或无法评估（缺规则 / 基线不足 / 指标缺失）
 `;
 
 export interface CliContext {
@@ -118,6 +124,7 @@ export async function main(
         limit: { type: "string" },
         against: { type: "string" },
         samples: { type: "string" },
+        "allow-not-evaluated": { type: "boolean", default: false },
         repetitions: { type: "string" },
         json: { type: "boolean", default: false },
         strict: { type: "boolean", default: false },
@@ -156,6 +163,8 @@ export async function main(
       return commandRuns(values, manager, ctx);
     case "compare":
       return commandCompare(values, positionals.slice(1), manager, ctx);
+    case "gate":
+      return commandGate(values, positionals.slice(1), manager, ctx);
     case "report":
       return commandReport(values, positionals.slice(1), manager, ctx);
     default:
@@ -177,6 +186,7 @@ type ParsedValues = {
   limit?: string;
   against?: string;
   samples?: string;
+  "allow-not-evaluated"?: boolean;
   repetitions?: string;
   json?: boolean;
   strict?: boolean;
@@ -388,9 +398,7 @@ function renderComparison(result: CompareResult, io: CliIO): void {
     excluded.notBefore +
     excluded.unreadable;
   if (excludedTotal > 0) {
-    io.out(
-      `排除：场景 ${excluded.differentPlan}，设备 ${excluded.differentDevice}，iOS ${excluded.differentOs}，非终态 ${excluded.nonTerminal}，不早于目标 ${excluded.notBefore}，不可读 ${excluded.unreadable}。`,
-    );
+    io.out(formatExclusions(excluded));
   }
 }
 
@@ -417,6 +425,127 @@ function formatNumberOrDash(value: number | null): string {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
+}
+
+function formatExclusions(excluded: CompareResult["excluded"]): string {
+  return `排除：场景 ${excluded.differentPlan}，设备 ${excluded.differentDevice}，iOS ${excluded.differentOs}，非终态 ${excluded.nonTerminal}，不早于目标 ${excluded.notBefore}，不可读 ${excluded.unreadable}。`;
+}
+
+async function commandGate(
+  values: ParsedValues,
+  positionals: string[],
+  manager: WorkspaceManager,
+  ctx: CliContext,
+): Promise<ExitCode> {
+  const runId = positionals[0];
+  if (runId === undefined) {
+    return fail(ctx, "gate 需要 <runId>。用 `perfstage runs` 查看运行记录。");
+  }
+  if (values.against !== undefined && values.samples !== undefined) {
+    return fail(ctx, "--against 与 --samples 只能选其一。");
+  }
+  const samples = parseSamples(values.samples);
+  if (samples === "invalid") {
+    return fail(ctx, `--samples 必须是 3–20 的整数：${values.samples}`);
+  }
+
+  const ready = await requireWorkspace(manager, ctx);
+  if (ready === null) return EXIT_ENVIRONMENT;
+
+  const result = await evaluateRegressionGate(
+    {
+      runId,
+      ...(values.against !== undefined ? { against: values.against } : {}),
+      ...(samples !== undefined ? { samples } : {}),
+    },
+    { runStore: ready.store, now: ctx.now },
+  );
+  if ("error" in result) {
+    return fail(ctx, result.error);
+  }
+
+  if (values.json === true) {
+    ctx.io.out(JSON.stringify(result, null, 2));
+  } else {
+    renderRegression(result, ctx.io);
+  }
+
+  return exitCodeForRegression({
+    takeStatus: result.target.status,
+    status: result.regression.status,
+    allowNotEvaluated: values["allow-not-evaluated"] === true,
+  });
+}
+
+function renderRegression(result: RegressionResult, io: CliIO): void {
+  const { target, baseline, regression, metrics, excluded } = result;
+  const kind = baseline.kind === "derived" ? "派生" : "指定";
+  const os = target.osVersion ?? "未知";
+  io.out(
+    `回归门禁 ${target.runId}（${target.planId}，iOS ${os}，${target.status}） ↔ ${kind}基线 ${baseline.samples} 条`,
+  );
+  if (baseline.runIds.length > 0) {
+    io.out(`基线运行：${baseline.runIds.join(", ")}`);
+  }
+  io.out(`规则来源：plan.json（配置 ${regression.configured} 项指标）`);
+
+  for (const metric of metrics) {
+    io.out(formatRegressionMetric(metric));
+  }
+
+  if (regression.status === "fail") {
+    const failed = metrics
+      .filter((metric) => metric.regression?.status === "fail")
+      .map((metric) => metric.name);
+    io.out(
+      `结论：fail（${regression.failed}/${regression.configured} 项超过容差：${failed.join(", ")}）`,
+    );
+  } else if (regression.status === "not-evaluated") {
+    const detail =
+      regression.reasons.length > 0
+        ? regression.reasons.join(", ")
+        : (regression.reason ?? "unknown");
+    io.out(`结论：无法评估（${detail}）`);
+    io.out(
+      "提示：--allow-not-evaluated 可把无法评估放行；JSON 仍会记录 not-evaluated 与原因。",
+    );
+  } else {
+    io.out(
+      `结论：pass（${regression.evaluated}/${regression.configured} 项在容差内）`,
+    );
+  }
+
+  for (const warning of result.warnings) {
+    io.out(`注意：${warning}`);
+  }
+
+  const excludedTotal =
+    excluded.differentPlan +
+    excluded.differentDevice +
+    excluded.differentOs +
+    excluded.nonTerminal +
+    excluded.notBefore +
+    excluded.unreadable;
+  if (excludedTotal > 0) {
+    io.out(formatExclusions(excluded));
+  }
+}
+
+function formatRegressionMetric(metric: RegressionMetric): string {
+  const base = formatMetricComparison(metric);
+  if (metric.regression === null) {
+    return `${base}\tregression=未配置`;
+  }
+  const regression = metric.regression;
+  const verdict =
+    regression.status === "not-evaluated"
+      ? `not-evaluated(${regression.reason ?? "unknown"})`
+      : regression.status;
+  const exceeded =
+    regression.exceeded.length > 0
+      ? `\t超出=${regression.exceeded.join(",")}`
+      : "";
+  return `${base}\tregression=${verdict}${exceeded}`;
 }
 
 async function commandRun(

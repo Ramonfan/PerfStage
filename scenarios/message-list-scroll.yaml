@@ -45,7 +45,3 @@ metrics:
     threshold:
       warn: 300
       fail: 500
-analysisFocus:
-  - jank
-  - startup
-  - memory

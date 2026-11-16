@@ -164,6 +164,43 @@ describe("prepare_performance_test", () => {
     expect(result.runId).toEqual(expect.any(String));
   });
 
+  it("persists an ad-hoc regression policy into plan.json", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const result = await harness.call<PreparePerformanceTestResult>(
+      "prepare_performance_test",
+      {
+        adHocPlan: {
+          source: "ad_hoc",
+          app: { bundleId: "com.example.app" },
+          device: { id: "device-host" },
+          actions: [
+            { id: "scroll-1", type: "swipe", direction: "up", distance: 500 },
+          ],
+          metrics: [
+            {
+              name: "hitches",
+              regression: { worse: "higher", maxWorseningPercent: 20 },
+            },
+          ],
+        },
+        device: { id: "device-1" },
+      },
+    );
+    if (isToolError(result)) throw new Error(result.error);
+    expect(result.plan.metrics[0]?.regression).toEqual({
+      worse: "higher",
+      maxWorseningPercent: 20,
+    });
+
+    const planJson = JSON.parse(
+      await readFile(join(harness.runsDir, result.runId, "plan.json"), "utf8"),
+    ) as { metrics?: Array<Record<string, unknown>> };
+    expect(planJson.metrics?.[0]).toMatchObject({
+      name: "hitches",
+      regression: { worse: "higher", maxWorseningPercent: 20 },
+    });
+  });
+
   it("rejects the removed execution field with a migration hint", async () => {
     if (!harness) throw new Error("harness not initialized");
     const result = await harness.call("prepare_performance_test", {

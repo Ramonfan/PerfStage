@@ -67,7 +67,7 @@ PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属�
 
 **边界要说清**：Skill 是 **agent 层**的调用契约，PerfStage 的输入始终是场景 ID（MCP 字段名 `scenarioId`，CLI 位置参数 `<sceneId>`）或 `adHocPlan`。Runner 不解析 `SKILL.md`，也没有 `perfstage run --skill` 这样的入口。这样 Skill 可以自由演进（调整措辞、补前置检查、改输出说明），平台只依赖稳定的工具入参与输出契约。
 
-PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务、回归门禁与趋势图（基线对比已可用，门禁在路线图中）。
+PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务与趋势图。
 
 ### 命名约定
 
@@ -78,7 +78,7 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管
 | 平台 | **PerfStage** | 提供通用能力 |
 | 项目场景 | **Scene** | 一个 YAML + 一个 Skill |
 | 一次运行 | **Take** | 一次完整的测试执行 |
-| 重复执行 | **Encore** | 复跑同一 Scene；阈值门禁与基线对比已可用 |
+| 重复执行 | **Encore** | 复跑同一 Scene；绝对阈值门禁、基线对比与回归门禁已可用 |
 | 项目场景集合 | **Repertoire** | 一个项目的全部 Scene |
 | 报告 | **Scorecard** | `report.md` / `report.json` |
 
@@ -90,8 +90,8 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管
 
 PerfStage 已经能**在真机上一键跑完一次 Take**：驱动设备、按指标录制（最多 3 个 pass）、解析 trace、判定并出报告。完整清单、状态与证据见 [4.4 平台能力矩阵](#44-平台能力矩阵)；本节只给结论。
 
-- **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比。
-- **今天不可用**：回归门禁、基线落盘与 CI 托管、多设备并发、HTML / JUnit 报告。
+- **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比；`perfstage gate` / `evaluate_regression_gate` 按目标 run 的 `plan.json` 回归规则给出 `pass` / `fail` / `not-evaluated`。
+- **今天不可用**：趋势图、基线落盘与 CI 托管、多设备并发、HTML / JUnit 报告。
 - **两个入口**：Skill 与 CLI 走 `run_performance_test` 一键执行；需要人工接管时用 `prepare_performance_test` + `finalize_performance_test`。
 
 **现在的真实执行链路是：**
@@ -202,6 +202,9 @@ perfstage runs --scenario <sceneId>  # 按场景或计划过滤
 perfstage compare <runId>            # 与同场景/设备/iOS 的最近 3 次基线对比
 perfstage compare <runId> --samples 5 --json
 perfstage compare <runId> --against <runId>  # 两次 Take 直接对比
+perfstage gate <runId>               # 按 plan.json 的 regression 规则判定回归
+perfstage gate <runId> --json
+perfstage gate <runId> --allow-not-evaluated  # 无法评估时也放行（不伪造通过）
 perfstage report <runId>
 ```
 
@@ -215,7 +218,7 @@ Skill 只调用一次 `run_performance_test`，Runner 完成设备动作、三 p
 trace 解析、证据门禁与报告。需要回归时再说一次，就是一次 Encore。
 
 退出码：`0` 有效且未越阈值 · `1` 有效但 `gate=fail`（`--strict` 时 `warn` 也算）·
-`2` 测试本身不可信 · `3` 环境/配置错误。
+`2` 测试本身不可信 · `3` 环境/配置错误 · `4` 回归门禁失败或无法评估（`gate` 命令）。
 
 ---
 
@@ -238,7 +241,7 @@ trace 解析、证据门禁与报告。需要回归时再说一次，就是一�
 
 | 层 | 组件 | 职责 | 源码 |
 | --- | --- | --- | --- |
-| 调用面 | MCP 工具（8 个）、CLI（6 个命令 + 4 类退出码） | 对外入口；`--json` 输出与 MCP 返回同构 | `src/tools/`、`src/cli/` |
+| 调用面 | MCP 工具（9 个）、CLI（7 个命令 + 5 类退出码） | 对外入口；`--json` 输出与 MCP 返回同构 | `src/tools/`、`src/cli/` |
 | 场景层 | 场景加载与校验 | YAML / `adHocPlan` → 严格 `TestPlan`；未知字段与已移除字段直接失败并给迁移提示 | `src/scenario/`、`src/model/test-plan.ts` |
 | 编排层 | Runner | 一次 Take 的生命周期：预检、按指标录制、动作回放、深链与前置条件、收尾 | `src/runner/` |
 | 设备层 | DeviceDriver | `mobilecli` 负责启动、前台、UI 树、手势、崩溃、日志、深链；`devicectl` 负责容器 UUID 与 pid | `src/device/` |
@@ -274,9 +277,9 @@ sceneId / adHocPlan
 
 | 能力 | 状态 | 证据 |
 | --- | --- | --- |
-| 8 个 MCP 工具（工作区、列场景、历史、基线对比、prepare、run、analyze、finalize） | ✅ | `src/tools/index.ts` |
-| CLI `init` / `list` / `run` / `runs` / `compare` / `report` | ✅ 真机 | `src/cli/index.ts` |
-| 退出码 `0/1/2/3`（通过 / gate=fail / 不可信 / 无法运行） | ✅ 真机 | `src/cli/exit-codes.ts` |
+| 9 个 MCP 工具（工作区、列场景、历史、基线对比、回归门禁、prepare、run、analyze、finalize） | ✅ | `src/tools/index.ts` |
+| CLI `init` / `list` / `run` / `runs` / `compare` / `gate` / `report` | ✅ 真机 | `src/cli/index.ts` |
+| 退出码 `0/1/2/3/4`（通过 / gate=fail / 不可信 / 无法运行 / 回归失败或无法评估） | ✅ | `src/cli/exit-codes.ts` |
 | `--json` 与 MCP 返回同构 | ✅ | `src/tools/run.ts` |
 | 版本单一来源 | ✅ | `src/version.ts` |
 
@@ -293,6 +296,7 @@ sceneId / adHocPlan
 | `preconditions` 运行期校验（前台应用 / 可访问性文本） | ✅ 真机 | `src/runner/execute.ts`；不满足即 `invalid` |
 | `repetitions` 中位数聚合 | ✅ | `src/runner/run.ts` |
 | 阈值 `warn` / `fail` | ✅ 真机 | `src/analysis/thresholds.ts` |
+| 回归规则 `regression`（`worse` + 相对/绝对容差，随 `plan.json` 快照） | ✅ 单测 | `src/model/test-plan.ts` |
 | `analysisFocus` / `execution` | ❌ 已移除 | `src/diagnostics/removed-config.ts` |
 
 **执行与采集**
@@ -317,7 +321,8 @@ sceneId / adHocPlan
 | 运行目录证据链（`plan.json`、`device.log`、`traces/`、`run.json.passes`） | ✅ 真机 | `src/storage/runs.ts` |
 | 运行历史索引与查询（`index.jsonl`、CLI `runs`、`list_performance_runs`） | ✅ 单测 | `src/storage/runs.ts`、`src/tools/runs.ts` |
 | 基线对比（`compare`、`compare_performance_runs`、多 Take 中位数与范围） | ✅ 单测 | `src/analysis/compare.ts`、`src/tools/compare.ts` |
-| 回归门禁 / 阈值重标定 | ❌ | 路线图第三阶段（C3/C4） |
+| 回归门禁（`gate`、`evaluate_regression_gate`、`pass` / `fail` / `not-evaluated`） | ✅ 单测 | `src/analysis/regression.ts`、`src/tools/regression.ts` |
+| 阈值重标定 | ❌ | 路线图第三阶段（C4） |
 | HTML 报告 / JUnit / CI 注解 | ❌ | 未规划 |
 
 **平台支撑**
@@ -335,7 +340,7 @@ sceneId / adHocPlan
 - **不依赖外部 MCP。** 早期版本的 `mobile-mcp` / `instruments-mcp-server` 已整体替换为内建 Runner，安装包不再需要额外的 MCP 服务。
 - **三个外部进程**：`mobilecli`（`npx @mobilenext/mobilecli`，或用 `PERFSTAGE_MOBILECLI` 指定路径）、`xcrun devicectl`、`xcrun xctrace`。它们都是普通子进程，不是网络依赖。
 - **无网络、无数据库、无后台服务。** 所有状态都在项目目录的 `.performance-test/` 下。
-- **基线对比已实现，回归门禁仍在规划中。** 当前做单次 Take 的阈值判定与证据门禁，并可用 `perfstage compare` 查看相对历史基线的数值差异；门禁不消费对比结果。
+- **基线对比与回归门禁已实现，趋势仍在路线图中。** 单次 Take 的阈值判定与证据门禁不变；`perfstage compare` 呈现相对历史基线的数值差异，`perfstage gate` 按目标 run 快照中的 `regression` 规则给出 `pass` / `fail` / `not-evaluated`，两者互不替代。
 
 
 ---
@@ -354,7 +359,7 @@ sceneId / adHocPlan
 3. **采集**：按指标录制 Hitches / App Launch / Activity Monitor；动作在卡顿 pass 内回放，同时保存日志、Crash 与生命周期证据。
 4. **判定**：`finalize` 解析 trace、汇总证据、计算阈值门禁并生成报告。证据不足即降级为 `partial`（`gate=unknown`），指标超阈值则是 `completed` + `gate=fail`。
 
-**返场（Encore）** 是同一个流程的再次执行。阈值门禁已经接在报告之后；`perfstage compare` 只呈现相对基线的数值差异，**不判断是否回归**，回归门禁留给后续 change。
+**返场（Encore）** 是同一个流程的再次执行。阈值门禁已经接在报告之后；`perfstage compare` 只呈现相对基线的数值差异，**不判断是否回归**，回归判定由独立的 `perfstage gate` 依据目标 run 的规则快照给出。
 
 ---
 
@@ -460,10 +465,11 @@ description: 社区首页上下滚动性能测试。用于回归卡顿、冷启�
 
 ## 7. MCP 工具参考
 
-PerfStage 提供 8 个工具。`run_performance_test` 是一键入口；
+PerfStage 提供 9 个工具。`run_performance_test` 是一键入口；
 `prepare` / `finalize` 是保留给人工接管与排障的底层原语，两者共享同一条证据流水线；
 `list_performance_runs` 读取历史 Take，`compare_performance_runs` 把一次 Take 与
-同场景 / 设备 / iOS 的基线逐指标对比。
+同场景 / 设备 / iOS 的基线逐指标对比，`evaluate_regression_gate` 按目标运行快照中的
+`regression` 规则给出回归结论。
 
 ### `run_performance_test`
 
@@ -525,6 +531,32 @@ PerfStage 提供 8 个工具。`run_performance_test` 是一键入口；
 方向只表示数值增减，**不判断好坏**；缺失指标标注 `missing-current` /
 `missing-baseline` / `unit-mismatch`，不补 0。对比只读，不落盘基线文件，
 也不产生通过/失败结论。旧 run 的 iOS 未知时，只与同为未知的记录聚合。
+
+### `evaluate_regression_gate`
+
+在 `compare_performance_runs` 的结果之上，按目标运行 `plan.json` 快照中的
+`regression` 规则判定回归。基线与参数规则和 `compare` 完全相同：
+`runId`、可选 `against`、`samples` 3–20（默认 3），`against` 与 `samples` 互斥。
+
+```json
+{ "runId": "2026-11-16T09-33-28.744Z-3CkC3wfI", "samples": 3 }
+```
+
+返回 `target`、`baseline`、`status`（对比状态）以及：
+
+- `regression`：`status`（`pass` / `fail` / `not-evaluated`）、`configured`、
+  `evaluated`、`failed`、`notEvaluated`、`reason` 与去重后的 `reasons`。
+- `metrics[]`：保留 `compare` 的全部数字，并增加 `regression`；未配置规则的指标为
+  `null`。`not-evaluated` 的 reason 包括 `no-rules`、`baseline-no-samples`、
+  `baseline-insufficient-samples`、`metric-not-in-target`、`metric-not-in-baseline`、
+  `unit-mismatch`、`insufficient-metric-samples`、`zero-baseline`、`plan-unreadable`
+  与 `target-not-completed`。
+
+规则随 `plan.json` 固化，之后修改场景 YAML 不会改变历史 run 的判定。门禁只读：
+不写 `run.json` / `report.json`、不新增文件、不落盘结论。回归结论**不消费**绝对阈值
+`gate`；两者是独立信号。缺规则、基线不足或指标缺失时返回 `not-evaluated`，
+**不会伪造通过**。CLI 对应 `perfstage gate`，默认 fail-closed（退出码 4），
+`--allow-not-evaluated` 可显式放行。
 
 ### `prepare_performance_test`
 
@@ -672,6 +704,11 @@ metrics:
   - name: hitches
     instrument: Animation Hitches
     threshold: { warn: 3, fail: 5 }
+    # 可选：回归规则。示例容差不是产品默认值，C4 会按多 Take 分布重标定。
+    regression:
+      worse: higher          # higher = 越大越差；lower = 越小越差
+      maxWorseningPercent: 20
+      # maxWorseningAbsolute: 5   # 基线中位数为 0 时用绝对值兜底
   - name: blockMs
     instrument: Animation Hitches
     threshold: { warn: 50, fail: 100 }
@@ -705,7 +742,8 @@ metrics:
 - `launchUrl` 只在每次 App 进程启动后应用一次，且只作用于动作窗口所在的 pass；`launchMs` 始终测纯冷启动，不注入深链。
 - `preconditions` 是运行期断言，至少声明一个可校验字段（`foregroundBundleId` / `accessibilityText`）：不符或屏上找不到文本时，本次 Take 以 `invalid` 结束（`gate=unknown`），不会把错页面的数据写成 `completed`。只写 `description` 会校验失败，因为没有任何可比较的值。
 - `analysisFocus` 与 `execution` 已移除：分析范围由 `metrics` 决定，交互与非交互由调用的工具入口表达；旧场景继续声明它们会加载失败并给出迁移提示。
-- 场景目前不做版本管理，修改 YAML 即生效。
+- `metrics[].regression` 是可选的回归规则：`worse` 必填，`maxWorseningPercent` / `maxWorseningAbsolute` 至少一个，负数与未知键会被拒绝。规则随本次运行的 `plan.json` 快照固化；示例里的 `20` 只是演示值，不是产品默认策略，C4 会按多 Take 分布重标定。
+- 场景目前不做版本管理，修改 YAML 即生效（历史 run 的门禁仍用其自己的 `plan.json` 快照）。
 
 ---
 
@@ -756,6 +794,49 @@ perfstage report <runId>
 
 运行目录是**证据**，不是测试管理数据库。确认不再需要后可以手动删除。平台永远不会把 A 项目的报告写进 B 项目。
 
+### 在 CI 中消费回归门禁
+
+`perfstage gate` 只读，不产生新文件；把 `--json` 输出作为构建产物保存即可。绝对阈值
+（`run` 的 `gate`）与回归门禁是两条独立信号：`run` 的退出码 `1` 表示越过绝对阈值，
+`gate` 的退出码 `4` 表示回归失败或无法评估。CI 可以先决定是否让绝对阈值阻断，再单独
+消费回归结论：
+
+```bash
+set -euo pipefail
+
+# `run` 返回 1 只说明绝对阈值失败；2/3 才是这次 Take 不可信或无法运行。
+set +e
+perfstage run community-home-scroll --device "$UDID" --json > take.json
+code=$?
+set -e
+if [ "$code" -ge 2 ]; then exit "$code"; fi
+
+RUN_ID=$(node -p "JSON.parse(require('fs').readFileSync('take.json','utf8')).runId")
+# 退出码 4 = 回归失败或无法评估，非零即阻断；--json 留下可审计的原因。
+perfstage gate "$RUN_ID" --samples 3 --json > regression.json
+```
+
+GitHub Actions 片段：
+
+```yaml
+- name: PerfStage regression gate
+  env:
+    UDID: ${{ secrets.PERFSTAGE_DEVICE_UDID }}
+  run: |
+    set -euo pipefail
+    set +e
+    perfstage run community-home-scroll --device "$UDID" --json > take.json
+    code=$?
+    set -e
+    if [ "$code" -ge 2 ]; then exit "$code"; fi
+    RUN_ID=$(node -p "JSON.parse(require('fs').readFileSync('take.json','utf8')).runId")
+    perfstage gate "$RUN_ID" --samples 3 --json > regression.json
+```
+
+首次接入时没有历史基线或旧 run 没有规则，`gate` 会返回 `4`（`not-evaluated`）。
+这是有意的 fail-closed；用 `--allow-not-evaluated` 可以放行这类「没有答案」的情况，
+但 JSON 仍会记录 `not-evaluated` 与原因，**不会**变成 `pass`。
+
 ---
 
 ## 10. 状态语义
@@ -782,7 +863,7 @@ perfstage report <runId>
 - **iOS only。** 动作模型面向 iOS accessibility，不承诺 Android / Web / 桌面。
 - **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
 - **单设备串行。** 一次只跑一个 Take；没有调度器、并发或设备池。
-- **有基线对比、无回归门禁。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；没有基线快照文件、趋势图与 CI 门禁，也不判断好坏。阈值门禁仍只对单次 Take 生效。
+- **有基线对比与回归门禁，无趋势。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；`perfstage gate` 按目标 run 的 `plan.json` 规则给出 `pass` / `fail` / `not-evaluated`，缺数据时 fail-closed。没有基线快照文件、趋势图或 CI 托管；绝对阈值门禁仍只对单次 Take 生效，两者互不替代。
 - **无 App 生命周期管理。** 不负责安装、卸载、签名与截图，只驱动已安装的 App。
 
 ### 路线图
@@ -810,7 +891,8 @@ perfstage report <runId>
 
 - [x] 运行历史索引与查询（`perfstage runs`、`list_performance_runs`、`run.json.passes`、`index.jsonl`）
 - [x] 基线对比（`perfstage compare`、`compare_performance_runs`、`run.json.device`）
-- [ ] 回归门禁与趋势
+- [x] 回归门禁（`perfstage gate`、`evaluate_regression_gate`、`plan.json` 规则快照、退出码 4）
+- [ ] 趋势图与阈值重标定（C4）
 - [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
 
 ---

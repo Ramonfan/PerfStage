@@ -28,6 +28,7 @@ const EXPECTED_TOOLS = [
   "finalize_performance_test",
   "list_performance_runs",
   "compare_performance_runs",
+  "evaluate_regression_gate",
 ];
 
 let root: string | null = null;
@@ -44,7 +45,7 @@ afterEach(async () => {
 });
 
 describe("MCP server smoke", () => {
-  it("exposes exactly the eight named tools via the MCP protocol", async () => {
+  it("exposes exactly the nine named tools via the MCP protocol", async () => {
     if (!root) throw new Error("root not initialized");
     const server = new McpServer(
       SERVER_INFO,

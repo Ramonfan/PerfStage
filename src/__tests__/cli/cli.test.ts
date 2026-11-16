@@ -7,7 +7,9 @@ import {
   EXIT_GATE_FAIL,
   EXIT_INVALID_TAKE,
   EXIT_OK,
+  EXIT_REGRESSION,
   exitCodeFor,
+  exitCodeForRegression,
 } from "../../cli/exit-codes.js";
 import { main, type CliContext, type CliIO } from "../../cli/index.js";
 import { createFakeDriver } from "../../device/fake.js";
@@ -15,6 +17,7 @@ import { createFakeRecorder } from "../../recording/fake.js";
 import type { TraceAnalyzer } from "../../runner/execute.js";
 import { listPerformanceRuns } from "../../tools/runs.js";
 import { comparePerformanceRuns } from "../../tools/compare.js";
+import { evaluateRegressionGate } from "../../tools/regression.js";
 import { createRunStore } from "../../storage/runs.js";
 
 const DEVICE_ID = "00000000-0000000000000000";
@@ -409,6 +412,18 @@ async function seedComparisonRun(input: {
   startedAt: string;
   osVersion?: string | null;
   hitches?: number;
+  status?: string;
+  gate?: string;
+  /** `false` writes an empty metrics array (e.g. an `invalid` Take). */
+  withMetrics?: boolean;
+  rules?: Record<
+    string,
+    {
+      worse: "higher" | "lower";
+      maxWorseningPercent?: number;
+      maxWorseningAbsolute?: number;
+    }
+  >;
 }): Promise<void> {
   const runsDir = join(root, ".performance-test", "runs");
   const runDir = join(runsDir, input.id);
@@ -422,13 +437,14 @@ async function seedComparisonRun(input: {
       ...(osVersion !== null
         ? { device: { id: "device-1", osVersion } }
         : {}),
-      status: "completed",
+      status: input.status ?? "completed",
       startedAt: input.startedAt,
       endedAt: input.startedAt,
-      gate: "pass",
-      metrics: [
-        { name: "hitches", value: input.hitches ?? 10, unit: "次" },
-      ],
+      gate: input.gate ?? "pass",
+      metrics:
+        input.withMetrics === false
+          ? []
+          : [{ name: "hitches", value: input.hitches ?? 10, unit: "次" }],
     }),
     "utf8",
   );
@@ -438,6 +454,10 @@ async function seedComparisonRun(input: {
       id: "scene-a",
       source: "scenario",
       device: { id: "device-1" },
+      metrics: Object.entries(input.rules ?? {}).map(([name, regression]) => ({
+        name,
+        regression,
+      })),
     }),
     "utf8",
   );
@@ -578,5 +598,327 @@ describe("perfstage compare", () => {
     const help = capture();
     expect(await main(["--help"], { io: help.io })).toBe(EXIT_OK);
     expect(help.out.join("\n")).toContain("perfstage compare <runId>");
+  });
+});
+
+describe("perfstage gate", () => {
+  it("renders a pass and matches the handler output", async () => {
+    await initWorkspace();
+    await seedComparisonRun({
+      id: "base-1",
+      startedAt: "2026-11-16T01:00:00.000Z",
+      hitches: 90,
+    });
+    await seedComparisonRun({
+      id: "base-2",
+      startedAt: "2026-11-16T02:00:00.000Z",
+      hitches: 100,
+    });
+    await seedComparisonRun({
+      id: "base-3",
+      startedAt: "2026-11-16T03:00:00.000Z",
+      hitches: 110,
+    });
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      hitches: 110,
+      rules: {
+        hitches: { worse: "higher", maxWorseningPercent: 20 },
+      },
+    });
+
+    const text = capture();
+    expect(await main(["gate", "target", "--dir", root], { io: text.io })).toBe(
+      EXIT_OK,
+    );
+    const rendered = text.out.join("\n");
+    expect(rendered).toContain("派生基线 3 条");
+    expect(rendered).toContain("regression=pass");
+    expect(rendered).toContain("结论：pass");
+
+    const json = capture();
+    expect(
+      await main(["gate", "target", "--dir", root, "--json"], {
+        io: json.io,
+      }),
+    ).toBe(EXIT_OK);
+    const payload = JSON.parse(json.out.join("\n")) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      status: "comparable",
+      regression: {
+        status: "pass",
+        configured: 1,
+        evaluated: 1,
+        failed: 0,
+      },
+    });
+
+    const viaHandler = await evaluateRegressionGate(
+      { runId: "target" },
+      {
+        runStore: createRunStore(join(root, ".performance-test", "runs"), root),
+        now: () => new Date(),
+      },
+    );
+    expect(viaHandler).toEqual(payload);
+  });
+
+  it("returns exit 4 when the regression fails", async () => {
+    await initWorkspace();
+    await seedComparisonRun({
+      id: "base-1",
+      startedAt: "2026-11-16T01:00:00.000Z",
+      hitches: 90,
+    });
+    await seedComparisonRun({
+      id: "base-2",
+      startedAt: "2026-11-16T02:00:00.000Z",
+      hitches: 100,
+    });
+    await seedComparisonRun({
+      id: "base-3",
+      startedAt: "2026-11-16T03:00:00.000Z",
+      hitches: 110,
+    });
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      hitches: 125,
+      rules: {
+        hitches: { worse: "higher", maxWorseningPercent: 20 },
+      },
+    });
+
+    const text = capture();
+    expect(await main(["gate", "target", "--dir", root], { io: text.io })).toBe(
+      EXIT_REGRESSION,
+    );
+    const rendered = text.out.join("\n");
+    expect(rendered).toContain("regression=fail");
+    expect(rendered).toContain("结论：fail");
+    expect(rendered).toContain("超过容差");
+  });
+
+  it("fails closed on not-evaluated and allows the explicit opt-out", async () => {
+    await initWorkspace();
+    for (const [id, hour] of [
+      ["base-1", "01"],
+      ["base-2", "02"],
+      ["base-3", "03"],
+    ] as const) {
+      await seedComparisonRun({
+        id,
+        startedAt: `2026-11-16T${hour}:00:00.000Z`,
+        hitches: 100,
+      });
+    }
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      hitches: 110,
+    });
+
+    const strict = capture();
+    expect(
+      await main(["gate", "target", "--dir", root], { io: strict.io }),
+    ).toBe(EXIT_REGRESSION);
+    expect(strict.out.join("\n")).toContain("无法评估");
+    expect(strict.out.join("\n")).toContain("no-rules");
+
+    const relaxed = capture();
+    expect(
+      await main(
+        ["gate", "target", "--dir", root, "--allow-not-evaluated"],
+        { io: relaxed.io },
+      ),
+    ).toBe(EXIT_OK);
+    expect(relaxed.out.join("\n")).toContain("无法评估");
+  });
+
+  it("returns exit 2 for a terminal but untrustworthy Take", async () => {
+    await initWorkspace();
+    await seedComparisonRun({
+      id: "base-1",
+      startedAt: "2026-11-16T01:00:00.000Z",
+      hitches: 100,
+    });
+    await seedComparisonRun({
+      id: "base-2",
+      startedAt: "2026-11-16T02:00:00.000Z",
+      hitches: 100,
+    });
+    await seedComparisonRun({
+      id: "base-3",
+      startedAt: "2026-11-16T03:00:00.000Z",
+      hitches: 100,
+    });
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      hitches: 110,
+      status: "failed",
+      rules: {
+        hitches: { worse: "higher", maxWorseningPercent: 20 },
+      },
+    });
+
+    const text = capture();
+    expect(await main(["gate", "target", "--dir", root], { io: text.io })).toBe(
+      EXIT_INVALID_TAKE,
+    );
+    expect(text.out.join("\n")).toContain("target-not-completed");
+  });
+
+  it("returns exit 2 for an untrustworthy Take without numeric metrics", async () => {
+    await initWorkspace();
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      status: "invalid",
+      withMetrics: false,
+      rules: {
+        hitches: { worse: "higher", maxWorseningPercent: 20 },
+      },
+    });
+
+    const text = capture();
+    expect(await main(["gate", "target", "--dir", root], { io: text.io })).toBe(
+      EXIT_INVALID_TAKE,
+    );
+    const rendered = text.out.join("\n");
+    expect(rendered).toContain("target-not-completed");
+    expect(rendered).toContain("未成功完成");
+
+    const json = capture();
+    expect(
+      await main(["gate", "target", "--dir", root, "--json"], { io: json.io }),
+    ).toBe(EXIT_INVALID_TAKE);
+    const payload = JSON.parse(json.out.join("\n")) as {
+      target: { status: string };
+      regression: { status: string; reason: string };
+    };
+    expect(payload.target.status).toBe("invalid");
+    expect(payload.regression).toMatchObject({
+      status: "not-evaluated",
+      reason: "target-not-completed",
+    });
+
+    // `--allow-not-evaluated` must not relax an untrustworthy Take.
+    const relaxed = capture();
+    expect(
+      await main(
+        ["gate", "target", "--dir", root, "--allow-not-evaluated"],
+        { io: relaxed.io },
+      ),
+    ).toBe(EXIT_INVALID_TAKE);
+  });
+
+  it("rejects an invalid --against for an untrustworthy Take with exit 3", async () => {
+    await initWorkspace();
+    await seedComparisonRun({
+      id: "target",
+      startedAt: "2026-11-16T04:00:00.000Z",
+      status: "invalid",
+      withMetrics: false,
+    });
+
+    const self = capture();
+    expect(
+      await main(["gate", "target", "--against", "target", "--dir", root], {
+        io: self.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(self.err.join(" ")).toContain("相同");
+
+    const missing = capture();
+    expect(
+      await main(["gate", "target", "--against", "nope", "--dir", root], {
+        io: missing.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(missing.err.join(" ")).toContain("nope");
+
+    const both = capture();
+    expect(
+      await main(
+        ["gate", "target", "--against", "nope", "--samples", "3", "--dir", root],
+        { io: both.io },
+      ),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(both.err.join(" ")).toContain("只能选其一");
+  });
+
+  it("rejects invalid gate arguments with exit 3", async () => {
+    await initWorkspace();
+
+    const missing = capture();
+    expect(await main(["gate", "--dir", root], { io: missing.io })).toBe(
+      EXIT_ENVIRONMENT,
+    );
+    expect(missing.err.join(" ")).toContain("gate 需要");
+
+    const badSamples = capture();
+    expect(
+      await main(["gate", "target", "--samples", "2", "--dir", root], {
+        io: badSamples.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(badSamples.err.join(" ")).toContain("--samples");
+
+    const both = capture();
+    expect(
+      await main(
+        [
+          "gate",
+          "target",
+          "--against",
+          "other",
+          "--samples",
+          "3",
+          "--dir",
+          root,
+        ],
+        { io: both.io },
+      ),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(both.err.join(" ")).toContain("只能选其一");
+
+    const unknown = capture();
+    expect(
+      await main(["gate", "nope", "--dir", root], { io: unknown.io }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(unknown.err.join(" ")).toContain("nope");
+  });
+
+  it("maps regression verdicts onto exit codes", () => {
+    expect(
+      exitCodeForRegression({ takeStatus: "completed", status: "pass" }),
+    ).toBe(EXIT_OK);
+    expect(
+      exitCodeForRegression({ takeStatus: "completed", status: "fail" }),
+    ).toBe(EXIT_REGRESSION);
+    expect(
+      exitCodeForRegression({
+        takeStatus: "completed",
+        status: "not-evaluated",
+      }),
+    ).toBe(EXIT_REGRESSION);
+    expect(
+      exitCodeForRegression({
+        takeStatus: "completed",
+        status: "not-evaluated",
+        allowNotEvaluated: true,
+      }),
+    ).toBe(EXIT_OK);
+    expect(
+      exitCodeForRegression({ takeStatus: "failed", status: "not-evaluated" }),
+    ).toBe(EXIT_INVALID_TAKE);
+  });
+
+  it("advertises gate in --help", async () => {
+    const help = capture();
+    expect(await main(["--help"], { io: help.io })).toBe(EXIT_OK);
+    expect(help.out.join("\n")).toContain("perfstage gate <runId>");
   });
 });

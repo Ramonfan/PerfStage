@@ -46,22 +46,34 @@ metrics:
     threshold:
       warn: 5
       fail: 15
+    # Example tolerance only. These numbers are not a product default: C4
+    # (`recalibrate-thresholds`) replaces them with values derived from the
+    # multi-Take distribution. `worse` is required so the gate never guesses
+    # whether an increase is good or bad.
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
   - name: blockMs
     instrument: Animation Hitches
     threshold:
       warn: 100
       fail: 250
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
   - name: launchMs
     instrument: App Launch
     threshold:
       warn: 800
       fail: 1500
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
   - name: memoryMB
     instrument: Activity Monitor
     threshold:
       warn: 300
       fail: 500
-analysisFocus:
-  - jank
-  - startup
-  - memory
+    regression:
+      worse: higher
+      maxWorseningPercent: 20

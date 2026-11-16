@@ -650,11 +650,12 @@ perfstage report <runId>
 
 ### M4 — 回归闭环（4 人日，v1.0，不属于 MVP）
 
-- [ ] run 历史索引（`runs/index.jsonl` 或 SQLite）
-- [ ] 基线与两次 Take 对比
-- [ ] 回归门禁与趋势
-- [ ] `perfstage compare`（基线对比）
-- [ ] CI 示例
+- [x] run 历史索引（`runs/index.jsonl` 或 SQLite；C1 `add-run-history`）
+- [x] 基线与两次 Take 对比（C2 `add-baseline-compare`）
+- [x] `perfstage compare`（基线对比，C2）
+- [x] 回归门禁（`perfstage gate` / `evaluate_regression_gate`，规则随 `plan.json` 快照，C3 `add-regression-gate`）
+- [x] CI 示例（README §9，消费退出码 `4`）
+- [ ] 趋势图与阈值重标定（C4 `recalibrate-thresholds`）
 
 **M2/M3 真机结论带入 M4：**
 

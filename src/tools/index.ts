@@ -40,6 +40,10 @@ import {
   comparePerformanceRuns,
   compareQuerySchema,
 } from "./compare.js";
+import {
+  evaluateRegressionGate,
+  regressionQuerySchema,
+} from "./regression.js";
 
 /**
  * Shared options passed to every tool handler.
@@ -406,6 +410,32 @@ export function registerTools(
         return toToolErrorResult(resolved.error);
       }
       const result = await comparePerformanceRuns(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
+      });
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "evaluate_regression_gate",
+    {
+      title: "Evaluate Regression Gate",
+      description:
+        "把一次 Take 与同场景、同设备、同 iOS 的历史基线对比，并按目标运行 plan.json 中的 regression 规则给出 pass / fail / not-evaluated；缺数据时为 not-evaluated，不伪造通过；只读，不修改任何运行产物，不消费绝对阈值 gate。",
+      inputSchema: regressionQuerySchema.shape,
+    },
+    async (args: unknown) => {
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await evaluateRegressionGate(args, {
         ...options,
         scenarioDir: resolved.scenarioDir,
         runStore: resolved.runStore,

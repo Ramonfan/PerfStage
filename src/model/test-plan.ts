@@ -37,6 +37,32 @@ export const metricThresholdSchema = z
   })
   .strict();
 
+/**
+ * Optional regression policy for one metric (C3).
+ *
+ * `worse` is required on purpose: whether an increase is good or bad is a
+ * product decision, not something the evaluator should guess. At least one
+ * tolerance must be present; both are allowed and combine with OR.
+ */
+export const metricRegressionSchema = z
+  .object({
+    worse: z.enum(["higher", "lower"]),
+    maxWorseningPercent: z.number().nonnegative().optional(),
+    maxWorseningAbsolute: z.number().nonnegative().optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.maxWorseningPercent !== undefined ||
+      value.maxWorseningAbsolute !== undefined,
+    {
+      message:
+        "regression 至少需要 maxWorseningPercent 或 maxWorseningAbsolute",
+    },
+  );
+
+export type MetricRegression = z.infer<typeof metricRegressionSchema>;
+
 export const metricRequestSchema = z
   .object({
     name: z.string().min(1),
@@ -44,6 +70,7 @@ export const metricRequestSchema = z
     tracePath: z.string().optional(),
     result: z.unknown().optional(),
     threshold: metricThresholdSchema.optional(),
+    regression: metricRegressionSchema.optional(),
   })
   .passthrough();
 
