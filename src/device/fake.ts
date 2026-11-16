@@ -71,6 +71,7 @@ export type FakeOperation =
   | "resolveInstallation"
   | "resolvePid"
   | "launch"
+  | "openUrl"
   | "terminate"
   | "foreground"
   | "dumpElements"
@@ -87,6 +88,8 @@ export interface FakeDriver extends DeviceDriver {
     to: { x: number; y: number };
     durationMs: number;
   }>;
+  /** URLs opened through the device, in order. */
+  readonly openedUrls: string[];
   /** Currently "foreground" bundle id. */
   readonly foregroundBundleId: string;
   /** Set the visible UI tree. */
@@ -135,6 +138,7 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
   const counts = new Map<FakeOperation, number>();
   const calls: string[] = [];
   const swipes: FakeDriver["swipes"] = [];
+  const openedUrls: string[] = [];
 
   let elements = options.elements ?? [];
   let crashIds = [...(options.crashIds ?? [])];
@@ -169,6 +173,9 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
     },
     get swipes() {
       return swipes;
+    },
+    get openedUrls() {
+      return openedUrls;
     },
     get foregroundBundleId() {
       return foregroundBundleId;
@@ -253,6 +260,25 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
         running = false;
         pid = null;
         foregroundBundleId = "com.apple.springboard";
+      }
+    },
+
+    async openUrl(_deviceId, url) {
+      record("openUrl");
+      await delay();
+      openedUrls.push(url);
+      // A deep link brings the owning app to the front. Tests that model a
+      // rejected link flip `blockForeground` or fail the call.
+      if (url.length === 0) {
+        throw new DeviceError("empty url", "command-failed");
+      }
+      if (!running) {
+        running = true;
+        pid = nextPid;
+        nextPid += 1;
+      }
+      if (options.blockForeground !== true) {
+        foregroundBundleId = app.bundleId;
       }
     },
 

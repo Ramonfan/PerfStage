@@ -5,6 +5,7 @@ import type { TestPlan } from "../model/test-plan.js";
 import type { GateResult, RunStatus, TestRun } from "../model/test-run.js";
 import type { TraceRecorder } from "../recording/types.js";
 import { finalizeRun, type FinalizedRun } from "./finalize.js";
+import { isSafeRunRelative } from "../reports/evidence-paths.js";
 import {
   executeTake,
   type PassRecord,
@@ -198,7 +199,9 @@ export async function runTake(
   };
 
   const requestedStatus: RunStatus =
-    execution.fatalError !== undefined ? "failed" : "completed";
+    execution.fatalError !== undefined
+      ? (execution.fatalStatus ?? "failed")
+      : "completed";
 
   const finalized = await finalizeRun(
     {
@@ -207,7 +210,24 @@ export async function runTake(
       plan: input.plan,
       actions: execution.actions,
       metrics: withMetricThresholds(execution.metrics, input.plan),
+      passes: execution.passes.map((pass) => ({
+        template: pass.template,
+        // A recorder that reports a trace outside the run directory must not
+        // make an otherwise successful Take unfinalizable: keep the pass
+        // counts, drop only the unusable path.
+        ...(isSafeRunRelative(pass.tracePath)
+          ? { tracePath: pass.tracePath }
+          : {}),
+        attempts: pass.attempts,
+        durationMs: pass.durationMs,
+        metrics: pass.metrics,
+        errorCount: pass.issues.filter((issue) => issue.level === "error")
+          .length,
+        warningCount: pass.issues.filter((issue) => issue.level === "warning")
+          .length,
+      })),
       diagnostics,
+      ...(execution.device !== undefined ? { device: execution.device } : {}),
       ...(execution.fullLogText !== undefined
         ? { fallbackLogPath: "device.log" }
         : {}),
@@ -335,7 +355,10 @@ function buildSummary(input: {
       severity: finding.severity,
       message: finding.message,
     })),
-    notes: execution.notes,
+    notes: [
+      ...execution.notes,
+      ...(finalized.indexWarning !== undefined ? [finalized.indexWarning] : []),
+    ],
     durationMs: finalized.run.durationMs ?? 0,
     reportPath: resolve(runDir, "report.json"),
     reportMarkdownPath: resolve(runDir, "report.md"),

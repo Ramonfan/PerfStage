@@ -42,7 +42,8 @@ const DEFAULT_POLL_MS = 500;
  */
 const GESTURE_BAND = 0.8;
 
-function elementText(element: UiElement): string[] {
+/** The accessibility fields a target or precondition may match against. */
+export function elementText(element: UiElement): string[] {
   return [element.label, element.name, element.identifier].filter(
     (entry): entry is string => typeof entry === "string" && entry.length > 0,
   );
@@ -53,6 +54,22 @@ export function findElement(
   target: string,
 ): UiElement | undefined {
   return elements.find((element) => elementText(element).includes(target));
+}
+
+/**
+ * Substring match used by `preconditions.accessibilityText`.
+ *
+ * `tap` requires an exact label (a wrong element is a wrong action), while a
+ * precondition only asserts "this screen is the one I meant" — the declared
+ * text appearing anywhere in an element's text is enough.
+ */
+export function containsAccessibilityText(
+  elements: readonly UiElement[],
+  text: string,
+): boolean {
+  return elements.some((element) =>
+    elementText(element).some((entry) => entry.includes(text)),
+  );
 }
 
 /**

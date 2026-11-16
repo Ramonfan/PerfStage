@@ -14,7 +14,7 @@ PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用
 - [1. 为什么是「平台 + 项目 Skill」](#1-为什么是平台--项目-skill)
 - [2. 当前状态](#2-当前状态)
 - [3. 快速开始](#3-快速开始)
-- [4. 平台架构](#4-平台架构)
+- [4. 平台架构与能力](#4-平台架构与能力)
 - [5. 一次 Take 的执行流程](#5-一次-take-的执行流程)
 - [6. 项目 Scene Skill 契约](#6-项目-scene-skill-契约)
 - [7. MCP 工具参考](#7-mcp-工具参考)
@@ -67,7 +67,7 @@ PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属�
 
 **边界要说清**：Skill 是 **agent 层**的调用契约，PerfStage 的输入始终是场景 ID（MCP 字段名 `scenarioId`，CLI 位置参数 `<sceneId>`）或 `adHocPlan`。Runner 不解析 `SKILL.md`，也没有 `perfstage run --skill` 这样的入口。这样 Skill 可以自由演进（调整措辞、补前置检查、改输出说明），平台只依赖稳定的工具入参与输出契约。
 
-PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务、历史基线与趋势（最后一项在路线图中）。
+PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务、回归门禁与趋势图（基线对比已可用，门禁在路线图中）。
 
 ### 命名约定
 
@@ -78,7 +78,7 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管
 | 平台 | **PerfStage** | 提供通用能力 |
 | 项目场景 | **Scene** | 一个 YAML + 一个 Skill |
 | 一次运行 | **Take** | 一次完整的测试执行 |
-| 重复执行 | **Encore** | 复跑同一 Scene；阈值门禁已可用，历史对比规划中 |
+| 重复执行 | **Encore** | 复跑同一 Scene；阈值门禁与基线对比已可用 |
 | 项目场景集合 | **Repertoire** | 一个项目的全部 Scene |
 | 报告 | **Scorecard** | `report.md` / `report.json` |
 
@@ -88,26 +88,16 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管
 
 ## 2. 当前状态
 
-PerfStage 目前已经能**在真机上一键跑完一次 Take**：驱动设备、三 pass 录制、解析 trace、判定并出报告。还没有的是历史基线与回归对比。下面这张表区分「今天就能用」和「规划中」，避免把路线图当成现状。
+PerfStage 已经能**在真机上一键跑完一次 Take**：驱动设备、按指标录制（最多 3 个 pass）、解析 trace、判定并出报告。完整清单、状态与证据见 [4.4 平台能力矩阵](#44-平台能力矩阵)；本节只给结论。
 
-| 能力 | 状态 | 说明 |
-| --- | --- | --- |
-| 场景加载与校验 | ✅ 可用 | YAML → TestPlan，未知动作直接报错 |
-| 运行目录与证据落盘 | ✅ 可用 | 每次 Take 独立目录，路径边界与原子写 |
-| 诊断归一化 | ✅ 可用 | 日志三态、Crash 差集、生命周期分类 |
-| 证据门禁 | ✅ 可用 | 缺指标 / 缺值 / 缺 trace → `partial` + `gate=unknown` |
-| 阈值判定与 `gate` | ✅ 可用 | 场景阈值自动推导 `pass` / `warn` / `fail` |
-| 报告生成 | ✅ 可用 | `report.json` + 中文 `report.md` |
-| 工作区隔离 | ✅ 可用 | 以项目为边界，不跨项目读写 |
-| Skill 模板与契约 | ✅ 可用（Thin Skill） | `templates/SKILL.md`：Skill 只调用一次 `run_performance_test` |
-| 一键执行 `run_performance_test` | ✅ 可用 | 内建 Runner：驱动真机、三 pass 录制、解析、收尾、报告 |
-| CLI | ✅ 可用 | `perfstage init/list/run/report`，退出码 0/1/2/3 |
-| 基线、历史对比 | ⏳ 规划中 | 当前只有单次报告与阈值门禁 |
+- **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比。
+- **今天不可用**：回归门禁、基线落盘与 CI 托管、多设备并发、HTML / JUnit 报告。
+- **两个入口**：Skill 与 CLI 走 `run_performance_test` 一键执行；需要人工接管时用 `prepare_performance_test` + `finalize_performance_test`。
 
 **现在的真实执行链路是：**
 
 ```text
-Scene Skill / CLI → run_performance_test → 设备动作 + 三 pass 录制 + 解析 + finalize → report
+Scene Skill / CLI → run_performance_test → 设备动作 + 按指标录制 + 解析 + finalize → report
 ```
 
 `prepare_performance_test` / `finalize_performance_test` 仍保留给需要人工接管的场景；
@@ -207,6 +197,11 @@ perfstage init --app com.example.app --name "Example App" --copy-scenarios
 ```bash
 perfstage run <sceneId> --device <UDID>
 perfstage run <sceneId> --device <UDID> --json
+perfstage runs                       # 最近 20 次运行
+perfstage runs --scenario <sceneId>  # 按场景或计划过滤
+perfstage compare <runId>            # 与同场景/设备/iOS 的最近 3 次基线对比
+perfstage compare <runId> --samples 5 --json
+perfstage compare <runId> --against <runId>  # 两次 Take 直接对比
 perfstage report <runId>
 ```
 
@@ -224,7 +219,7 @@ trace 解析、证据门禁与报告。需要回归时再说一次，就是一�
 
 ---
 
-## 4. 平台架构
+## 4. 平台架构与能力
 
 ![PerfStage 平台架构](docs/diagrams/perfstage-architecture.png)
 
@@ -239,7 +234,109 @@ trace 解析、证据门禁与报告。需要回归时再说一次，就是一�
 - **Device Driver / Recorder** 是执行层适配器：`mobilecli` + `xcrun devicectl` 驱动设备，`xctrace` 录制 trace；PerfStage 自己解析 trace（D13），不依赖外部 instruments MCP。
 - **Run Store / Report + Gate** 是证据层。每次 Take 都写入独立目录，报告可追溯。
 
-平台当前已具备图中执行链与门禁；基线对比仍为规划中能力。
+### 4.1 分层组件
+
+| 层 | 组件 | 职责 | 源码 |
+| --- | --- | --- | --- |
+| 调用面 | MCP 工具（8 个）、CLI（6 个命令 + 4 类退出码） | 对外入口；`--json` 输出与 MCP 返回同构 | `src/tools/`、`src/cli/` |
+| 场景层 | 场景加载与校验 | YAML / `adHocPlan` → 严格 `TestPlan`；未知字段与已移除字段直接失败并给迁移提示 | `src/scenario/`、`src/model/test-plan.ts` |
+| 编排层 | Runner | 一次 Take 的生命周期：预检、按指标录制、动作回放、深链与前置条件、收尾 | `src/runner/` |
+| 设备层 | DeviceDriver | `mobilecli` 负责启动、前台、UI 树、手势、崩溃、日志、深链；`devicectl` 负责容器 UUID 与 pid | `src/device/` |
+| 录制层 | Recorder | `xctrace` 会话管理、重试、trace 定位与错误分类 | `src/recording/` |
+| 分析层 | Trace analyzer | 4 个规范指标的解析，只解析不判定 | `src/analysis/parsers/` |
+| 判定层 | 证据门禁与阈值 | 缺指标 / 缺值 / 缺 trace 降级 `partial`；阈值推导 `verdict` 与 `gate` | `src/analysis/thresholds.ts`、`src/reports/evidence.ts` |
+| 报告层 | Run Store 与报告 | 运行目录、原子写、路径边界、finalize 锁；`report.json` + `report.md` | `src/storage/`、`src/reports/`、`src/workspace/` |
+
+### 4.2 一次 Take 的数据流
+
+```text
+sceneId / adHocPlan
+  → TestPlan（严格校验，未知字段即失败）
+  → PassPlan（按 metrics 推导 1–3 个 pass）
+  → 每个 pass：xctrace 录制冷启动 + 动作回放（+ 深链、前置条件）
+  → trace 解析 → 规范指标
+  → 诊断归一化（日志三态 / Crash 差集 / 生命周期）
+  → 证据门禁（缺证据 → partial，不允许假通过）
+  → report.json + report.md + traces/
+```
+
+### 4.3 三条不变式
+
+1. **`status` 与 `gate` 分离。** `status` 说明证据是否可信，`gate` 说明是否越过阈值。缺 trace 或缺值时 `status=partial`、`gate=unknown`，不会被写成 `completed`。
+2. **只解析不判定。** 分析器只回答「这条 trace 里指标是多少」，verdict 与 `gate` 由判定层统一推导，阈值口径只有一处。
+3. **声明即生效。** 场景里能写的字段都有运行时效果；没有效果的字段会被删除并给出迁移提示，而不是留在契约里装饰 `plan.json`。
+
+### 4.4 平台能力矩阵
+
+状态口径：**✅ 已实现**、**⚠️ 部分实现**（写明缺什么）、**❌ 未实现**。证据列给出可核对的位置，`真机` 表示有真机 Take 佐证（`docs/m3-takes.json` 或 v0.2 冒烟运行）。
+
+**调用面**
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| 8 个 MCP 工具（工作区、列场景、历史、基线对比、prepare、run、analyze、finalize） | ✅ | `src/tools/index.ts` |
+| CLI `init` / `list` / `run` / `runs` / `compare` / `report` | ✅ 真机 | `src/cli/index.ts` |
+| 退出码 `0/1/2/3`（通过 / gate=fail / 不可信 / 无法运行） | ✅ 真机 | `src/cli/exit-codes.ts` |
+| `--json` 与 MCP 返回同构 | ✅ | `src/tools/run.ts` |
+| 版本单一来源 | ✅ | `src/version.ts` |
+
+**输入契约**
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| 场景 YAML / `adHocPlan` 严格校验 | ✅ | `src/scenario/parser.ts` |
+| 4 种动作 `tap` / `swipe` / `wait` / `wait_for` | ✅ 真机 | `src/model/test-plan.ts` |
+| 滑动落在屏幕 20%–80% 安全区（用真机屏宽） | ✅ 真机 | `src/runner/actions.ts` |
+| `app.launchArguments` 进入冷启动 | ✅ 真机 | `src/recording/xctrace.ts`（命令拼装与真机会话；App 端接收未断言） |
+| `app.environmentVariables` 进入冷启动 | ✅ 真机 | `src/recording/xctrace.ts`（同上） |
+| `app.launchUrl` 深链导航（进程启动后一次、动作前、启动测量不注入） | ✅ 单测 | `src/runner/execute.ts` |
+| `preconditions` 运行期校验（前台应用 / 可访问性文本） | ✅ 真机 | `src/runner/execute.ts`；不满足即 `invalid` |
+| `repetitions` 中位数聚合 | ✅ | `src/runner/run.ts` |
+| 阈值 `warn` / `fail` | ✅ 真机 | `src/analysis/thresholds.ts` |
+| `analysisFocus` / `execution` | ❌ 已移除 | `src/diagnostics/removed-config.ts` |
+
+**执行与采集**
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| 设备预检与安装信息（容器 UUID、进程名） | ✅ 真机 | `src/device/mobilecli.ts` |
+| 按指标推导 pass（4 个指标 = 3 个 pass） | ✅ | `src/runner/passes.ts` |
+| `xctrace` 会话管理、重试、trace 定位与错误分类 | ✅ 真机 | `src/recording/xctrace.ts` |
+| 动作回放 + 动作后前台断言 | ✅ 真机 | `src/runner/execute.ts` |
+| memory pass 按容器 UUID 精确选 pid | ✅ 真机 | `src/runner/execute.ts` |
+| 诊断归一化（日志三态 / Crash 差集 / 生命周期） | ✅ 真机 | `src/diagnostics/normalize.ts` |
+| App 安装 / 卸载 / 截图 | ❌ | `src/device/types.ts` 未提供 |
+
+**判定与报告**
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| 证据门禁（缺指标 / 缺值 / 缺 trace → `partial`） | ✅ 真机 | `src/reports/evidence.ts` |
+| `gate` 派生（`pass` / `warn` / `fail` / `unknown`） | ✅ 真机 | `src/analysis/thresholds.ts` |
+| `report.json` + 中文 `report.md` | ✅ 真机 | `src/reports/` |
+| 运行目录证据链（`plan.json`、`device.log`、`traces/`、`run.json.passes`） | ✅ 真机 | `src/storage/runs.ts` |
+| 运行历史索引与查询（`index.jsonl`、CLI `runs`、`list_performance_runs`） | ✅ 单测 | `src/storage/runs.ts`、`src/tools/runs.ts` |
+| 基线对比（`compare`、`compare_performance_runs`、多 Take 中位数与范围） | ✅ 单测 | `src/analysis/compare.ts`、`src/tools/compare.ts` |
+| 回归门禁 / 阈值重标定 | ❌ | 路线图第三阶段（C3/C4） |
+| HTML 报告 / JUnit / CI 注解 | ❌ | 未规划 |
+
+**平台支撑**
+
+| 能力 | 状态 | 证据 |
+| --- | --- | --- |
+| 工作区隔离（以项目为边界） | ✅ | `src/workspace/` |
+| 运行目录路径边界与 symlink 防护 | ✅ | `src/storage/runs.ts` |
+| finalize 文件锁（防并发重复收尾） | ✅ | `src/storage/runs.ts` |
+| 单设备串行执行 | ✅ 真机 | `src/runner/run.ts` |
+| 多场景 suite / 调度器 / 设备池 | ❌ | 非目标 |
+
+### 4.5 进程与依赖边界
+
+- **不依赖外部 MCP。** 早期版本的 `mobile-mcp` / `instruments-mcp-server` 已整体替换为内建 Runner，安装包不再需要额外的 MCP 服务。
+- **三个外部进程**：`mobilecli`（`npx @mobilenext/mobilecli`，或用 `PERFSTAGE_MOBILECLI` 指定路径）、`xcrun devicectl`、`xcrun xctrace`。它们都是普通子进程，不是网络依赖。
+- **无网络、无数据库、无后台服务。** 所有状态都在项目目录的 `.performance-test/` 下。
+- **基线对比已实现，回归门禁仍在规划中。** 当前做单次 Take 的阈值判定与证据门禁，并可用 `perfstage compare` 查看相对历史基线的数值差异；门禁不消费对比结果。
+
 
 ---
 
@@ -257,7 +354,7 @@ trace 解析、证据门禁与报告。需要回归时再说一次，就是一�
 3. **采集**：按指标录制 Hitches / App Launch / Activity Monitor；动作在卡顿 pass 内回放，同时保存日志、Crash 与生命周期证据。
 4. **判定**：`finalize` 解析 trace、汇总证据、计算阈值门禁并生成报告。证据不足即降级为 `partial`（`gate=unknown`），指标超阈值则是 `completed` + `gate=fail`。
 
-**返场（Encore）** 是同一个流程的再次执行。阈值门禁已经接在报告之后，规划中的基线对比会进一步判断本次相对历史是否回归。
+**返场（Encore）** 是同一个流程的再次执行。阈值门禁已经接在报告之后；`perfstage compare` 只呈现相对基线的数值差异，**不判断是否回归**，回归门禁留给后续 change。
 
 ---
 
@@ -281,8 +378,7 @@ Skill 是项目资产，不是平台资产。它应该足够短：只描述「�
 | --- | --- | --- |
 | `sceneId` | 是 | 场景 ID，对应 `.performance-test/scenarios/<sceneId>.yaml`；调用工具时字段名是 `scenarioId` |
 | `deviceId` | 是 | 目标设备 UDID；不要写死在 YAML 里 |
-| `analysisFocus` | 否 | 例如 `["jank", "memory"]`，覆盖场景默认值 |
-| `baselineRunId` | 否 | 规划中：指定对比基线 |
+| `againstRunId` | 否 | 指定另一次 Take 直接对比；对应 CLI `--against` / MCP `against` |
 
 ### 6.3 输出契约
 
@@ -364,8 +460,10 @@ description: 社区首页上下滚动性能测试。用于回归卡顿、冷启�
 
 ## 7. MCP 工具参考
 
-PerfStage 提供 6 个工具。`run_performance_test` 是一键入口；
-`prepare` / `finalize` 是保留给人工接管与排障的底层原语，两者共享同一条证据流水线。
+PerfStage 提供 8 个工具。`run_performance_test` 是一键入口；
+`prepare` / `finalize` 是保留给人工接管与排障的底层原语，两者共享同一条证据流水线；
+`list_performance_runs` 读取历史 Take，`compare_performance_runs` 把一次 Take 与
+同场景 / 设备 / iOS 的基线逐指标对比。
 
 ### `run_performance_test`
 
@@ -394,24 +492,56 @@ PerfStage 提供 6 个工具。`run_performance_test` 是一键入口；
 
 ### `list_performance_scenarios`
 
-列出当前项目的场景：ID、名称、Bundle ID、动作数量、指标、分析重点。无参数。
+列出当前项目的场景：ID、名称、Bundle ID、动作数量、指标。无参数。
+
+### `list_performance_runs`
+
+按 `startedAt` 倒序列出历史 Take，默认 20 条（`limit` 1–200）。可按场景或计划、
+状态过滤；CLI `perfstage runs` 与它共享同一实现。
+
+```json
+{ "scenarioId": "community-home-scroll", "status": "completed", "limit": 10 }
+```
+
+返回 `runs[]`（`runId`、`planId`、`scenarioId`、`deviceId`、`status`、`gate`、
+起止时间、时长、`passCount`、指标摘要）以及 `unindexed`、`invalidLines`、`skipped`。
+`passCount: null` 表示该 run 产生于 pass 持久化之前，不是「零个 pass」。
+查询只读：索引缺失或损坏时从 `run.json` 补全，不改写任何历史产物。
+
+### `compare_performance_runs`
+
+把一次 Take 与基线逐指标对比。基线按「同 `planId` + 同设备 + 同 iOS」筛选
+`startedAt` 更早的终态 Take，默认取最近 3 条（`samples` 3–20）。
+`against` 可直接指定另一次 Take，此时 `samples` 为 1 且不能与 `samples` 同时使用。
+
+```json
+{ "runId": "2026-11-16T08-05-14.528Z-or67RfeB", "samples": 3 }
+```
+
+返回 `target`、`baseline`（`kind`、`samples`、`runIds`、`osVersion`、`window`）、
+`status`（`comparable` / `insufficient-samples` / `no-baseline`）、`metrics[]`
+（`current`、`baselineMedian`、`delta`、`deltaPercent`、`direction`、
+`baselineRange`、`withinRange`、逐指标 `samples`）、`excluded` 与 `warnings`。
+方向只表示数值增减，**不判断好坏**；缺失指标标注 `missing-current` /
+`missing-baseline` / `unit-mismatch`，不补 0。对比只读，不落盘基线文件，
+也不产生通过/失败结论。旧 run 的 iOS 未知时，只与同为未知的记录聚合。
 
 ### `prepare_performance_test`
 
-创建一次运行（`prepared` 状态），写入 `run.json` 和解析后的 `plan.json`，返回执行指引。
+创建一次运行（`prepared` 状态），写入 `run.json` 和解析后的 `plan.json`，返回人工接管的步骤说明。它不接触设备。
 
 ```json
 {
   "scenarioId": "community-home-scroll",
-  "device": { "id": "00008150-001E49E40128C01C", "name": "Ra iPhone" },
-  "execution": "interactive",
-  "analysisFocus": ["jank", "memory"]
+  "device": { "id": "00008150-001E49E40128C01C", "name": "Ra iPhone" }
 }
 ```
 
-返回字段：`runId`、`scenarioId`、`planId`、`runPath`、`planPath`、`plan`、`execution`、`analysisFocus`、`metricOverrides`、`nextSteps`。
+返回字段：`runId`、`scenarioId`、`planId`、`runPath`、`planPath`、`plan`、`metricOverrides`、`nextSteps`。
 
 `plan` 是完整解析后的 `TestPlan`，Skill 与 CLI 无需再读取文件布局即可执行本次 Take。
+
+`nextSteps` 的第一步会指向 `run_performance_test`：多数场景不需要人工接管，直接一键执行即可。
 
 也可以传 `adHocPlan` 做一次性测试；临时计划不会自动沉淀为长期场景。
 
@@ -510,6 +640,12 @@ id: community-home-scroll
 name: 社区首页来回滚动
 app:
   bundleId: com.example.app
+  # 可选：冷启动配置。会进入 hitches 与 launch 两个 pass 的冷启动。
+  launchArguments: ["-UITestMode", "1"]
+  environmentVariables:
+    LOG_LEVEL: debug
+  # 可选：深链入口。在 App 到达前台后、warmup 之前打开。
+  launchUrl: example://community
 device: {}
 preconditions:
   foregroundBundleId: com.example.app
@@ -565,26 +701,42 @@ metrics:
 
 - 不要在长期场景里写设备 UDID，设备通过 `prepare_performance_test` 传入。
 - 未知动作会导致加载失败，不会静默跳过。
+- `launchArguments` / `environmentVariables` 只对 `xctrace` 冷启动的 pass 生效；memory pass 若由 `mobilecli` 重启 App，报告 notes 会注明这次重启没有携带启动配置（工具链限制）。
+- `launchUrl` 只在每次 App 进程启动后应用一次，且只作用于动作窗口所在的 pass；`launchMs` 始终测纯冷启动，不注入深链。
+- `preconditions` 是运行期断言，至少声明一个可校验字段（`foregroundBundleId` / `accessibilityText`）：不符或屏上找不到文本时，本次 Take 以 `invalid` 结束（`gate=unknown`），不会把错页面的数据写成 `completed`。只写 `description` 会校验失败，因为没有任何可比较的值。
+- `analysisFocus` 与 `execution` 已移除：分析范围由 `metrics` 决定，交互与非交互由调用的工具入口表达；旧场景继续声明它们会加载失败并给出迁移提示。
 - 场景目前不做版本管理，修改 YAML 即生效。
 
 ---
 
 ## 9. 运行产物与报告
 
-每次 Take 写入当前项目的独立目录：
+每次 Take 写入当前项目的独立目录，运行根目录还有一个只追加的索引：
 
 ```text
-<project>/.performance-test/runs/<run-id>/
-├── run.json                 # 运行状态、动作、指标、notes 与证据路径字段
-├── plan.json                # 本次解析后的完整 TestPlan（不含诊断配置）
-├── report.json              # 机器可读报告
-├── report.md                # 中文 Markdown 报告
-├── device.log               # 设备日志（默认采集；日志流无输出时不存在）
-└── traces/                  # xctrace 原始产物
-    ├── hitches.trace
-    ├── launch.trace
-    └── memory.trace
+<project>/.performance-test/runs/
+├── index.jsonl              # 只追加的运行索引（摘要；可由 run.json 重建）
+└── <run-id>/
+    ├── run.json             # 运行状态、设备事实、动作、指标、pass 记录、notes 与证据路径字段
+    ├── plan.json            # 本次解析后的完整 TestPlan（不含已移除字段）
+    ├── report.json          # 机器可读报告（含 run 快照，因此也包含 run.device）
+    ├── report.md            # 中文 Markdown 报告
+    ├── device.log           # 设备日志（默认采集；日志流无输出时不存在）
+    └── traces/              # xctrace 原始产物
+        ├── hitches.trace
+        ├── launch.trace
+        └── memory.trace
 ```
+
+`run.json.passes` 记录每个已完成 pass 的 `template`、相对 `tracePath`、`attempts`、
+耗时、产出指标名与 issue 计数；旧 run 没有该字段时，历史列表用 `passCount: null`
+表示「未记录」。`run.json.device` 记录 preflight 拿到的 `id`、`name`、`osVersion`
+与 `modelIdentifier`，供基线按「场景 + 设备 + iOS」归组；旧 run 没有该字段时，
+设备标识从 `plan.json` 回退，iOS 记为未知。`report.json` 内嵌 `run` 快照，因此也包含
+同一份设备事实；这些字段只留在本地运行目录，不上传。录制产物意外落在运行目录之外时，该 pass 会省略 `tracePath`
+而不是写入绝对路径——pass 计数与耗时仍然保留。`index.jsonl` 每个终态 Take 一行，只存查询所需的摘要；
+它是派生物，阈值、样本与证据仍以 `run.json` / `report.json` 为准。索引行只追加、
+不重写；查询时发现缺失会从 `run.json` 补全并在结果中报告 `unindexed`。
 
 Crash 差集与生命周期分类写入 `report.json` 的 `diagnostics`（含降级结论与 Crash ID），
 运行目录不单独落盘；`run.json.notes` 只记录执行备注与失败归因。v0.1 不采集网络抓包，
@@ -594,10 +746,12 @@ Crash 差集与生命周期分类写入 `report.json` 的 `diagnostics`（含降
 原始文本由 `evidencePaths.deviceLog` 指向。`repetitions > 1` 时，
 `metrics[].samples` 保留每一轮的原始样本，顶层值是中位数。
 
-查看最近一次报告：
+查看历史与单次报告：
 
 ```bash
-find .performance-test/runs -name report.md -type f -print | sort | tail -1
+perfstage runs --limit 10
+perfstage compare <runId>
+perfstage report <runId>
 ```
 
 运行目录是**证据**，不是测试管理数据库。确认不再需要后可以手动删除。平台永远不会把 A 项目的报告写进 B 项目。
@@ -623,11 +777,13 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 
 ### 当前边界
 
+这里只列**不做清单**；「已经做到什么程度」以 [4.4 平台能力矩阵](#44-平台能力矩阵) 为准。
+
 - **iOS only。** 动作模型面向 iOS accessibility，不承诺 Android / Web / 桌面。
 - **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
-- **执行已内建，但只支持单设备串行。** Runner 一次跑一个 Take；没有调度器、并发或设备池。
-- **只有单次报告。** 没有历史索引、基线、趋势与 CI 门禁。
-- **阈值已自动判定。** `threshold` 会推导 `verdict` 并汇总为 `gate`；基线对比仍属规划。
+- **单设备串行。** 一次只跑一个 Take；没有调度器、并发或设备池。
+- **有基线对比、无回归门禁。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；没有基线快照文件、趋势图与 CI 门禁，也不判断好坏。阈值门禁仍只对单次 Take 生效。
+- **无 App 生命周期管理。** 不负责安装、卸载、签名与截图，只驱动已安装的 App。
 
 ### 路线图
 
@@ -652,8 +808,8 @@ find .performance-test/runs -name report.md -type f -print | sort | tail -1
 
 **第三阶段：让重复测试有意义**
 
-- [ ] 运行历史索引与查询
-- [ ] 基线管理与两次 Take 的指标对比
+- [x] 运行历史索引与查询（`perfstage runs`、`list_performance_runs`、`run.json.passes`、`index.jsonl`）
+- [x] 基线对比（`perfstage compare`、`compare_performance_runs`、`run.json.device`）
 - [ ] 回归门禁与趋势
 - [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
 

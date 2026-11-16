@@ -218,10 +218,20 @@ export function buildRecordArgs(request: RecordRequest): string[] {
       // ignores it (see resolveTracePath).
       args.push("--output", request.outputPath);
       break;
-    case "launch":
+    case "launch": {
       args.push("--output", request.outputPath);
+      // `--env` is an xctrace option, so it must come before `--launch --`;
+      // after the separator it would be handed to the app as an argument.
+      for (const [key, value] of Object.entries(
+        request.launch?.environment ?? {},
+      )) {
+        args.push("--env", `${key}=${value}`);
+      }
       args.push("--launch", "--", request.target.bundleId);
+      // Everything after the bundle id is the launched app's argv.
+      args.push(...(request.launch?.arguments ?? []));
       break;
+    }
     case "allProcesses":
       args.push("--all-processes");
       args.push("--output", request.outputPath);
@@ -524,6 +534,11 @@ export function createXctraceRecorder(
                   error instanceof Error ? error.message : String(error),
                   "aborted",
                   false,
+                  // Keep the original error reachable: `during` runs the
+                  // Runner's own checks, so the caller must still be able to
+                  // tell a precondition violation from a recording failure.
+                  undefined,
+                  { cause: error },
                 );
           lastError = recordingError;
           if (!recordingError.retryable || attempt === maxAttempts) {

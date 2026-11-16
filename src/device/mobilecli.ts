@@ -465,6 +465,10 @@ export function createMobilecliDriver(
       );
     },
 
+    async openUrl(deviceId: string, url: string): Promise<void> {
+      await mobilecli(["url", "--device", deviceId, url], `url ${url}`);
+    },
+
     async terminate(deviceId: string, bundleId: string): Promise<void> {
       const result = await run(
         mobilecliPath(),
@@ -612,6 +616,7 @@ export function createUnavailableDriver(reason: string): DeviceDriver {
     resolveInstallation: async () => fail(),
     resolvePid: async () => fail(),
     launch: async () => fail(),
+    openUrl: async () => fail(),
     terminate: async () => fail(),
     foreground: async () => fail(),
     dumpElements: async () => fail(),

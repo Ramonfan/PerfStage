@@ -51,11 +51,30 @@ export type RecordingTarget =
       kind: "allProcesses";
     };
 
+/** Launch-time configuration forwarded to the recorded cold start. */
+export interface LaunchOptions {
+  /** Arguments appended after the bundle id, e.g. `["-UITestMode", "1"]`. */
+  arguments?: readonly string[];
+  /** Environment variables forwarded as `--env KEY=VALUE`. */
+  environment?: Readonly<Record<string, string>>;
+}
+
 export interface RecordRequest {
   template: RecordingTemplate;
   /** Device UDID, as reported by `xcrun devicectl list devices`. */
   device: string;
   target: RecordingTarget;
+  /**
+   * Cold-start options for `target.kind === "launch"`.
+   *
+   * xctrace documents both: `--env KEY=VALUE` (launch-only) and
+   * `--launch -- command [arguments]`, where everything after `--` is the
+   * child command. The Runner passes the plan's
+   * `app.launchArguments` / `app.environmentVariables` here so the recorded
+   * launch matches the declared configuration. Ignored for attach /
+   * all-processes targets, which never start the app.
+   */
+  launch?: LaunchOptions;
   /**
    * Where the `.trace` should live. For `launch` this is only a hint:
    * xctrace ignores `--output` for that template and names the trace itself,
@@ -141,8 +160,18 @@ export class RecordingError extends Error {
     readonly kind: RecordingErrorKind,
     readonly retryable: boolean,
     readonly output?: string,
+    /**
+     * Original error, when this one wraps a caller failure.
+     *
+     * `during` callbacks run inside the recording session, so a Runner error
+     * thrown there comes back out through the recorder. Wrapping would
+     * otherwise erase its identity (a precondition violation would look like a
+     * generic aborted recording), so the cause is preserved for the caller to
+     * inspect.
+     */
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 

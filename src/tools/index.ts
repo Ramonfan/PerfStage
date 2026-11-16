@@ -32,6 +32,14 @@ import {
   runInputSchema,
   runPerformanceTest,
 } from "./run.js";
+import {
+  listPerformanceRuns,
+  runsQuerySchema,
+} from "./runs.js";
+import {
+  comparePerformanceRuns,
+  compareQuerySchema,
+} from "./compare.js";
 
 /**
  * Shared options passed to every tool handler.
@@ -268,7 +276,7 @@ export function registerTools(
     {
       title: "Prepare Performance Test",
       description:
-        "校验传入的场景或一次性方案、合并执行/设备/指标/诊断覆盖、创建 prepared 状态的 TestRun 并返回 Claude 后续要执行的步骤列表。",
+        "校验传入的场景或一次性方案、合并设备与指标覆盖、创建 prepared 状态的 TestRun 并返回人工接管所需的步骤列表。",
       inputSchema: prepareInputSchema.shape,
     },
     async (args: unknown) => {
@@ -320,7 +328,7 @@ export function registerTools(
     {
       title: "Analyze Performance Trace",
       description:
-        "用 PerfStage 自己的解析器读取 instruments-mcp 录制的 xctrace，返回 finalize 可直接消费的规范指标（hitches/blockMs、launchMs、memoryMB）。",
+        "用 PerfStage 自己的解析器读取 xctrace 录制结果，返回 finalize 可直接消费的规范指标（hitches/blockMs、launchMs、memoryMB）。",
       inputSchema: analyzeTraceInputSchema.shape,
     },
     async (args: unknown) => {
@@ -346,6 +354,58 @@ export function registerTools(
         return toToolErrorResult(resolved.error);
       }
       const result = await runPerformanceTest(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
+      });
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "list_performance_runs",
+    {
+      title: "List Performance Runs",
+      description:
+        "按时间倒序列出历史运行记录，可按场景、计划、状态过滤并限制条数；索引缺失或落后时从 run.json 补全，不修改任何历史产物。",
+      inputSchema: runsQuerySchema.shape,
+    },
+    async (args: unknown) => {
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await listPerformanceRuns(args, {
+        ...options,
+        scenarioDir: resolved.scenarioDir,
+        runStore: resolved.runStore,
+        runsRoot: resolved.runsRoot,
+      });
+      if ("error" in result) {
+        return toToolErrorResult(result.error);
+      }
+      return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "compare_performance_runs",
+    {
+      title: "Compare Performance Runs",
+      description:
+        "把一次 Take 与同场景、同设备、同 iOS 的历史基线逐指标对比：返回中位数、波动范围、差值、百分比、方向、逐指标样本数与排除计数；只读，不判定好坏，不做回归门禁。",
+      inputSchema: compareQuerySchema.shape,
+    },
+    async (args: unknown) => {
+      const resolved = await resolveReadyWorkspace(options);
+      if (resolved.kind === "error") {
+        return toToolErrorResult(resolved.error);
+      }
+      const result = await comparePerformanceRuns(args, {
         ...options,
         scenarioDir: resolved.scenarioDir,
         runStore: resolved.runStore,

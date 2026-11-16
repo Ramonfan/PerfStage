@@ -97,6 +97,21 @@ describe("finalize_performance_test", () => {
     );
     expect(md).toContain("# 性能测试报告");
     expect(md).toContain("## 总结");
+
+    // The manual prepare/finalize path appends an index row too, and records
+    // passCount=null because it never collected pass facts.
+    const row = JSON.parse(
+      (
+        await readFile(join(harness.root, "runs", "index.jsonl"), "utf8")
+      ).trim(),
+    );
+    expect(row).toMatchObject({
+      runId: prepared.runId,
+      scenarioId: "community-home-scroll",
+      status: "completed",
+      gate: "pass",
+      passCount: null,
+    });
   });
 
   it("downgrades a requested completed result when diagnostics contain a new Crash", async () => {

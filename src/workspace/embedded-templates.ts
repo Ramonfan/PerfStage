@@ -21,7 +21,9 @@ app:
   bundleId: com.example.app
 device: {}
 preconditions:
-  description: Target app is installed and running on the connected device
+  # Must be checkable: a description alone would be reported as verified
+  # without anything being compared. Keep it in sync with app.bundleId.
+  foregroundBundleId: com.example.app
 warmup: []
 actions:
   # The Runner launches the app itself for the App Launch pass; this action is
@@ -44,7 +46,9 @@ app:
   bundleId: com.example.app
 device: {}
 preconditions:
-  description: Target app is installed and running on the connected device
+  # Must be checkable: a description alone would be reported as verified
+  # without anything being compared. Keep it in sync with app.bundleId.
+  foregroundBundleId: com.example.app
 warmup: []
 actions:
   - id: scroll-up

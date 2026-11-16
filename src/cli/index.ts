@@ -8,6 +8,13 @@ import {
 import { createRunStore } from "../storage/runs.js";
 import { initializePerformanceWorkspace } from "../tools/workspace.js";
 import { listPerformanceScenarios } from "../tools/scenarios.js";
+import { listPerformanceRuns } from "../tools/runs.js";
+import { comparePerformanceRuns } from "../tools/compare.js";
+import type {
+  CompareResult,
+  MetricComparison,
+} from "../tools/compare.js";
+import { runStatusSchema } from "../model/test-run.js";
 import { runPerformanceTest } from "../tools/run.js";
 import type { RunTakeSummary } from "../runner/run.js";
 import type { TraceAnalyzer } from "../runner/execute.js";
@@ -45,8 +52,10 @@ const USAGE = `PerfStage — 一次定义，次次上演。
 用法：
   perfstage init [--app <bundleId>] [--name <appName>] [--copy-scenarios] [--dir <path>]
   perfstage list [--dir <path>] [--json]
-  perfstage run <sceneId> --device <udid> [--repetitions <n>] [--json] [--strict]
-  perfstage run --plan <plan.json> --device <udid> [--json] [--strict]
+  perfstage run <sceneId> --device <udid> [--repetitions <n>] [--json] [--strict] [--dir <path>]
+  perfstage run --plan <plan.json> --device <udid> [--json] [--strict] [--dir <path>]
+  perfstage runs [--scenario <sceneId>] [--status <status>] [--limit <n>] [--json] [--dir <path>]
+  perfstage compare <runId> [--against <runId>] [--samples <n>] [--json] [--dir <path>]
   perfstage report <runId> [--json] [--dir <path>]
   perfstage --version | --help
 
@@ -104,6 +113,11 @@ export async function main(
         "copy-scenarios": { type: "boolean", default: false },
         device: { type: "string" },
         plan: { type: "string" },
+        scenario: { type: "string" },
+        status: { type: "string" },
+        limit: { type: "string" },
+        against: { type: "string" },
+        samples: { type: "string" },
         repetitions: { type: "string" },
         json: { type: "boolean", default: false },
         strict: { type: "boolean", default: false },
@@ -138,6 +152,10 @@ export async function main(
       return commandList(values.json === true, manager, ctx);
     case "run":
       return commandRun(values, positionals.slice(1), manager, ctx);
+    case "runs":
+      return commandRuns(values, manager, ctx);
+    case "compare":
+      return commandCompare(values, positionals.slice(1), manager, ctx);
     case "report":
       return commandReport(values, positionals.slice(1), manager, ctx);
     default:
@@ -154,6 +172,11 @@ type ParsedValues = {
   "copy-scenarios"?: boolean;
   device?: string;
   plan?: string;
+  scenario?: string;
+  status?: string;
+  limit?: string;
+  against?: string;
+  samples?: string;
   repetitions?: string;
   json?: boolean;
   strict?: boolean;
@@ -226,6 +249,174 @@ async function commandList(
     );
   }
   return EXIT_OK;
+}
+
+async function commandRuns(
+  values: ParsedValues,
+  manager: WorkspaceManager,
+  ctx: CliContext,
+): Promise<ExitCode> {
+  if (values.status !== undefined) {
+    const parsed = runStatusSchema.safeParse(values.status);
+    if (!parsed.success) {
+      return fail(
+        ctx,
+        `--status 必须是 ${runStatusSchema.options.join(" / ")}：${values.status}`,
+      );
+    }
+  }
+  const limit = parseLimit(values.limit);
+  if (limit === "invalid") {
+    return fail(ctx, `--limit 必须是 1–200 的整数：${values.limit}`);
+  }
+
+  const ready = await requireWorkspace(manager, ctx);
+  if (ready === null) return EXIT_ENVIRONMENT;
+
+  const result = await listPerformanceRuns(
+    {
+      ...(values.scenario !== undefined ? { scenarioId: values.scenario } : {}),
+      ...(values.status !== undefined ? { status: values.status } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    },
+    { runStore: ready.store, now: ctx.now },
+  );
+  if ("error" in result) {
+    return fail(ctx, result.error);
+  }
+
+  if (values.json === true) {
+    ctx.io.out(JSON.stringify(result, null, 2));
+    return EXIT_OK;
+  }
+
+  if (result.runs.length === 0) {
+    ctx.io.out("没有匹配的运行记录。");
+  }
+  for (const run of result.runs) {
+    const label = run.scenarioId ?? run.planId;
+    const gate = run.gate === undefined ? "" : `  gate=${run.gate}`;
+    const duration =
+      run.durationMs === undefined ? "—" : formatDuration(run.durationMs);
+    const metrics = run.metrics
+      .map((metric) => `${metric.name}=${String(metric.value ?? "—")}`)
+      .join("  ");
+    ctx.io.out(
+      `${run.runId}\t${label}\t${run.status}${gate}\t${duration}${
+        metrics.length > 0 ? `\t${metrics}` : ""
+      }`,
+    );
+  }
+  ctx.io.out(
+    `索引：本工作区补全 ${result.unindexed} 条，跳过 ${result.skipped} 条，损坏行 ${result.invalidLines}。`,
+  );
+  return EXIT_OK;
+}
+
+async function commandCompare(
+  values: ParsedValues,
+  positionals: string[],
+  manager: WorkspaceManager,
+  ctx: CliContext,
+): Promise<ExitCode> {
+  const runId = positionals[0];
+  if (runId === undefined) {
+    return fail(ctx, "compare 需要 <runId>。用 `perfstage runs` 查看运行记录。");
+  }
+  if (values.against !== undefined && values.samples !== undefined) {
+    return fail(ctx, "--against 与 --samples 只能选其一。");
+  }
+  const samples = parseSamples(values.samples);
+  if (samples === "invalid") {
+    return fail(ctx, `--samples 必须是 3–20 的整数：${values.samples}`);
+  }
+
+  const ready = await requireWorkspace(manager, ctx);
+  if (ready === null) return EXIT_ENVIRONMENT;
+
+  const result = await comparePerformanceRuns(
+    {
+      runId,
+      ...(values.against !== undefined ? { against: values.against } : {}),
+      ...(samples !== undefined ? { samples } : {}),
+    },
+    { runStore: ready.store, now: ctx.now },
+  );
+  if ("error" in result) {
+    return fail(ctx, result.error);
+  }
+
+  if (values.json === true) {
+    ctx.io.out(JSON.stringify(result, null, 2));
+    return EXIT_OK;
+  }
+
+  renderComparison(result, ctx.io);
+  return EXIT_OK;
+}
+
+function renderComparison(result: CompareResult, io: CliIO): void {
+  const { target, baseline, metrics, excluded } = result;
+  const kind = baseline.kind === "derived" ? "派生" : "指定";
+  const os = target.osVersion ?? "未知";
+  io.out(
+    `对比 ${target.runId}（${target.planId}，iOS ${os}，${target.status}） ↔ ${kind}基线 ${baseline.samples} 条`,
+  );
+  if (baseline.runIds.length > 0) {
+    io.out(`基线运行：${baseline.runIds.join(", ")}`);
+  }
+
+  for (const metric of metrics) {
+    io.out(formatMetricComparison(metric));
+  }
+
+  if (result.status === "no-baseline") {
+    io.out("注意：没有可用的同口径基线，仅显示目标值，不伪造基线。");
+  } else if (result.status === "insufficient-samples") {
+    io.out(
+      `注意：基线样本不足（${baseline.samples}/3），结果仅供参考；不做回归判断。`,
+    );
+  }
+  for (const warning of result.warnings) {
+    io.out(`注意：${warning}`);
+  }
+  const excludedTotal =
+    excluded.differentPlan +
+    excluded.differentDevice +
+    excluded.differentOs +
+    excluded.nonTerminal +
+    excluded.notBefore +
+    excluded.unreadable;
+  if (excludedTotal > 0) {
+    io.out(
+      `排除：场景 ${excluded.differentPlan}，设备 ${excluded.differentDevice}，iOS ${excluded.differentOs}，非终态 ${excluded.nonTerminal}，不早于目标 ${excluded.notBefore}，不可读 ${excluded.unreadable}。`,
+    );
+  }
+}
+
+function formatMetricComparison(metric: MetricComparison): string {
+  const delta =
+    metric.delta === null
+      ? "—"
+      : `${metric.delta > 0 ? "+" : ""}${formatNumber(metric.delta)}${
+          metric.deltaPercent === null
+            ? ""
+            : ` (${metric.deltaPercent > 0 ? "+" : ""}${metric.deltaPercent.toFixed(1)}%)`
+        }`;
+  const range =
+    metric.baselineRange === null
+      ? "—"
+      : `${formatNumber(metric.baselineRange.min)}–${formatNumber(metric.baselineRange.max)}`;
+  const status = metric.status === "ok" ? "" : `\t(${metric.status})`;
+  return `${metric.name}\tcurrent=${formatNumberOrDash(metric.current)}\tbaseline=${formatNumberOrDash(metric.baselineMedian)}\tdelta=${delta}\tdirection=${metric.direction ?? "—"}\trange=${range}\tsamples=${metric.samples}${status}`;
+}
+
+function formatNumberOrDash(value: number | null): string {
+  return value === null ? "—" : formatNumber(value);
+}
+
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }
 
 async function commandRun(
@@ -330,7 +521,7 @@ async function commandReport(
 ): Promise<ExitCode> {
   const runId = positionals[0];
   if (runId === undefined) {
-    return fail(ctx, "report 需要 <runId>。用 `perfstage list` 查看场景，运行记录在 .performance-test/runs/。");
+    return fail(ctx, "report 需要 <runId>。用 `perfstage runs` 查看运行记录。");
   }
 
   const ready = await requireWorkspace(manager, ctx);
@@ -435,6 +626,24 @@ function parseRepetitions(value: string | undefined): number | undefined | "inva
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10) {
+    return "invalid";
+  }
+  return parsed;
+}
+
+function parseLimit(value: string | undefined): number | undefined | "invalid" {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
+    return "invalid";
+  }
+  return parsed;
+}
+
+function parseSamples(value: string | undefined): number | undefined | "invalid" {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 3 || parsed > 20) {
     return "invalid";
   }
   return parsed;

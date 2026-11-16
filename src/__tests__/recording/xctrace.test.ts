@@ -52,6 +52,44 @@ describe("buildRecordArgs", () => {
     expect(args).toContain("App Launch");
   });
 
+  it("forwards launch arguments and environment to the launched app", () => {
+    const args = buildRecordArgs(
+      request({
+        template: "hitches",
+        target: { kind: "launch", bundleId: "com.nndev.im" },
+        launch: {
+          arguments: ["-UITestMode", "1"],
+          environment: { LOG_LEVEL: "debug", RUM: "1" },
+        },
+      }),
+    );
+    const separator = args.indexOf("--");
+    // `--env` is an xctrace option: after the separator it would become an
+    // app argument and the variable would never be set.
+    const envIndices = args.flatMap((arg, index) =>
+      arg === "--env" ? [index] : [],
+    );
+    expect(envIndices).toHaveLength(2);
+    for (const index of envIndices) {
+      expect(index).toBeLessThan(separator);
+    }
+    expect(args[args.indexOf("--env") + 1]).toBe("LOG_LEVEL=debug");
+    // Everything after the bundle id is the app's argv.
+    expect(args.slice(separator + 1)).toEqual([
+      "com.nndev.im",
+      "-UITestMode",
+      "1",
+    ]);
+  });
+
+  it("omits launch options when the plan declares none", () => {
+    const args = buildRecordArgs(
+      request({ target: { kind: "launch", bundleId: "com.nndev.im" } }),
+    );
+    expect(args).not.toContain("--env");
+    expect(args.slice(args.indexOf("--") + 1)).toEqual(["com.nndev.im"]);
+  });
+
   it("records every process for the memory template", () => {
     const args = buildRecordArgs(
       request({ template: "memory", target: { kind: "allProcesses" } }),
@@ -436,5 +474,64 @@ describe("createXctraceRecorder during deadline", () => {
     // The session was asked to stop instead of waiting for `timeLimit`.
     expect(await readFile(stopped, "utf8")).toContain("stopped");
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+});
+
+describe("createXctraceRecorder caller failures", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "perfstage-recorder-cause-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("preserves the caller's error as the cause of the recording error", async () => {
+    const path = join(root, "fake-xctrace.sh");
+    await writeFile(
+      path,
+      [
+        "#!/bin/bash",
+        "trap 'exit 0' INT",
+        'echo "Starting recording."',
+        'echo "Ctrl-C to stop the recording"',
+        "while true; do sleep 0.02; done",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    class CallerFailure extends Error {}
+    const failure = new CallerFailure("precondition failed");
+
+    const error = (await createXctraceRecorder({
+      command: path,
+      sleep: async () => undefined,
+      sigkillGraceMs: 500,
+    })
+      .record({
+        template: "hitches",
+        device: DEVICE,
+        target: { kind: "attach", pid: 4242 },
+        outputPath: join(root, "hitches.trace"),
+        duringTimeoutMs: 30_000,
+        during: async () => {
+          throw failure;
+        },
+        maxAttempts: 1,
+        retryDelayMs: 0,
+      })
+      .catch((caught: unknown) => caught)) as {
+      kind?: string;
+      cause?: unknown;
+    };
+
+    // The recording layer wraps the error so its own classification stays
+    // intact; the caller's identity must survive on the cause chain, otherwise
+    // a precondition violation is indistinguishable from a device failure.
+    expect(error.kind).toBe("aborted");
+    expect(error.cause).toBe(failure);
   });
 });

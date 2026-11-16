@@ -18,7 +18,7 @@ const templateSchema = z.enum(["hitches", "launch", "memory"]);
 export const analyzeTraceInputSchema = z
   .object({
     template: templateSchema,
-    /** Absolute path to a `.trace` bundle produced by instruments-mcp. */
+    /** Absolute path to a `.trace` bundle produced by PerfStage's Recorder (`xctrace`). */
     tracePath: z.string().min(1),
     /** Target process display name (`NN` for xctrace, `NNIM` for memory). */
     processName: z.string().min(1).optional(),

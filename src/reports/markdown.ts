@@ -170,7 +170,6 @@ function renderPlan(report: JsonReport): string {
   return [
     `**场景/计划**：${report.plan.name ?? report.plan.id ?? "未命名"}`,
     `**应用 Bundle ID**：${report.plan.app.bundleId}`,
-    `**执行模式**：${report.plan.execution}`,
     `**重复次数**：${report.run.repetitions}`,
     `**备注**：${report.plan.notes ?? "无"}`,
   ].join("\n");

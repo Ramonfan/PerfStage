@@ -2,9 +2,9 @@ import { promises as fs } from "node:fs";
 import { posix, relative, resolve, sep } from "node:path";
 import { extractDeviceFailureCause } from "../diagnostics/cause.js";
 import type { DiagnosticInput } from "../diagnostics/normalize.js";
-import type { DeviceDriver, ForegroundApp } from "../device/types.js";
+import type { DeviceDriver, ForegroundApp, UiElement } from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
-import type { ActionRecord, MetricResult } from "../model/test-run.js";
+import type { ActionRecord, MetricResult, TestRun } from "../model/test-run.js";
 import type {
   RecordedTrace,
   RecordingIssue,
@@ -12,7 +12,7 @@ import type {
   TraceRecorder,
 } from "../recording/types.js";
 import { analyzePerformanceTrace } from "../tools/analyze.js";
-import { executeAction } from "./actions.js";
+import { executeAction, containsAccessibilityText } from "./actions.js";
 import { planPasses, type PassPlan } from "./passes.js";
 
 /**
@@ -60,14 +60,54 @@ export interface PassRecord {
   metrics: string[];
 }
 
+/**
+ * The scenario declared a starting state the device did not satisfy.
+ *
+ * Distinguished from a device/recording failure because the request itself is
+ * what was wrong: reporting it as `invalid` (gate unknown) is accurate, while
+ * `failed` would blame the device for a mis-declared scene.
+ */
+export class PreconditionFailure extends Error {
+  override readonly name = "PreconditionFailure";
+}
+
+/**
+ * Recognise a precondition violation even after the recorder wrapped it.
+ *
+ * `during` callbacks run inside the recording session, so the recorder sees the
+ * error first and rethrows its own `RecordingError` with the original one as
+ * `cause`. Checking only `instanceof` would classify the most common path
+ * (hitches pass) as a device failure.
+ */
+function isPreconditionFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof PreconditionFailure) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export interface TakeExecution {
   actions: ActionRecord[];
   metrics: MetricResult[];
   diagnostics: DiagnosticInput;
   passes: PassRecord[];
   notes: string[];
+  /**
+   * Device facts captured by preflight. Absent when the Take failed before
+   * the device was reached; finalize must not fabricate a version then.
+   */
+  device?: TestRun["device"];
   /** Set when a fatal device/recording error ended the Take early. */
   fatalError?: string;
+  /**
+   * Status to request when {@link fatalError} is set. Defaults to `failed`;
+   * precondition violations resolve to `invalid`.
+   */
+  fatalStatus?: "failed" | "invalid";
   /** Full device log stream; the Runner persists it to `device.log`. */
   fullLogText?: string;
   repetitions: number;
@@ -230,13 +270,27 @@ export async function executeTake(
   >();
 
   let fatalError: string | undefined;
+  let fatalStatus: "failed" | "invalid" | undefined;
   let logStream: ReturnType<DeviceDriver["startLogStream"]> | null = null;
   let fullLogText: string | undefined;
+  let deviceFacts: TestRun["device"];
 
   try {
     // ── Preflight ────────────────────────────────────────────────────
     const device = await deps.device.requireDevice(deviceId);
     log(`device ${device.name} (${device.id}) ${device.version}`);
+    // `DeviceInfo` is a typed view over `mobilecli` JSON. Guard the optional
+    // text fields at runtime so a partial device record cannot turn a healthy
+    // Take into a failed one, and so an empty version is recorded as "not
+    // reported" instead of an empty string.
+    const knownText = (value: unknown): value is string =>
+      typeof value === "string" && value.length > 0;
+    deviceFacts = {
+      id: device.id,
+      ...(knownText(device.name) ? { name: device.name } : {}),
+      ...(knownText(device.version) ? { osVersion: device.version } : {}),
+      ...(knownText(device.model) ? { modelIdentifier: device.model } : {}),
+    };
     const installation = await deps.device.resolveInstallation(
       deviceId,
       plan.app.bundleId,
@@ -361,6 +415,16 @@ export async function executeTake(
     }
   } catch (error) {
     fatalError = error instanceof Error ? error.message : String(error);
+    if (isPreconditionFailure(error)) {
+      fatalStatus = "invalid";
+      // Metrics from earlier passes stay in the report as evidence, but they
+      // must not read as a verdict on a scene whose starting state was wrong.
+      if (perMetricSamples.size > 0) {
+        notes.push(
+          "take invalid: metrics from earlier passes are retained as evidence, not as a verdict on the declared scene",
+        );
+      }
+    }
     log(`take failed: ${fatalError}`);
     notes.push(`fatal: ${fatalError}`);
   } finally {
@@ -414,7 +478,9 @@ export async function executeTake(
     diagnostics,
     passes,
     notes,
+    ...(deviceFacts !== undefined ? { device: deviceFacts } : {}),
     ...(fatalError !== undefined ? { fatalError } : {}),
+    ...(fatalStatus !== undefined ? { fatalStatus } : {}),
     ...(fullLogText !== undefined ? { fullLogText } : {}),
     repetitions,
   };
@@ -516,6 +582,40 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
   const { actions, metrics, notes } = input.sink;
   const recorded = input.sink.passes;
 
+  /**
+   * Cold-start options every `xctrace --launch` in this Take must carry.
+   *
+   * Declared once so hitches and launch passes cannot drift: a scenario that
+   * needs a test-mode flag must not silently measure a differently-configured
+   * app in one of the two passes.
+   */
+  const launchOptions =
+    plan.app.launchArguments.length > 0 ||
+    Object.keys(plan.app.environmentVariables).length > 0
+      ? {
+          arguments: plan.app.launchArguments,
+          environment: plan.app.environmentVariables,
+        }
+      : undefined;
+
+  /** Notes are per round; keep repeated infrastructure facts to one line. */
+  const noteOnce = (note: string): void => {
+    if (!notes.includes(note)) {
+      notes.push(note);
+    }
+  };
+
+  /**
+   * Whether `app.launchUrl` is already applied for the running app process.
+   *
+   * A deep link is only meaningful once per process start: opening it again
+   * after warmup or actions would navigate back to the entry screen and make
+   * the memory pass measure a different screen than the hitches pass. The flag
+   * is cleared wherever the app is (re)started, so every repetition still
+   * starts from the declared entry point.
+   */
+  let launchUrlApplied = false;
+
   const passFor = (template: RecordingTemplate): PassPlan | undefined =>
     planning.passes.find((entry) => entry.template === template);
 
@@ -601,6 +701,17 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     await deps.device.terminate(deviceId, plan.app.bundleId).catch(() => undefined);
     await sleep(1_500);
     await deps.device.launch(deviceId, plan.app.bundleId);
+    // A new process starts on its own initial screen, so the deep link must be
+    // applied again for this launch.
+    launchUrlApplied = false;
+    // `mobilecli apps launch` accepts no argv and no environment, so a warm
+    // relaunch cannot reproduce the declared cold-start configuration. Say so
+    // instead of letting the report imply both paths were identical.
+    if (launchOptions !== undefined) {
+      noteOnce(
+        "warm relaunch via mobilecli does not carry launch arguments/environment",
+      );
+    }
     const activity = await waitForForeground();
     input.lifecycle.push({
       kind: "foreground",
@@ -672,6 +783,78 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     for (const action of plan.warmup) {
       await runOne(action, "warmup");
     }
+  };
+
+  /**
+   * Open `app.launchUrl` after the app is in front and before warmup.
+   *
+   * Ordering is the whole point: the deep link navigates to the screen under
+   * test, so it must land inside the recording but before `actionStart`, where
+   * the hitches window begins. Doing it after warmup would waste recorded
+   * frames; doing it before launch would hide the app's real cold start.
+   */
+  const applyLaunchUrl = async (): Promise<void> => {
+    if (plan.app.launchUrl === undefined || launchUrlApplied) {
+      return;
+    }
+    log(`open ${plan.app.launchUrl}`);
+    try {
+      await deps.device.openUrl(deviceId, plan.app.launchUrl);
+    } catch (error) {
+      throw new Error(
+        `could not open ${plan.app.launchUrl}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    launchUrlApplied = true;
+    // The link starts a navigation; give it a moment before actions assume the
+    // target screen is interactive.
+    await sleep(deps.settleMs ?? DEFAULTS.settleMs);
+  };
+
+  /**
+   * Enforce the scenario's preconditions before anything gets scored.
+   *
+   * A Take that measures the wrong screen produces plausible numbers, which is
+   * worse than no numbers: it enters history as a valid baseline. Failing here
+   * keeps the run `failed` and the reason in `notes`.
+   */
+  const enforcePreconditions = async (): Promise<void> => {
+    if (plan.preconditions.length === 0) {
+      return;
+    }
+    const foreground = await probeForeground();
+    if (foreground === null) {
+      throw new PreconditionFailure(
+        `could not read the foreground app within ${probeTimeoutMs}ms to check preconditions`,
+      );
+    }
+    let elements: UiElement[] | null = null;
+    for (const condition of plan.preconditions) {
+      if (
+        condition.foregroundBundleId !== undefined &&
+        foreground.bundleId !== condition.foregroundBundleId
+      ) {
+        throw new PreconditionFailure(
+          `precondition failed: ${condition.description} (foreground was ${foreground.bundleId})`,
+        );
+      }
+      if (condition.accessibilityText !== undefined) {
+        elements ??= await deps.device.dumpElements(deviceId);
+        if (!containsAccessibilityText(elements, condition.accessibilityText)) {
+          throw new PreconditionFailure(
+            `precondition failed: ${condition.description} (no element contains "${condition.accessibilityText}")`,
+          );
+        }
+      }
+      log(`precondition ok: ${condition.description}`);
+    }
+    noteOnce(
+      `preconditions verified: ${plan.preconditions
+        .map((condition) => condition.description)
+        .join("; ")}`,
+    );
   };
 
   const analyzeTrace = async (
@@ -772,6 +955,7 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       template: "hitches",
       device: deviceId,
       target: { kind: "launch", bundleId: plan.app.bundleId },
+      ...(launchOptions !== undefined ? { launch: launchOptions } : {}),
       outputPath: resolve(tracesDir, "hitches.trace"),
       // `during` stops the session right after the last action; this is only a
       // safety cap. `duringTimeoutMs` is the real bound: it keeps a hung
@@ -782,6 +966,8 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       liveTimeoutMs: 30_000,
       during: async () => {
         sessionStart = Date.now();
+        // xctrace just cold-started the app, so its initial screen is back.
+        launchUrlApplied = false;
         const activity = await waitForForeground();
         input.lifecycle.push({
           kind: "foreground",
@@ -789,9 +975,11 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
           notes: `activity ${activity}`,
         });
         await sleep(deps.settleMs ?? DEFAULTS.settleMs);
+        await applyLaunchUrl();
         // A fresh launch always starts on the initial screen, so warmup must
         // run for this attempt.
         await runWarmup(true);
+        await enforcePreconditions();
         actionStart = Date.now();
         await runActions();
         actionEnd = Date.now();
@@ -846,12 +1034,23 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     await analyzeTrace(pass, trace, { window });
   } else if (plan.actions.length > 0) {
     if (launchPass !== undefined) {
+      if (plan.preconditions.length > 0 && memoryPass === undefined) {
+        // The scenario window is skipped here, so there is nothing to check
+        // the declared starting state against. A memory pass would still
+        // verify them before its measurement, so only reject when no pass
+        // runs the checks at all.
+        throw new PreconditionFailure(
+          "preconditions were declared but this plan has no scenario window to verify them: the App Launch pass measures a cold start and skips the scenario actions",
+        );
+      }
       notes.push(
         "scenario actions skipped: the plan has no frame-recording pass to replay them in",
       );
     } else {
       await bringToForeground();
+      await applyLaunchUrl();
       await runWarmup();
+      await enforcePreconditions();
       await runActions();
     }
   }
@@ -865,10 +1064,16 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     await deps.device.terminate(deviceId, plan.app.bundleId).catch(() => undefined);
     await sleep(deps.launchSettleMs ?? DEFAULTS.launchSettleMs);
     log("launch pass");
+    if (plan.app.launchUrl !== undefined) {
+      noteOnce(
+        "launchMs pass does not apply launchUrl: it measures the app's own cold start",
+      );
+    }
     const trace = await deps.recorder.record({
       template: "launch",
       device: deviceId,
       target: { kind: "launch", bundleId: plan.app.bundleId },
+      ...(launchOptions !== undefined ? { launch: launchOptions } : {}),
       outputPath: resolve(tracesDir, "launch.trace"),
     });
     // App Launch rows are keyed by the process display name (`NN`), not the
@@ -876,6 +1081,9 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     await analyzeTrace(launchPass, trace, {
       ...(installation.name.length > 0 ? { processName: installation.name } : {}),
     });
+    // The pass cold-started the app and left it on its initial screen, so a
+    // later pass must navigate again.
+    launchUrlApplied = false;
     const activity = await sampleForeground();
     if (activity !== null) {
       input.lifecycle.push({
@@ -898,7 +1106,9 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     if (foreground === null || foreground.bundleId !== plan.app.bundleId) {
       await bringToForeground();
     }
+    await applyLaunchUrl();
     await runWarmup();
+    await enforcePreconditions();
     await sleep(deps.memorySettleMs ?? DEFAULTS.memorySettleMs);
     const pid = await deps.device.resolvePid(deviceId, installation.containerUuid);
     if (pid === null) {

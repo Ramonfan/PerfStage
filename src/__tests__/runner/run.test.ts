@@ -7,6 +7,7 @@ import {
   type FakeRecorder,
   type FakeRecorderOptions,
 } from "../../recording/fake.js";
+import { RecordingError, type TraceRecorder } from "../../recording/types.js";
 import { runTake, type RunDependencies } from "../../runner/run.js";
 import type { TraceAnalyzer } from "../../runner/execute.js";
 import type { TestPlan } from "../../model/test-plan.js";
@@ -94,7 +95,7 @@ function takeDeps(
   harness: TestToolHarness,
   input: {
     device: FakeDriver;
-    recorder: FakeRecorder;
+    recorder: TraceRecorder;
   } & Partial<RunDependencies>,
 ): RunDependencies {
   return {
@@ -216,6 +217,138 @@ describe("runTake", () => {
     expect(hitches.verdict).toBe("pass");
     // Trace paths are run-relative so the report stays portable.
     expect(hitches.tracePath).toBe("traces/hitches.trace");
+
+    // Pass facts are persisted, not just returned in-memory.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes).toHaveLength(3);
+    expect(stored.passes[0]).toMatchObject({
+      template: "hitches",
+      tracePath: "traces/hitches.trace",
+      attempts: 1,
+    });
+    expect(stored.passes[0]).not.toHaveProperty("absoluteTracePath");
+    expect(stored.passes.map((pass: { durationMs: number }) => pass.durationMs)).toEqual(
+      outcome.summary.passes.map((pass) => pass.durationMs),
+    );
+
+    // Device facts from preflight are persisted for baseline grouping.
+    expect(stored.device).toEqual({
+      id: DEVICE_ID,
+      name: "Fake iPhone",
+      osVersion: "27.0",
+      modelIdentifier: "iPhone18,3",
+    });
+
+    // Every finalized Take leaves exactly one append-only index row.
+    const rows = (
+      await readFile(join(harness.root, "runs", "index.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      runId: prepared.runId,
+      status: "completed",
+      gate: "pass",
+      passCount: 3,
+      scenarioId: null,
+      deviceId: DEVICE_ID,
+    });
+  });
+
+  it("keeps a Take finalizable when a pass trace lands outside the run directory", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const root = harness.root;
+    // `toRunRelative` deliberately returns the absolute path when the recorder
+    // wrote outside the run directory. That must not turn a successful Take
+    // into an unfinalizable one.
+    const escapingRecorder: TraceRecorder = {
+      async record(request) {
+        const trace = await recorder.record(request);
+        return {
+          ...trace,
+          tracePath: join(root, "outside", `${request.template}.trace`),
+        };
+      },
+    };
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: escapingRecorder,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 40,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes).toHaveLength(3);
+    // The count and duration survive; only the unusable path is dropped.
+    expect(
+      stored.passes.every(
+        (pass: { tracePath?: string }) => pass.tracePath === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the Take valid when the index append fails", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const prepared = await prepare(harness, adHocPlan());
+    const failingStore = {
+      ...harness.runStore,
+      appendIndex: async (): Promise<void> => {
+        throw new Error("disk full");
+      },
+    };
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 40,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+        runStore: failingStore,
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    expect(outcome.summary.notes.join(" ")).toContain("运行索引未记录");
+    // The report is still authoritative and complete.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.status).toBe("completed");
+    await expect(
+      readFile(join(harness.root, "runs", "index.jsonl"), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("records the hitches pass with --launch and scores only the action window", async () => {
@@ -452,6 +585,30 @@ describe("runTake", () => {
     expect(outcome.summary.gate).toBe("unknown");
   });
 
+  it("omits device facts when preflight fails before the device is reached", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver();
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: "not-this-device" },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({ hitches: 1 }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    // No device was reached: never fabricate a version.
+    expect(stored).not.toHaveProperty("device");
+  });
+
   it("still writes a failed report when the device disappears", async () => {
     if (!harness) throw new Error("harness not initialized");
     const device = createFakeDriver({
@@ -475,6 +632,16 @@ describe("runTake", () => {
     expect(outcome.summary.status).toBe("failed");
     expect(outcome.summary.gate).toBe("unknown");
     expect(outcome.summary.notes.join(" ")).toContain("resolveInstallation");
+
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    // Preflight succeeded, so the device facts must still be recorded even
+    // though the Take failed later.
+    expect(stored.device).toMatchObject({
+      id: DEVICE_ID,
+      osVersion: "27.0",
+    });
 
     const report = JSON.parse(
       await readFile(join(harness.root, "runs", prepared.runId, "report.json"), "utf8"),
@@ -525,6 +692,23 @@ describe("runTake", () => {
       "hitches",
       "launch",
     ]);
+
+    // The requirement is about the artifact, not only the in-memory summary:
+    // completed passes must survive in run.json when a later pass dies.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.status).toBe("failed");
+    expect(stored.passes.map((pass: { template: string }) => pass.template)).toEqual([
+      "hitches",
+      "launch",
+    ]);
+    expect(
+      stored.passes.every(
+        (pass: { tracePath?: string }) =>
+          pass.tracePath !== undefined && pass.tracePath.startsWith("traces/"),
+      ),
+    ).toBe(true);
 
     const report = JSON.parse(
       await readFile(join(harness.root, "runs", prepared.runId, "report.json"), "utf8"),
@@ -633,6 +817,20 @@ describe("runTake", () => {
     );
     expect(hitches?.attempts).toBe(2);
     expect(outcome.summary.notes.join(" ")).toContain("2 attempts");
+
+    // The retry count is persisted per pass; other passes keep attempts=1.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    const persistedHitches = stored.passes.find(
+      (pass: { template: string }) => pass.template === "hitches",
+    );
+    expect(persistedHitches?.attempts).toBe(2);
+    expect(
+      stored.passes
+        .filter((pass: { template: string }) => pass.template !== "hitches")
+        .every((pass: { attempts: number }) => pass.attempts === 1),
+    ).toBe(true);
   });
 
   it("refuses to re-run a Take that already finished", async () => {
@@ -869,5 +1067,305 @@ describe("recording-window guards", () => {
     expect(recorder.requests.map((request) => request.template)).toEqual([
       "hitches",
     ]);
+  });
+});
+
+/**
+ * The plan input contract: fields that claim to change the run must change it.
+ *
+ * `launchArguments` / `environmentVariables` / `launchUrl` used to be accepted
+ * by the schema and merged into `plan.json` while nothing read them; that made
+ * `plan.json` look authoritative about a configuration the device never saw.
+ */
+describe("plan input contract", () => {
+  it("forwards launch arguments and environment to every launch-based pass", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        app: {
+          bundleId: "com.example.app",
+          launchArguments: ["-UITestMode", "1"],
+          environmentVariables: { LOG_LEVEL: "debug" },
+        },
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 1,
+          blockMs: 10,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    const launchRequests = recorder.requests.filter(
+      (request) => request.target.kind === "launch",
+    );
+    expect(launchRequests.map((request) => request.template)).toEqual([
+      "hitches",
+      "launch",
+    ]);
+    for (const request of launchRequests) {
+      expect(request.launch?.arguments).toEqual(["-UITestMode", "1"]);
+      expect(request.launch?.environment).toEqual({ LOG_LEVEL: "debug" });
+    }
+  });
+
+  it("opens the deep link before the first scored action", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const url = "example://community";
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({ app: { bundleId: "com.example.app", launchUrl: url } }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 1,
+          blockMs: 10,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(device.openedUrls.length).toBeGreaterThan(0);
+    expect(device.openedUrls.every((opened) => opened === url)).toBe(true);
+    // Navigation belongs before the hitches window, not inside it.
+    const openIndex = device.calls.indexOf("openUrl");
+    const swipeIndex = device.calls.indexOf("swipe");
+    expect(openIndex).toBeGreaterThan(-1);
+    expect(openIndex).toBeLessThan(swipeIndex);
+    // The launch trace must stay a pure cold start.
+    expect(outcome.summary.notes.join(" ")).toContain(
+      "does not apply launchUrl",
+    );
+  });
+
+  it("fails the Take when a precondition does not hold", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ label: "消息", rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        preconditions: [
+          { description: "社区页已打开", accessibilityText: "社区" },
+        ],
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 1,
+          blockMs: 10,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    // A mis-declared starting state is `invalid`, not `failed`: the device
+    // did what it was told, the scenario asserted something untrue.
+    expect(outcome.summary.status).toBe("invalid");
+    expect(outcome.summary.gate).toBe("unknown");
+    const notes = outcome.summary.notes.join(" ");
+    expect(notes).toContain("precondition failed");
+    expect(notes).toContain("社区页已打开");
+  });
+
+  it("records verified preconditions when they hold", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ label: "社区", rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        preconditions: [
+          { description: "社区页已打开", accessibilityText: "社区" },
+        ],
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 1,
+          blockMs: 10,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    expect(outcome.summary.notes.join(" ")).toContain("preconditions verified");
+  });
+});
+
+/**
+ * Precondition failures must stay distinguishable after the recording layer
+ * wraps them: the default plan always runs the checks inside the hitches
+ * session, so this is the common path, not an edge case.
+ */
+describe("precondition failure classification", () => {
+  it("keeps the invalid status when the recorder wraps the failure", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ label: "消息", rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    // Mirrors `createXctraceRecorder`: any non-recording error comes back as a
+    // RecordingError whose cause is the original one.
+    const wrappingRecorder: TraceRecorder = {
+      record: async (request) => {
+        try {
+          return await recorder.record(request);
+        } catch (error) {
+          throw new RecordingError(
+            error instanceof Error ? error.message : String(error),
+            "aborted",
+            false,
+            undefined,
+            { cause: error },
+          );
+        }
+      },
+    };
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        preconditions: [
+          { description: "社区页已打开", accessibilityText: "社区" },
+        ],
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      {
+        ...takeDeps(harness, { device, recorder }),
+        recorder: wrappingRecorder,
+      },
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("invalid");
+    expect(outcome.summary.gate).toBe("unknown");
+    expect(outcome.summary.notes.join(" ")).toContain("precondition failed");
+  });
+
+  it("rejects preconditions on a plan with no window to verify them", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ label: "社区", rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        // App Launch only: the scenario window is skipped, and without a
+        // memory pass nothing would ever evaluate the preconditions.
+        metrics: [{ name: "launchMs", threshold: { warn: 800, fail: 1500 } }],
+        preconditions: [
+          { description: "社区页已打开", accessibilityText: "社区" },
+        ],
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({ launchMs: 300 }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("invalid");
+    expect(outcome.summary.gate).toBe("unknown");
+    expect(outcome.summary.notes.join(" ")).toContain(
+      "no scenario window to verify",
+    );
+  });
+});
+
+describe("launchUrl application", () => {
+  it("opens the deep link once per app start, not once per pass", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const url = "example://community";
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        // No launch pass: the memory pass follows the hitches pass in the same
+        // app process, so it must not navigate back to the entry screen.
+        app: { bundleId: "com.example.app", launchUrl: url },
+        metrics: [
+          { name: "hitches", threshold: { warn: 50, fail: 100 } },
+          { name: "blockMs", threshold: { warn: 100, fail: 250 } },
+          { name: "memoryMB", threshold: { warn: 300, fail: 500 } },
+        ],
+      }),
+    );
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 1,
+          blockMs: 10,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    expect(device.openedUrls).toEqual([url]);
   });
 });

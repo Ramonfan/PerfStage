@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("prepare_performance_test", () => {
-  it("creates a run and returns Claude-executable next steps", async () => {
+  it("creates a run and returns takeover steps aligned with the M3 entry points", async () => {
     if (!harness) throw new Error("harness not initialized");
     const result = await harness.call<PreparePerformanceTestResult>(
       "prepare_performance_test",
@@ -39,17 +39,16 @@ describe("prepare_performance_test", () => {
     // to re-read plan.json before executing the Take.
     expect(result.plan.id).toBe("community-home-scroll");
     expect(result.plan.metrics.map((metric) => metric.name)).toContain("hitches");
-    expect(result.nextSteps).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("mobile_get_device_logs"),
-        expect.stringContaining("mobile_list_crashes"),
-      ]),
-    );
-    // The instructions must guide Claude through mobile-mcp and Instruments
-    // calls, and explicitly include finalize ordering.
-    expect(result.nextSteps.join("\n")).toEqual(expect.stringContaining("finalize_performance_test"));
-    expect(result.nextSteps.join("\n")).toEqual(expect.stringContaining("Instruments"));
-    expect(result.nextSteps.join("\n")).toEqual(expect.stringContaining("mobile-mcp"));
+    const steps = result.nextSteps.join("\n");
+    // The one-shot Runner is the primary path; prepare only exists for manual
+    // takeover, so both entry points must be named.
+    expect(steps).toContain("run_performance_test");
+    expect(steps).toContain("finalize_performance_test");
+    // The pre-M3 toolchain was replaced by the built-in Runner; instructions
+    // must not send an agent hunting for tools that no longer participate.
+    expect(steps).not.toContain("mobile-mcp");
+    expect(steps).not.toContain("instruments-mcp");
+    expect(steps).not.toContain("mobile_get_device_logs");
   });
 
   it("persists the prepared run and resolved plan", async () => {
@@ -159,15 +158,13 @@ describe("prepare_performance_test", () => {
           ],
         },
         device: { id: "device-1", name: "Ra iPhone" },
-        execution: "unattended",
       },
     );
     if (isToolError(result)) throw new Error("expected success");
     expect(result.runId).toEqual(expect.any(String));
-    expect(result.execution).toBe("unattended");
   });
 
-  it("rejects unsupported execution modes (rejects rather than rewrites)", async () => {
+  it("rejects the removed execution field with a migration hint", async () => {
     if (!harness) throw new Error("harness not initialized");
     const result = await harness.call("prepare_performance_test", {
       scenarioId: "community-home-scroll",
@@ -175,9 +172,11 @@ describe("prepare_performance_test", () => {
       execution: "automated",
     });
     expect(isToolError(result)).toBe(true);
-    expect((result as { error: string }).error).toMatch(
-      /execution|automated|invalid/i,
-    );
+    const message = (result as { error: string }).error;
+    expect(message).toMatch(/execution/);
+    // The hint must say where the interactivity distinction went instead of
+    // leaving the caller to guess.
+    expect(message).toMatch(/run_performance_test/);
   });
 
   it("rejects unsupported plan sources (rejects rather than rewrites)", async () => {
@@ -258,5 +257,26 @@ describe("prepare_performance_test", () => {
       device: { id: "device-1" },
     });
     expect(isToolError(result)).toBe(false);
+  });
+
+  it("rejects a description-only precondition in adHocPlan", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const result = await harness.call("prepare_performance_test", {
+      adHocPlan: {
+        source: "ad_hoc",
+        app: { bundleId: "com.example.app" },
+        device: { id: "device-1" },
+        // `description` is report text; on its own nothing would ever be
+        // compared, yet the report would claim the condition was verified.
+        preconditions: [{ description: "app is ready" }],
+        actions: [
+          { id: "scroll-1", type: "swipe", direction: "up", distance: 500 },
+        ],
+      },
+    });
+    expect(isToolError(result)).toBe(true);
+    expect((result as { error: string }).error).toMatch(
+      /至少需要一个可校验字段/,
+    );
   });
 });

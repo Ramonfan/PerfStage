@@ -3,10 +3,21 @@ import { describeInputIssues } from "../diagnostics/removed-config.js";
 import {
   appTargetSchema,
   deviceTargetSchema,
+  preconditionSchema,
   testPlanSchema,
   warmupActionSchema,
   type TestPlan,
 } from "../model/test-plan.js";
+
+/**
+ * A precondition must assert something the Runner can evaluate.
+ *
+ * `description` is report text. Allowing it alone would let a scene declare a
+ * precondition that is printed as "verified" while nothing was compared, which
+ * is the exact failure mode this contract removes.
+ */
+const PRECONDITION_NEEDS_FIELD =
+  "预置条件至少需要一个可校验字段：foregroundBundleId 或 accessibilityText（description 仅用于报告展示）";
 
 const preconditionInputSchema = z
   .object({
@@ -14,7 +25,13 @@ const preconditionInputSchema = z
     accessibilityText: z.string().min(1).optional(),
     description: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      value.foregroundBundleId !== undefined ||
+      value.accessibilityText !== undefined,
+    { message: PRECONDITION_NEEDS_FIELD },
+  );
 
 const scenarioInputSchema = z
   .object({
@@ -29,39 +46,43 @@ const scenarioInputSchema = z
         const partial = val as { id?: string; [k: string]: unknown };
         return { ...partial, id: partial.id ?? "any" };
       }),
-    execution: z.enum(["interactive", "unattended"]).optional(),
     preconditions: preconditionInputSchema.optional(),
     warmup: z.array(warmupActionSchema).optional(),
     actions: z.array(z.unknown()).min(1),
     metrics: z.array(z.unknown()).optional(),
-    analysisFocus: z.array(z.string()).optional(),
     repetitions: z.number().int().positive().optional(),
     notes: z.string().optional(),
   })
   .strict();
 
+/**
+ * Turn the YAML precondition object into the structured form the Runner
+ * enforces. The old `check` pseudo-expression (`foregroundBundleId === "..."`)
+ * is gone: nothing evaluated it, so keeping it would have documented a
+ * guarantee the Runner did not give.
+ */
 function buildPreconditionFromInput(
   input: z.infer<typeof preconditionInputSchema>,
-): Array<{ description: string; check?: string }> {
+): Array<z.infer<typeof preconditionSchema>> {
   const parts: string[] = [];
-  const checks: string[] = [];
   if (input.foregroundBundleId) {
     parts.push(`Foreground bundleId is ${input.foregroundBundleId}`);
-    checks.push(
-      `foregroundBundleId === "${input.foregroundBundleId}"`,
-    );
   }
   if (input.accessibilityText) {
     parts.push(`Accessibility text contains ${input.accessibilityText}`);
-    checks.push(
-      `accessibility.contains("${input.accessibilityText}")`,
-    );
   }
-  const description =
-    input.description ??
-    (parts.length > 0 ? parts.join("; ") : "Scenario precondition satisfied");
-  const conditionals = checks.length > 0 ? checks.join(" && ") : undefined;
-  return [{ description, ...(conditionals ? { check: conditionals } : {}) }];
+  const description = input.description ?? parts.join("; ");
+  return [
+    {
+      description,
+      ...(input.foregroundBundleId !== undefined
+        ? { foregroundBundleId: input.foregroundBundleId }
+        : {}),
+      ...(input.accessibilityText !== undefined
+        ? { accessibilityText: input.accessibilityText }
+        : {}),
+    },
+  ];
 }
 
 function describeZodError(error: ZodError, source?: string): string {
@@ -104,10 +125,8 @@ export function parseScenarioDocument(document: unknown, source?: string): TestP
   };
   if (input.id !== undefined) planInput.id = input.id;
   if (input.name !== undefined) planInput.name = input.name;
-  if (input.execution !== undefined) planInput.execution = input.execution;
   if (input.warmup !== undefined) planInput.warmup = input.warmup;
   if (input.metrics !== undefined) planInput.metrics = input.metrics;
-  if (input.analysisFocus !== undefined) planInput.analysisFocus = input.analysisFocus;
   if (input.repetitions !== undefined) planInput.repetitions = input.repetitions;
   if (input.notes !== undefined) planInput.notes = input.notes;
   if (preconditions.length > 0) planInput.preconditions = preconditions;

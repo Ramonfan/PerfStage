@@ -104,11 +104,12 @@ describe("interactive contract (offline e2e)", () => {
     expect(prepared.runId).toEqual(expect.any(String));
     expect(prepared.scenarioId).toBe("community-home-scroll");
     const nextSteps = prepared.nextSteps.join("\n");
-    expect(nextSteps).toContain("mobile_get_device_logs");
-    expect(nextSteps).toContain("mobile_list_crashes");
-    expect(nextSteps).toContain("mobile-mcp");
-    expect(nextSteps).toContain("Instruments");
+    // The contract this e2e protects is "prepare tells the caller what to do
+    // next", now expressed through the built-in Runner entry points.
+    expect(nextSteps).toContain("run_performance_test");
     expect(nextSteps).toContain("finalize_performance_test");
+    expect(nextSteps).not.toContain("mobile-mcp");
+    expect(nextSteps).not.toContain("mobile_get_device_logs");
 
     const runOnDisk = await readJson<{ status: string; planId: string }>(
       join(harness.runsDir, prepared.runId, "run.json"),

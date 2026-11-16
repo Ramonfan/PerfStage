@@ -10,7 +10,6 @@ function makePlan(): TestPlan {
     source: "scenario",
     app: { bundleId: "com.nndev.im", launchArguments: [], environmentVariables: {} },
     device: { id: "device-1" },
-    execution: "interactive",
     preconditions: [],
     warmup: [],
     actions: [
@@ -24,7 +23,6 @@ function makePlan(): TestPlan {
       },
     ],
     metrics: [{ name: "hitches" }, { name: "cpu" }, { name: "memory" }],
-    analysisFocus: ["jank"],
     repetitions: 1,
     createdAt: "2026-10-17T00:00:00.000Z",
     notes: "no notes",

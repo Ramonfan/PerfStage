@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { actionSchema, metricThresholdSchema } from "./test-plan.js";
+import {
+  actionSchema,
+  deviceTargetSchema,
+  metricThresholdSchema,
+} from "./test-plan.js";
 
 export const runStatusSchema = z.enum([
   "prepared",
@@ -12,6 +16,21 @@ export const runStatusSchema = z.enum([
 ]);
 
 export type RunStatus = z.infer<typeof runStatusSchema>;
+
+/**
+ * Statuses a run can reach exactly once. The history index only stores these:
+ * a `prepared`/`running` run is not a finished Take and must not appear in
+ * history.
+ */
+export const terminalRunStatusSchema = z.enum([
+  "completed",
+  "partial",
+  "invalid",
+  "failed",
+  "cancelled",
+]);
+
+export type TerminalRunStatus = z.infer<typeof terminalRunStatusSchema>;
 
 /**
  * `status` and `gate` answer two different questions (D6):
@@ -36,13 +55,9 @@ export const metricVerdictSchema = z.enum([
 
 export type MetricVerdict = z.infer<typeof metricVerdictSchema>;
 
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
-  "completed",
-  "partial",
-  "invalid",
-  "failed",
-  "cancelled",
-]);
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(
+  terminalRunStatusSchema.options,
+);
 
 const LEGAL_TRANSITIONS: ReadonlyMap<RunStatus, ReadonlySet<RunStatus>> =
   new Map<RunStatus, ReadonlySet<RunStatus>>([
@@ -130,9 +145,60 @@ export const appLifecycleEventSchema = z.object({
 });
 export type AppLifecycleEvent = z.infer<typeof appLifecycleEventSchema>;
 
+/**
+ * A run-relative POSIX path (e.g. `traces/hitches.trace`).
+ *
+ * Absolute paths are rejected: `run.json` must stay portable and must never
+ * leak the machine that produced it. Mirrors the guard `RunStore` applies to
+ * every write.
+ */
+const runRelativePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      !value.startsWith("\\") &&
+      !/^[A-Za-z]:[\\/]/.test(value) &&
+      !value.split(/[\\/]/).includes(".."),
+    { message: "must be a run-relative POSIX path" },
+  );
+
+/**
+ * Per-pass execution facts (D8 of `define-perfstage-roadmap`).
+ *
+ * Issue *details* deliberately stay out: they already live in `report.json`
+ * findings and `device.log`. Counts are enough to tell whether a pass was
+ * stable, and keeping one copy avoids a second fact source.
+ */
+export const passRecordSchema = z.object({
+  template: z.string().min(1),
+  /**
+   * Omitted when the recorder wrote the trace outside the run directory (a
+   * defensive branch in `runner/execute.ts`). The pass still happened and
+   * keeps its counts; only the unusable path is dropped so a successful Take
+   * can never fail finalize because of it.
+   */
+  tracePath: runRelativePathSchema.optional(),
+  attempts: z.number().int().positive().default(1),
+  durationMs: z.number().nonnegative(),
+  /** Canonical metric names this pass produced. */
+  metrics: z.array(z.string().min(1)).default([]),
+  errorCount: z.number().int().nonnegative().default(0),
+  warningCount: z.number().int().nonnegative().default(0),
+});
+export type RunPassRecord = z.infer<typeof passRecordSchema>;
+
 export const testRunSchema = z.object({
   id: z.string().min(1),
   planId: z.string().min(1),
+  /**
+   * Device facts captured during preflight, used to group baselines by
+   * "scenario + device + iOS". Optional on purpose: runs created before
+   * `add-baseline-compare` have no `device` key, and a Take that fails
+   * before preflight cannot know them. Readers fall back to `plan.json`.
+   */
+  device: deviceTargetSchema.optional(),
   status: runStatusSchema,
   startedAt: z.string().datetime(),
   endedAt: z.string().datetime().nullable().default(null),
@@ -143,6 +209,12 @@ export const testRunSchema = z.object({
   gate: gateResultSchema.optional(),
   actions: z.array(actionRecordSchema).default([]),
   metrics: z.array(metricResultSchema).default([]),
+  /**
+   * Optional on purpose: a run created before `add-run-history` has no
+   * `passes` key, and history must be able to say "not recorded" instead of
+   * fabricating zero passes.
+   */
+  passes: z.array(passRecordSchema).optional(),
   evidence: diagnosticEvidenceSchema.prefault({}),
   lifecycle: z.array(appLifecycleEventSchema).default([]),
   error: z.string().optional(),

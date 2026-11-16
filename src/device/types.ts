@@ -90,6 +90,14 @@ export interface DeviceDriver {
    */
   resolvePid(deviceId: string, containerUuid: string): Promise<number | null>;
   launch(deviceId: string, bundleId: string): Promise<void>;
+  /**
+   * Open a URL / deep link on the device.
+   *
+   * Used for `app.launchUrl`: the scenario declares where the measurement must
+   * start, and a deep link is the only way to reach a nested screen without
+   * spending recorded actions on navigation.
+   */
+  openUrl(deviceId: string, url: string): Promise<void>;
   terminate(deviceId: string, bundleId: string): Promise<void>;
   foreground(deviceId: string): Promise<ForegroundApp>;
   dumpElements(deviceId: string): Promise<UiElement[]>;

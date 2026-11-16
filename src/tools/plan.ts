@@ -8,10 +8,9 @@ import {
 import { parseScenarioDocument } from "../scenario/parser.js";
 import {
   testPlanSchema,
+  preconditionSchema,
   type TestPlan,
   type MetricRequest,
-  type AnalysisFocus,
-  type ExecutionMode,
 } from "../model/test-plan.js";
 import { testRunSchema, type TestRun } from "../model/test-run.js";
 import { newRunId, RUN_FILE_NAME } from "../storage/runs.js";
@@ -54,10 +53,8 @@ const adHocPlanSchema = z
       .optional(),
     actions: z.array(z.unknown()).min(1),
     metrics: z.array(metricRequestSchema).optional(),
-    analysisFocus: z.array(z.string()).optional(),
     warmup: z.array(z.unknown()).optional(),
-    preconditions: z.array(z.unknown()).optional(),
-    execution: z.enum(["interactive", "unattended"]).optional(),
+    preconditions: z.array(preconditionSchema).optional(),
     repetitions: z.number().int().positive().optional(),
     notes: z.string().optional(),
   })
@@ -74,11 +71,7 @@ export const prepareInputSchema = z
     scenarioId: z.string().min(1).optional(),
     adHocPlan: adHocPlanSchema.optional(),
     device: deviceTargetSchema,
-    execution: z.enum(["interactive", "unattended"]).optional(),
     metricOverrides: z.array(metricRequestSchema).optional(),
-    analysisFocus: z
-      .array(z.enum(["jank", "startup", "memory", "battery", "network", "general"]))
-      .optional(),
     notes: z.string().optional(),
   })
   .strict()
@@ -116,8 +109,6 @@ export interface PreparePerformanceTestResult {
    * without re-reading `plan.json` (M1).
    */
   plan: TestPlan;
-  execution: ExecutionMode;
-  analysisFocus: AnalysisFocus[];
   metricOverrides?: MetricRequest[];
   nextSteps: string[];
 }
@@ -137,14 +128,10 @@ function planFromAdHoc(adHocPlan: z.infer<typeof adHocPlanSchema>): TestPlan {
     device: adHocPlan.device ?? { id: "any" },
     actions: adHocPlan.actions,
     ...(adHocPlan.metrics !== undefined ? { metrics: adHocPlan.metrics } : {}),
-    ...(adHocPlan.analysisFocus !== undefined
-      ? { analysisFocus: adHocPlan.analysisFocus }
-      : {}),
     ...(adHocPlan.warmup !== undefined ? { warmup: adHocPlan.warmup } : {}),
     ...(adHocPlan.preconditions !== undefined
       ? { preconditions: adHocPlan.preconditions }
       : {}),
-    ...(adHocPlan.execution !== undefined ? { execution: adHocPlan.execution } : {}),
     ...(adHocPlan.repetitions !== undefined ? { repetitions: adHocPlan.repetitions } : {}),
     ...(adHocPlan.notes !== undefined ? { notes: adHocPlan.notes } : {}),
   };
@@ -214,26 +201,44 @@ function buildNextSteps(
   metricOverrides: MetricRequest[] | undefined,
 ): string[] {
   const metrics = mergeMetricOverrides(plan.metrics, metricOverrides);
-  const instruments = Array.from(
-    new Set(
-      metrics
-        .map((metric) => metric.instrument)
-        .filter((name): name is string => Boolean(name)),
-    ),
-  );
-  const metricSummary = instruments.length > 0
-    ? instruments.join("、")
-    : metrics.map((m) => m.name).join("、");
+  const metricSummary =
+    metrics
+      .map((metric) =>
+        metric.instrument !== undefined && metric.instrument !== metric.name
+          ? `${metric.name}（${metric.instrument}）`
+          : metric.name,
+      )
+      .join("、") || "未声明指标";
+
+  // Name what the recorded cold start actually carries; the Runner applies
+  // these, so a manual takeover must apply them too or it measures a different
+  // launch configuration.
+  const launchParts: string[] = [];
+  if (plan.app.launchArguments.length > 0) {
+    launchParts.push(`启动参数 ${plan.app.launchArguments.join(" ")}`);
+  }
+  const envEntries = Object.entries(plan.app.environmentVariables);
+  if (envEntries.length > 0) {
+    launchParts.push(
+      `环境变量 ${envEntries.map(([key, value]) => `${key}=${value}`).join(" ")}`,
+    );
+  }
+  if (plan.app.launchUrl !== undefined) {
+    launchParts.push(`深链 ${plan.app.launchUrl}`);
+  }
+  const launchNote =
+    launchParts.length > 0
+      ? `冷启动时带上 ${launchParts.join("、")}，深链在动作之前打开。`
+      : "冷启动使用 App 默认配置。";
 
   return [
-    "1. 准备工作设备：按 mobile-mcp 文档选取目标设备并确保 foregroundBundleId 与方案一致。",
-    "2. 在执行动作前调用 mobile_get_device_logs 启动设备日志采集并保留过滤器与子系统限制。",
-    "3. 在执行动作前调用 mobile_list_crashes 记录本次运行开始前的 Crash 列表快照。",
-    "4. 按方案中的 warmup 与 actions 顺序，使用 mobile-mcp（mobile_click_on_screen_at_coordinates / mobile_swipe_on_screen / mobile_type_keys / mobile_launch_app 等）对设备执行动作；每次动作后遵守 waitAfterMs。",
-    `5. 通过 instruments-mcp-server 采集以下性能指标（Instruments 工具按 plan.metrics[*].instrument 选择）：${metricSummary || "hitches/cpu/memory"}。将每条指标的 trace 路径写入指标的 tracePath 字段。`,
-    "6. 再次调用 mobile_get_device_logs 与 mobile_list_crashes，提取执行后日志、当前 Crash 列表与新增 Crash 详情。",
-    "7. 收集生命周期事件（foreground / background / springboard / system_alert / device_disconnect）以及任何截图或网络抓包证据。",
-    "8. 在验证以上信息齐全后调用 finalize_performance_test 并提交 runId、requestedStatus、actions、metrics、diagnostics 与可选 evidencePaths/notes。",
+    "1. 确认工作区已初始化、设备已连接，并记下本次要使用的 deviceId。",
+    "2. 首选一键路径：直接调用 run_performance_test（同一 sceneId + deviceId）。它会自行 prepare 并录制、解析、出报告，因此不会复用本工具刚创建的 prepared 运行。",
+    "3. 仅在需要人工接管时继续走本运行：它只完成了校验与落盘，没有任何设备动作。",
+    `4. 按 warmup → actions 顺序驱动真机，每次动作后遵守 waitAfterMs。${launchNote}`,
+    `5. 录制 ${metricSummary} 所需的 pass（hitches 与 blockMs 共用 Animation Hitches，launchMs 用 App Launch，memoryMB 用 Activity Monitor），把 trace 路径写入 metrics[*].tracePath。`,
+    "6. 动作期间保持设备日志与 Crash 采集，收尾前后各取一次 Crash 快照。",
+    "7. 证据齐全后调用 finalize_performance_test 提交 runId、requestedStatus、actions、metrics 与 diagnostics；缺 trace 或缺值时 finalize 会降级为 partial，而不是 completed。",
   ];
 }
 
@@ -325,10 +330,6 @@ export async function preparePerformanceTest(
     device: input.device,
     metrics: mergedMetrics,
   };
-  if (input.execution !== undefined) mergedCandidate.execution = input.execution;
-  if (input.analysisFocus !== undefined) {
-    mergedCandidate.analysisFocus = input.analysisFocus;
-  }
   if (input.notes !== undefined) mergedCandidate.notes = input.notes;
 
   const planParse = testPlanSchema.safeParse(mergedCandidate);
@@ -393,8 +394,6 @@ export async function preparePerformanceTest(
     runPath: buildRunRelativePath(options.runsRoot, runId, RUN_FILE_NAME),
     planPath: planRelative,
     plan,
-    execution: plan.execution,
-    analysisFocus: plan.analysisFocus,
     metricOverrides,
     nextSteps: buildNextSteps(plan, metricOverrides),
   };

@@ -49,6 +49,13 @@ export const metricRequestSchema = z
 
 export type MetricRequest = z.infer<typeof metricRequestSchema>;
 
+/**
+ * App under test.
+ *
+ * The three launch fields are real inputs, not metadata: `launchArguments` and
+ * `environmentVariables` reach every `xctrace --launch` cold start, and
+ * `launchUrl` is opened through the device before warmup (see README §8).
+ */
 export const appTargetSchema = z.object({
   bundleId: z.string().min(1),
   launchUrl: z.string().url().optional(),
@@ -63,15 +70,32 @@ export const deviceTargetSchema = z.object({
   modelIdentifier: z.string().optional(),
 });
 
-export const executionModeSchema = z.enum(["interactive", "unattended"]);
-export type ExecutionMode = z.infer<typeof executionModeSchema>;
-
+/**
+ * Pre-run assertions the Runner enforces before the scored window.
+ *
+ * These used to be rendered into human-readable `check` strings
+ * (`foregroundBundleId === "..."`) that nothing ever evaluated. The Runner now
+ * executes the structured fields directly, so a precondition that cannot be
+ * verified never reaches a report as if it had been.
+ */
 export const preconditionSchema = z
   .object({
     description: z.string().min(1),
-    check: z.string().optional(),
+    foregroundBundleId: z.string().min(1).optional(),
+    accessibilityText: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  // `description` alone would be printed as "verified" without anything being
+  // compared; a precondition must assert at least one checkable field.
+  .refine(
+    (value) =>
+      value.foregroundBundleId !== undefined ||
+      value.accessibilityText !== undefined,
+    {
+      message:
+        "预置条件至少需要一个可校验字段：foregroundBundleId 或 accessibilityText（description 仅用于报告展示）",
+    },
+  );
 
 export const warmupActionSchema = z.object({
   id: z.string().min(1),
@@ -83,16 +107,6 @@ export type WarmupAction = z.infer<typeof warmupActionSchema>;
 
 export const warmupSchema = z.array(warmupActionSchema).default([]);
 export type Warmup = z.infer<typeof warmupSchema>;
-
-export const analysisFocusSchema = z.enum([
-  "jank",
-  "startup",
-  "memory",
-  "battery",
-  "network",
-  "general",
-]);
-export type AnalysisFocus = z.infer<typeof analysisFocusSchema>;
 
 /**
  * Default metric set for a Take.
@@ -114,12 +128,10 @@ export const testPlanSchema = z.object({
   source: z.enum(["ad_hoc", "scenario"]),
   app: appTargetSchema,
   device: deviceTargetSchema,
-  execution: executionModeSchema.default("interactive"),
   preconditions: z.array(preconditionSchema).default([]),
   warmup: warmupSchema,
   actions: z.array(actionSchema).min(1),
   metrics: z.array(metricRequestSchema).default(defaultMetrics),
-  analysisFocus: z.array(analysisFocusSchema).default([]),
   repetitions: z.number().int().positive().default(1),
   createdAt: z.string().datetime().optional(),
   notes: z.string().optional(),

@@ -50,3 +50,78 @@ it("rejects a diagnostics block instead of silently dropping it", () => {
     ),
   ).toThrow(/community-home-scroll\.yaml[\s\S]*diagnostics[\s\S]*已在 v0\.1 移除/);
 });
+
+it("keeps preconditions structured instead of rendering a pseudo-expression", () => {
+  const plan = parseScenarioDocument({
+    id: "community-home-scroll",
+    app: { bundleId: "com.nndev.im" },
+    preconditions: { foregroundBundleId: "com.nndev.im", accessibilityText: "社区" },
+    actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+  });
+  expect(plan.preconditions).toEqual([
+    {
+      description:
+        "Foreground bundleId is com.nndev.im; Accessibility text contains 社区",
+      foregroundBundleId: "com.nndev.im",
+      accessibilityText: "社区",
+    },
+  ]);
+  // `check` was a string nothing evaluated; it must not come back.
+  expect(plan.preconditions[0]).not.toHaveProperty("check");
+});
+
+it("rejects analysisFocus with the removal hint", () => {
+  expect(() =>
+    parseScenarioDocument(
+      {
+        id: "community-home-scroll",
+        app: { bundleId: "com.nndev.im" },
+        actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+        analysisFocus: ["jank"],
+      },
+      "community-home-scroll.yaml",
+    ),
+  ).toThrow(/analysisFocus[\s\S]*由 metrics 决定/);
+});
+
+it("rejects execution with the removal hint", () => {
+  expect(() =>
+    parseScenarioDocument(
+      {
+        id: "community-home-scroll",
+        app: { bundleId: "com.nndev.im" },
+        actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+        execution: "unattended",
+      },
+      "community-home-scroll.yaml",
+    ),
+  ).toThrow(/execution[\s\S]*run_performance_test/);
+});
+
+it("rejects the removed preconditions[].check with a migration hint", () => {
+  expect(() =>
+    parseScenarioDocument(
+      {
+        id: "community-home-scroll",
+        app: { bundleId: "com.nndev.im" },
+        preconditions: {
+          description: "社区页已打开",
+          check: 'foregroundBundleId === "com.nndev.im"',
+        },
+        actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+      },
+      "community-home-scroll.yaml",
+    ),
+  ).toThrow(/check[\s\S]*foregroundBundleId/);
+});
+
+it("rejects a description-only precondition instead of reporting it as verified", () => {
+  expect(() =>
+    parseScenarioDocument({
+      id: "community-home-scroll",
+      app: { bundleId: "com.nndev.im" },
+      preconditions: { description: "Target app is installed and running" },
+      actions: [{ id: "scroll-up", type: "swipe", direction: "up", distance: 700 }],
+    }),
+  ).toThrow(/至少需要一个可校验字段/);
+});

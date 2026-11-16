@@ -4,11 +4,13 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
   writeFile,
+  appendFile,
 } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import {
@@ -21,11 +23,14 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { TestRun, testRunSchema } from "../model/test-run.js";
-
-const RUN_FILE_NAME = "run.json";
-const LOCK_FILE_NAME = ".finalize.lock";
-const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+import {
+  gateResultSchema,
+  metricVerdictSchema,
+  terminalRunStatusSchema,
+  TestRun,
+  testRunSchema,
+} from "../model/test-run.js";
+import { z } from "zod";
 
 /**
  * Filename of the per-run state file inside each run directory.
@@ -33,7 +38,20 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
  * (e.g. `<workspace>/.performance-test/runs/<runId>/run.json`) without
  * duplicating the string.
  */
-export { RUN_FILE_NAME };
+export const RUN_FILE_NAME = "run.json";
+const LOCK_FILE_NAME = ".finalize.lock";
+const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Append-only history index living next to the run directories.
+ *
+ * It is a *derived* artifact: `run.json` / `report.json` stay authoritative
+ * and the query layer rebuilds missing entries from them. Rows are never
+ * rewritten, so a partially written tail line can be skipped without
+ * corrupting earlier history.
+ */
+export const RUN_INDEX_FILE_NAME = "index.jsonl";
+
 /**
  * A lock file left behind by an earlier crashed finalize is recoverable
  * after this many milliseconds. Lock files younger than this are assumed
@@ -42,15 +60,50 @@ export { RUN_FILE_NAME };
  */
 const STALE_LOCK_AGE_MS = 5 * 60_000;
 
+/**
+ * Compact metric digest stored in an index row.
+ *
+ * Thresholds and samples are intentionally absent: they already live in
+ * `run.json` and would turn the index into a second, drifting fact source.
+ */
+export const runIndexMetricSchema = z.object({
+  name: z.string().min(1),
+  value: z.unknown().optional(),
+  unit: z.string().optional(),
+  verdict: metricVerdictSchema.optional(),
+});
+export type RunIndexMetric = z.infer<typeof runIndexMetricSchema>;
+
+export const runIndexEntrySchema = z.object({
+  // Rows written before `v` existed are still v1; default keeps the design's
+  // "unknown old rows are readable" promise without accepting other versions.
+  v: z.literal(1).default(1),
+  runId: z.string().min(1),
+  planId: z.string().min(1),
+  scenarioId: z.string().min(1).nullable(),
+  deviceId: z.string().min(1).nullable(),
+  status: terminalRunStatusSchema,
+  gate: gateResultSchema.optional(),
+  startedAt: z.string().datetime(),
+  endedAt: z.string().datetime().nullable(),
+  durationMs: z.number().int().nonnegative().optional(),
+  /** `null` means the run predates pass persistence. */
+  passCount: z.number().int().nonnegative().nullable(),
+  metrics: z.array(runIndexMetricSchema).default([]),
+});
+export type RunIndexEntry = z.infer<typeof runIndexEntrySchema>;
+
+export interface RunIndexReadResult {
+  entries: RunIndexEntry[];
+  /** Lines that could not be parsed (truncated tail, manual edits). */
+  invalidLines: number;
+}
+
 export type RunStatus = TestRun["status"];
 
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
-  "completed",
-  "partial",
-  "invalid",
-  "failed",
-  "cancelled",
-]);
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(
+  terminalRunStatusSchema.options,
+);
 
 /**
  * Outcome of an attempt to finalize a run via the atomic compare-and-swap
@@ -120,6 +173,19 @@ export interface RunStore {
    * behind empty directories.
    */
   tryFinalize(runId: string, options: TryFinalizeOptions): Promise<TryFinalizeOutcome>;
+  /**
+   * Append one row to `<runs>/index.jsonl`.
+   *
+   * Append-only by design: existing rows are never read back, rewritten or
+   * re-ordered, so concurrent finalizes cannot corrupt earlier history. The
+   * runs directory must already exist; callers surface failures as a warning
+   * instead of failing the Take, because the report is already authoritative.
+   */
+  appendIndex(entry: RunIndexEntry): Promise<void>;
+  /** Read every parsable index row; unparsable lines are counted, not thrown. */
+  readIndex(): Promise<RunIndexReadResult>;
+  /** Run directory names present under the runs root, sorted ascending. */
+  listRunIds(): Promise<string[]>;
 }
 
 /**
@@ -602,6 +668,68 @@ export function createRunStore(
       // could have placed a symlink above us).
       await assertNoSymlinkEscapeBelow(resolvedRootDir, dir);
       return dir;
+    },
+
+    async appendIndex(entry: RunIndexEntry): Promise<void> {
+      const validated = runIndexEntrySchema.parse(entry);
+      assertSafeRunId(validated.runId);
+      await assertRunsDirReady();
+      const target = join(resolvedRootDir, RUN_INDEX_FILE_NAME);
+      await assertNoSymlinkEscapeBelow(resolvedRootDir, target);
+      // One write per row. `appendFile` opens with O_APPEND, so concurrent
+      // finalizes interleave whole rows instead of overwriting each other.
+      await appendFile(target, `${JSON.stringify(validated)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    },
+
+    async readIndex(): Promise<RunIndexReadResult> {
+      const target = join(resolvedRootDir, RUN_INDEX_FILE_NAME);
+      let raw: string;
+      try {
+        raw = await readFile(target, "utf8");
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          return { entries: [], invalidLines: 0 };
+        }
+        throw error;
+      }
+      const entries: RunIndexEntry[] = [];
+      let invalidLines = 0;
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          invalidLines += 1;
+          continue;
+        }
+        const result = runIndexEntrySchema.safeParse(parsed);
+        if (!result.success) {
+          invalidLines += 1;
+          continue;
+        }
+        entries.push(result.data);
+      }
+      return { entries, invalidLines };
+    },
+
+    async listRunIds(): Promise<string[]> {
+      await assertRunsDirReady();
+      const dirents = await readdir(resolvedRootDir, { withFileTypes: true });
+      return dirents
+        .filter(
+          (dirent) =>
+            dirent.isDirectory() && RUN_ID_PATTERN.test(dirent.name),
+        )
+        .map((dirent) => dirent.name)
+        .sort();
     },
 
     async tryFinalize(

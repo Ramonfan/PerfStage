@@ -14,6 +14,7 @@ import type {
   RunStatus,
   TestRun,
 } from "../model/test-run.js";
+import { terminalRunStatusSchema } from "../model/test-run.js";
 import { deriveFindings } from "../reports/findings.js";
 import {
   buildJsonReport,
@@ -33,7 +34,7 @@ import {
   sanitizeEvidencePaths,
 } from "../reports/evidence-paths.js";
 import { deriveRunOutcome } from "../reports/outcome.js";
-import type { RunStore } from "../storage/runs.js";
+import type { RunStore, RunIndexEntry } from "../storage/runs.js";
 
 export interface FinalizeRunInput {
   runId: string;
@@ -41,6 +42,17 @@ export interface FinalizeRunInput {
   plan: TestPlan | null;
   actions: ActionRecord[];
   metrics: MetricResult[];
+  /**
+   * Completed pass facts. Omitted by callers that do not record passes (the
+   * manual prepare/finalize path), which leaves the stored `run.json` without
+   * a `passes` key — history reports that as "not recorded".
+   */
+  passes?: TestRun["passes"];
+  /**
+   * Device facts captured by preflight. Absent when the Take failed before the
+   * device was reached; the stored run then has no `device` key.
+   */
+  device?: TestRun["device"];
   diagnostics: DiagnosticInput;
   /**
    * Evidence that the caller already copied into the run directory, keyed by
@@ -74,6 +86,12 @@ export interface FinalizedRun {
   evidencePaths: ReportEvidencePath[];
   jsonReport: JsonReport;
   markdown: string;
+  /**
+   * Set when the run itself was persisted but the append-only history index
+   * could not be updated. The Take keeps its status/gate: the report is
+   * authoritative and history queries fall back to scanning `run.json`.
+   */
+  indexWarning?: string;
 }
 
 export type FinalizeRunOutcome =
@@ -83,13 +101,9 @@ export type FinalizeRunOutcome =
   | { kind: "concurrent" }
   | { kind: "invalid"; reason: string };
 
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
-  "completed",
-  "partial",
-  "invalid",
-  "failed",
-  "cancelled",
-]);
+const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(
+  terminalRunStatusSchema.options,
+);
 
 function actionFailed(outcome: ActionOutcome): boolean {
   return outcome === "failed" || outcome === "timeout";
@@ -114,6 +128,53 @@ function pickAction(
     durationMs: action.durationMs,
     error: action.error,
     notes: action.notes,
+  };
+}
+
+/**
+ * Project a finalized run onto the compact, append-only index row.
+ *
+ * Only query-critical fields are copied. `run.json` remains the authoritative
+ * record for thresholds, samples and evidence.
+ */
+function isTerminalRunStatus(
+  status: RunStatus,
+): status is RunIndexEntry["status"] {
+  return TERMINAL_STATUSES.has(status);
+}
+
+function buildIndexEntry(
+  persisted: TestRun,
+  plan: TestPlan | null,
+  gate: GateResult,
+): RunIndexEntry | null {
+  if (!isTerminalRunStatus(persisted.status)) {
+    // Finalize only persists terminal statuses; guard keeps the index
+    // contract honest if that ever changes.
+    return null;
+  }
+  return {
+    v: 1,
+    runId: persisted.id,
+    planId: persisted.planId,
+    scenarioId:
+      plan !== null && plan.source === "scenario" ? (plan.id ?? null) : null,
+    deviceId: plan?.device.id ?? null,
+    status: persisted.status,
+    gate,
+    startedAt: persisted.startedAt,
+    endedAt: persisted.endedAt,
+    ...(persisted.durationMs !== undefined
+      ? { durationMs: persisted.durationMs }
+      : {}),
+    passCount:
+      persisted.passes === undefined ? null : persisted.passes.length,
+    metrics: persisted.metrics.map((metric) => ({
+      name: metric.name,
+      ...(metric.value !== undefined ? { value: metric.value } : {}),
+      ...(metric.unit !== undefined ? { unit: metric.unit } : {}),
+      ...(metric.verdict !== undefined ? { verdict: metric.verdict } : {}),
+    })),
   };
 }
 
@@ -218,6 +279,8 @@ export async function finalizeRun(
           ...metric,
           verdict: metricEvaluation.verdicts[index] ?? metric.verdict,
         })),
+        ...(input.passes !== undefined ? { passes: input.passes } : {}),
+        ...(input.device !== undefined ? { device: input.device } : {}),
         evidence: newEvidence,
         notes: input.notes ?? current.notes,
       };
@@ -229,7 +292,8 @@ export async function finalizeRun(
         findings: [],
         result: null as unknown as FinalizedRun,
       };
-      return updated;    },
+      return updated;
+    },
     acceptStatus: (status) => !TERMINAL_STATUSES.has(status),
     onPersisted: async (persisted) => {
       if (!captured) {
@@ -285,6 +349,20 @@ export async function finalizeRun(
       );
       await deps.runStore.writeText(input.runId, "report.md", markdown);
 
+      // Index only after the report exists, so "has report" implies "has
+      // index row". A failure here degrades history completeness but must not
+      // rewrite the Take's already-final status: the report stays authoritative
+      // and `runs` rebuilds the missing row from `run.json`.
+      let indexWarning: string | undefined;
+      const indexEntry = buildIndexEntry(persisted, input.plan, gate);
+      if (indexEntry !== null) {
+        try {
+          await deps.runStore.appendIndex(indexEntry);
+        } catch (error) {
+          indexWarning = `运行索引未记录：${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+
       captured = {
         evidence,
         findings,
@@ -300,6 +378,7 @@ export async function finalizeRun(
           evidencePaths: evidencePathsArray(reportMap),
           jsonReport,
           markdown,
+          ...(indexWarning !== undefined ? { indexWarning } : {}),
         },
       };
     },

@@ -111,6 +111,11 @@ export interface FinalizePerformanceTestResult {
   diagnostics: DiagnosticEvidence;
   /** Concise summary suitable for surfacing in the Claude tool result. */
   summary: string;
+  /**
+   * Set when the run was finalized but the append-only history index could
+   * not be updated. History queries still find the run via `run.json`.
+   */
+  indexWarning?: string;
 }
 
 type HandlerResult =
@@ -334,10 +339,15 @@ export async function finalizePerformanceTest(
     evidencePaths: finalized.evidencePaths,
     findings: finalized.findings,
     diagnostics: finalized.diagnostics,
+    ...(finalized.indexWarning !== undefined
+      ? { indexWarning: finalized.indexWarning }
+      : {}),
   };
 
   return {
     ...result,
-    summary: buildSummary(result),
+    summary: finalized.indexWarning === undefined
+      ? buildSummary(result)
+      : `${buildSummary(result)} ${finalized.indexWarning}`,
   };
 }

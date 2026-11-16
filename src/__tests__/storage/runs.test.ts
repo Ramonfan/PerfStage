@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createRunStore,
   newRunId,
+  RUN_INDEX_FILE_NAME,
+  type RunIndexEntry,
 } from "../../storage/runs.js";
 import type { TestRun } from "../../model/test-run.js";
 
@@ -281,5 +283,99 @@ describe("newRunId", () => {
     const a = newRunId();
     const b = newRunId();
     expect(a).not.toBe(b);
+  });
+});
+
+function indexEntry(
+  overrides: Partial<RunIndexEntry> = {},
+): RunIndexEntry {
+  return {
+    v: 1,
+    runId: "run-1",
+    planId: "plan-1",
+    scenarioId: "community-home-scroll",
+    deviceId: "00008150-001E49E40128C01C",
+    status: "completed",
+    gate: "pass",
+    startedAt: "2026-11-16T00:00:00.000Z",
+    endedAt: "2026-11-16T00:01:00.000Z",
+    durationMs: 60_000,
+    passCount: 3,
+    metrics: [{ name: "hitches", value: 10, unit: "次", verdict: "pass" }],
+    ...overrides,
+  };
+}
+
+describe("run index", () => {
+  it("returns an empty index when no file exists", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    await expect(store.readIndex()).resolves.toEqual({
+      entries: [],
+      invalidLines: 0,
+    });
+  });
+
+  it("appends rows without rewriting earlier bytes", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    await store.appendIndex(indexEntry());
+    const first = await readFile(join(root, RUN_INDEX_FILE_NAME), "utf8");
+    await store.appendIndex(
+      indexEntry({
+        runId: "run-2",
+        startedAt: "2026-11-16T01:00:00.000Z",
+      }),
+    );
+    const both = await readFile(join(root, RUN_INDEX_FILE_NAME), "utf8");
+    expect(both.startsWith(first)).toBe(true);
+    const read = await store.readIndex();
+    expect(read.invalidLines).toBe(0);
+    expect(read.entries.map((entry) => entry.runId)).toEqual([
+      "run-1",
+      "run-2",
+    ]);
+  });
+
+  it("skips unparsable lines instead of failing the read", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    await store.appendIndex(indexEntry());
+    const first = await readFile(join(root, RUN_INDEX_FILE_NAME), "utf8");
+    await writeFile(
+      join(root, RUN_INDEX_FILE_NAME),
+      `${first}${JSON.stringify(indexEntry({ runId: "run-2" }))}\n{"runId": "trunc`,
+      "utf8",
+    );
+    const read = await store.readIndex();
+    expect(read.invalidLines).toBe(1);
+    expect(read.entries.map((entry) => entry.runId)).toEqual([
+      "run-1",
+      "run-2",
+    ]);
+  });
+
+  it("accepts a legacy row that predates the v field", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    const legacy: Record<string, unknown> = { ...indexEntry() };
+    delete legacy.v;
+    await writeFile(
+      join(root, RUN_INDEX_FILE_NAME),
+      `${JSON.stringify(legacy)}\n`,
+      "utf8",
+    );
+    const read = await store.readIndex();
+    expect(read.invalidLines).toBe(0);
+    expect(read.entries[0]?.v).toBe(1);
+  });
+
+  it("lists only directories that look like run ids", async () => {
+    const root = await makeRoot();
+    const store = createRunStore(root);
+    await store.create(buildRun({ id: "run-1" }));
+    await store.create(buildRun({ id: "run-2" }));
+    await writeFile(join(root, "not-a-run.txt"), "x", "utf8");
+    await expect(store.listRunIds()).resolves.toEqual(["run-1", "run-2"]);
   });
 });
