@@ -186,5 +186,11 @@ for (scenario, metric), values in sorted(samples.items()):
   `community-home-scroll` 的 `maxWorseningAbsolute` 改为 3 MB，复跑后回归 pass。
 - `message-list-scroll` 的新规则快照由 Take `2026-11-17T01-37-29.477Z-bvBUPOpr` 佐证
   （该 Take 因设备故障未完成，但 `plan.json` 已写入最终规则）；最终配置未再变更。
+- `message-list-scroll` 端到端复核 Take `2026-11-17T03-37-40.403Z-5oUcc697`（`completed`、
+  `gate=pass`：hitches 82 / blockMs 37.5 / launchMs 396.76 / memoryMB 114.39）的
+  `plan.json` 携带最终规则；`gate --samples 5` 退出码 4，`launchMs` 较基线中位数
+  333.4 ms 高 19.0%，超出 10% 回归容差（绝对值仍在 warn 398 内）。回归机制已端到端
+  验证；按「不为变绿放宽」保留该结论，若后续 Take 继续出现约 397 ms 的冷启动，需要
+  重标定或排查设备冷启动环境。
 - 复核期间工作区里存在失败的验证 Take，派生基线的每条指标样本数偏少；用 `--samples 5`
   取最近 5 条终态记录后，每条指标仍有 ≥3 个有效样本，复算口径不变。
