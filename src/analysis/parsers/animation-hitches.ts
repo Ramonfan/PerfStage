@@ -48,6 +48,24 @@ export interface HitchWindow {
   toMs: number;
 }
 
+/**
+ * Evidence that the declared window contained no frames.
+ *
+ * The Runner uses the trace-wide frame timeline to attempt one bounded shift
+ * instead of scoring the empty window as `hitches = 0`. Keeping this in the
+ * analysis result (rather than auto-aligning here) preserves the parser's
+ * contract: it reports what the trace contains, the Runner decides whether the
+ * measurement can be salvaged.
+ */
+export interface HitchWindowMiss {
+  /** Window the caller declared. */
+  window: HitchWindow;
+  /** Sorted frame starts across the whole trace, in trace-relative ms. */
+  frameStartsMs: number[];
+  /** Total frames in the trace before the window filter. */
+  totalFrames: number;
+}
+
 export interface AnimationHitchesAnalysis {
   template: "Animation Hitches";
   /** Table the analyzer read: `hitches-frame-lifetimes` or `hitches`. */
@@ -72,6 +90,8 @@ export interface AnimationHitchesAnalysis {
   severityCounts: SeverityCounts;
   topHitches: HitchEvent[];
   warnings: string[];
+  /** Present when a declared window contained no frames. */
+  windowMiss?: HitchWindowMiss;
 }
 
 export interface AnimationHitchesOptions {
@@ -194,6 +214,14 @@ function analyzeFrameLifetimes(
   // Frames before `fromMs` are the cold-launch burst: they are real hitches,
   // they just do not belong to the scene. Frames after `toMs` are the tail of
   // the recording (the session is stopped after the last action).
+  //
+  // Keep the full timeline for a possible alignment attempt: if the window
+  // misses every frame, the Runner needs the trace's frame offsets to tell a
+  // recording offset from a scene that genuinely produced no frames.
+  const allFrameStarts = frames
+    .map((frame) => frame.startMs)
+    .sort((left, right) => left - right);
+  let windowMiss: HitchWindowMiss | undefined;
   let framesOutside = 0;
   if (window !== undefined) {
     if (!(window.toMs > window.fromMs)) {
@@ -210,6 +238,7 @@ function analyzeFrameLifetimes(
       warnings.push(
         `No frames between ${window.fromMs}ms and ${window.toMs}ms; the window missed the recorded interaction.`,
       );
+      windowMiss = { window, frameStartsMs: allFrameStarts, totalFrames: allFrameStarts.length };
     }
   }
 
@@ -228,6 +257,7 @@ function analyzeFrameLifetimes(
       topHitches: [],
       warnings: [...warnings, "No frame rows in the trace."],
       ...(window !== undefined ? { window: { ...window, framesOutside } } : {}),
+      ...(windowMiss !== undefined ? { windowMiss } : {}),
     };
   }
 
@@ -274,6 +304,7 @@ function analyzeFrameLifetimes(
       .slice(0, topLimit),
     warnings,
     ...(window !== undefined ? { window: { ...window, framesOutside } } : {}),
+    ...(windowMiss !== undefined ? { windowMiss } : {}),
   };
 }
 
@@ -331,9 +362,16 @@ function analyzeHangRows(
       `Skipped ${skippedRows} hang row(s) without a usable duration.`,
     );
   }
-  if (window !== undefined && hitches.length === 0) {
+  // The legacy `hitches` table reports already-classified hang rows, not
+  // frames. Zero rows in the window is a valid `hitches = 0` (a healthy,
+  // smooth scene), so it must never be treated as a window miss or fed to the
+  // frame-timeline alignment path.
+  if (window !== undefined && framesOutside > 0 && hitches.length === 0) {
+    // The trace did hang, just not inside the declared window. That is weak
+    // evidence for the scene, not proof it was smooth: say so instead of
+    // letting a bare `hitches = 0` read as healthy.
     warnings.push(
-      `No frames between ${window.fromMs}ms and ${window.toMs}ms; the window missed the recorded interaction.`,
+      `All ${framesOutside} hang row(s) fall outside the declared window ${window.fromMs}–${window.toMs}ms; hitches=0 only describes that window.`,
     );
   }
 
@@ -376,6 +414,114 @@ export function analyzeHitchesXml(
   throw new Error(
     `Unsupported Animation Hitches table "${table.schemaName || "(unknown)"}".`,
   );
+}
+
+export interface HitchWindowAlignmentOptions {
+  /** Maximum absolute shift from the declared window start. Defaults to its width. */
+  maxShiftMs?: number;
+  /** Frames the aligned window must contain. Defaults to 2. */
+  minFrames?: number;
+  /** Windows starting before this offset belong to startup, not the scene. */
+  excludeBeforeMs?: number;
+}
+
+export interface HitchWindowAlignment {
+  window: HitchWindow;
+  shiftMs: number;
+  frameCount: number;
+}
+
+export type HitchWindowAlignmentResult =
+  | { ok: true; alignment: HitchWindowAlignment }
+  | { ok: false; reason: string };
+
+const DEFAULT_ALIGNMENT_MIN_FRAMES = 2;
+const DEFAULT_ALIGNMENT_EXCLUDE_BEFORE_MS = 1_000;
+
+function countFramesInRange(
+  starts: readonly number[],
+  fromMs: number,
+  toMs: number,
+): number {
+  let count = 0;
+  for (const start of starts) {
+    if (start < fromMs) continue;
+    if (start >= toMs) break;
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * Attempt one bounded shift of a window that missed every frame.
+ *
+ * The candidate window must keep the declared width (so hitches are comparable)
+ * and may start at most one window-width away from the original. Candidates
+ * that begin inside the first second are rejected: those frames are the cold
+ * launch, not the scenario. Ranking is deterministic: most frames, then the
+ * smallest shift, then the earliest start.
+ */
+export function alignHitchWindow(
+  miss: HitchWindowMiss,
+  options: HitchWindowAlignmentOptions = {},
+): HitchWindowAlignmentResult {
+  const width = miss.window.toMs - miss.window.fromMs;
+  if (!Number.isFinite(width) || width <= 0) {
+    return { ok: false, reason: `the declared window width is ${width}ms` };
+  }
+  const maxShiftMs = options.maxShiftMs ?? width;
+  const minFrames = options.minFrames ?? DEFAULT_ALIGNMENT_MIN_FRAMES;
+  const excludeBeforeMs =
+    options.excludeBeforeMs ?? DEFAULT_ALIGNMENT_EXCLUDE_BEFORE_MS;
+
+  const starts = miss.frameStartsMs
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  if (starts.length === 0) {
+    return { ok: false, reason: "the trace contains no usable frame timestamps" };
+  }
+
+  const candidates: Array<{
+    fromMs: number;
+    shiftMs: number;
+    frameCount: number;
+  }> = [];
+  for (const fromMs of starts) {
+    const shiftMs = fromMs - miss.window.fromMs;
+    if (fromMs < excludeBeforeMs || Math.abs(shiftMs) > maxShiftMs) {
+      continue;
+    }
+    const frameCount = countFramesInRange(starts, fromMs, fromMs + width);
+    if (frameCount < minFrames) {
+      continue;
+    }
+    candidates.push({ fromMs, shiftMs, frameCount });
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      reason:
+        `no ${width}ms window within ${maxShiftMs}ms of the declared window ` +
+        `contains at least ${minFrames} frames after the first ${excludeBeforeMs}ms`,
+    };
+  }
+
+  candidates.sort(
+    (left, right) =>
+      right.frameCount - left.frameCount ||
+      Math.abs(left.shiftMs) - Math.abs(right.shiftMs) ||
+      left.fromMs - right.fromMs,
+  );
+  const best = candidates[0]!;
+  return {
+    ok: true,
+    alignment: {
+      window: { fromMs: best.fromMs, toMs: best.fromMs + width },
+      shiftMs: best.shiftMs,
+      frameCount: best.frameCount,
+    },
+  };
 }
 
 /**

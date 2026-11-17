@@ -75,9 +75,32 @@ export interface ForegroundApp {
   activity?: string;
 }
 
+export interface CrashEntry {
+  id: string;
+  /** Process that produced the report, when the device exposes it. */
+  process?: string;
+  timestamp?: string;
+}
+
 export interface LogStream {
   /** Stop capturing and return everything received so far. */
-  stop(): Promise<{ text: string; stderr: string }>;
+  stop(): Promise<{
+    text: string;
+    stderr: string;
+    /** The stream exited on its own before `stop()` was called. */
+    exitedEarly: boolean;
+    lineCount: number;
+    /** Why it exited early, when that can be explained. */
+    exitReason?: string;
+  }>;
+}
+
+export interface DeviceRecoveryEvent {
+  /** Command that hit the transport failure, e.g. `apps foreground`. */
+  context: string;
+  error: string;
+  /** Whether the single retry succeeded. */
+  recovered: boolean;
 }
 
 export interface DeviceDriver {
@@ -109,6 +132,17 @@ export interface DeviceDriver {
     durationMs: number,
   ): Promise<void>;
   crashIds(deviceId: string): Promise<string[]>;
+  /**
+   * Crash reports with the process that produced them.
+   *
+   * `crashIds` keeps working for callers that only need the ids; the Runner
+   * needs the process to separate an app crash from a system report.
+   */
+  crashReports(deviceId: string): Promise<CrashEntry[]>;
+  /** Verify the on-device automation agent can answer a cheap query. */
+  probeAgent(deviceId: string): Promise<void>;
+  /** Drain recovery events recorded since the last call. */
+  drainRecoveryEvents(): DeviceRecoveryEvent[];
   /**
    * Start an app-scoped device log stream. Log capture is best effort: a
    * caller that cannot start it must record `logEvidenceUnavailable` rather

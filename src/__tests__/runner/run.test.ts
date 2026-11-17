@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -612,9 +613,10 @@ describe("runTake", () => {
   it("still writes a failed report when the device disappears", async () => {
     if (!harness) throw new Error("harness not initialized");
     const device = createFakeDriver({
-      // Both the install lookup and the post-Take crash query fail: this is
-      // what an unplugged device looks like mid-Take.
-      failOn: { resolveInstallation: 1, crashIds: 1 },
+      // The install lookup fails, which is what an unplugged device looks like
+      // mid-Take. Preflight ends before the crash baseline is read; the
+      // post-Take crash query is therefore never attempted.
+      failOn: { resolveInstallation: 1 },
     });
     const prepared = await prepare(harness, adHocPlan());
 
@@ -636,7 +638,7 @@ describe("runTake", () => {
     const stored = JSON.parse(
       await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
     );
-    // Preflight succeeded, so the device facts must still be recorded even
+    // Device facts from the steps that succeeded must still be recorded even
     // though the Take failed later.
     expect(stored.device).toMatchObject({
       id: DEVICE_ID,
@@ -1367,5 +1369,421 @@ describe("launchUrl application", () => {
 
     expect(outcome.kind).toBe("ok");
     expect(device.openedUrls).toEqual([url]);
+  });
+});
+
+describe("diagnostic hardening", () => {
+  async function runWithCrashEntries(
+    harnessForTest: TestToolHarness,
+    entries: Array<{ id: string; process?: string }>,
+  ) {
+    const device = createFakeDriver();
+    const recorder = createDeviceRecorder(device, {
+      onLive: () => device.setCrashEntries(entries),
+    });
+    const prepared = await prepare(harnessForTest, adHocPlan());
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harnessForTest, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+    const report = JSON.parse(
+      await readFile(
+        join(harnessForTest.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    return { outcome, report };
+  }
+
+  it("keeps a Take completed when only a known system report is new", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const system = {
+      id: "DTServiceHub.diskwrites_resource-1.ips",
+      process: "DTServiceHub.diskwrites_resource",
+    };
+    const { outcome, report } = await runWithCrashEntries(harness, [system]);
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    expect(outcome.summary.notes.join(" ")).toContain("ignored system crash reports");
+    expect(report.diagnostics.crashes.newIds).toEqual([]);
+    expect(report.diagnostics.crashes.ignoredIds).toEqual([system.id]);
+  });
+
+  it("still fails on a new report from the app process", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const { outcome } = await runWithCrashEntries(harness, [
+      { id: "Example-1.ips", process: "Example" },
+    ]);
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    expect(outcome.summary.gate).toBe("fail");
+  });
+
+  it("fails conservatively when a new report has no process", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const { outcome } = await runWithCrashEntries(harness, [{ id: "unknown.ips" }]);
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+  });
+
+  it("ignores a system report raised during the health check", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      crashOnLaunch: true,
+      crashOnLaunchProcess: "SFA-ckks.json",
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        healthCheck: true,
+        healthCheckSettleMs: 0,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    expect(outcome.summary.notes.join(" ")).toContain(
+      "ignored system crash reports during the health check",
+    );
+    expect(recorder.requests.length).toBeGreaterThan(0);
+  });
+
+  it("fails before recording when the automation agent is unavailable", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({ agentUnavailable: true });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, { device, recorder }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    const notes = outcome.summary.notes.join(" ");
+    expect(notes).toContain("device preflight failed");
+    expect(notes).toContain("automation agent");
+    // No xctrace session was opened: the whole point of the preflight.
+    expect(recorder.requests).toHaveLength(0);
+    expect(
+      existsSync(join(harness.root, "runs", prepared.runId, "traces")),
+    ).toBe(false);
+    // The crash baseline was never read, so the post-Take list must not be
+    // diffed against an empty baseline: that would report the device's whole
+    // crash history as new.
+    const report = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(report.diagnostics.crashes.status).toBe("unavailable");
+    expect(report.diagnostics.crashes.newIds).toEqual([]);
+    expect(
+      report.findings.some(
+        (finding: { code: string }) => finding.code === "new-crash",
+      ),
+    ).toBe(false);
+  });
+
+  it("marks crash evidence unavailable when the post-Take query fails", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    // The first `crashReports` call is the preflight baseline; the second is
+    // the post-Take diff. Failing only the second must not look like a clean
+    // diff against the baseline.
+    const device = createFakeDriver({ failOn: { crashReports: 2 } });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("partial");
+    const report = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(report.diagnostics.crashes.status).toBe("unavailable");
+    expect(report.diagnostics.crashes.newIds).toEqual([]);
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "crash-detection-unavailable",
+          severity: "warning",
+        }),
+      ]),
+    );
+  });
+
+  it("records a daemon restart as lifecycle evidence", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      recoveryEvents: [
+        {
+          context: "apps foreground preflight",
+          error: "Timed out waiting for response",
+          recovered: true,
+        },
+      ],
+    });
+    const prepared = await prepare(harness, adHocPlan());
+    const now = new Date("2026-11-17T03:00:00.000Z");
+
+    await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        now: () => now,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    const report = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    const restart = report.diagnostics.lifecycle.events.find(
+      (event: { kind: string }) => event.kind === "daemon_restart",
+    );
+    expect(restart).toBeDefined();
+    expect(restart.notes).toContain("recovered");
+    // The driver has no injected clock; the Runner must stamp every lifecycle
+    // event with the Take clock so it lands inside the run window.
+    expect(restart.occurredAt).toBe(now.toISOString());
+  });
+
+  it("marks a truncated device log as partial, not clean", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      logLines: ["app is fine"],
+      logExitsEarly: true,
+    });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("partial");
+    expect(outcome.summary.notes.join(" ")).toContain("device log truncated");
+    const report = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(report.diagnostics.logs.truncated).toBe(true);
+    expect(report.diagnostics.logs.status).toBe("available");
+    // A fragment is weaker evidence, not observed instability: the finding
+    // must stay a warning instead of being rendered as a failure.
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "log-truncated",
+          severity: "warning",
+        }),
+      ]),
+    );
+  });
+
+  it("marks log evidence unavailable when stopping the stream fails", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      logLines: ["app is fine"],
+      logStopFails: true,
+    });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 20,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    // A stop failure says nothing about the log contents. It must not be
+    // mistaken for a clean, empty stream.
+    expect(outcome.summary.status).toBe("partial");
+    expect(outcome.summary.notes.join(" ")).toContain(
+      "device log stream failed to stop",
+    );
+    const report = JSON.parse(
+      await readFile(
+        join(harness.root, "runs", prepared.runId, "report.json"),
+        "utf8",
+      ),
+    );
+    expect(report.diagnostics.logs.status).toBe("unavailable");
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "log-evidence-unavailable",
+          severity: "warning",
+        }),
+      ]),
+    );
+  });
+
+  it("realigns a hitches window that missed every frame", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver();
+    const base = createFakeAnalyzer({
+      hitches: 10,
+      blockMs: 20,
+      launchMs: 300,
+      memoryMB: 100,
+    });
+    const analyze: TraceAnalyzer = async (input) => {
+      if (input.template !== "hitches") {
+        return base(input);
+      }
+      if (input.window?.fromMs === 9_000) {
+        return base(input);
+      }
+      return {
+        metrics: [],
+        warnings: [
+          "No frames between 10000ms and 11000ms; the window missed the recorded interaction.",
+        ],
+        windowMiss: {
+          window: { fromMs: 10_000, toMs: 11_000 },
+          frameStartsMs: [9_000, 9_100, 9_200],
+          totalFrames: 3,
+        },
+      };
+    };
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze,
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    const notes = outcome.summary.notes.join(" ");
+    expect(notes).toContain("hitches window realigned");
+    expect(notes).toContain("shift -1000ms");
+    expect(
+      outcome.summary.metrics.find((metric) => metric.name === "hitches")?.value,
+    ).toBe(10);
+  });
+
+  it("reports invalid instead of hitches=0 when alignment has no frames", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver();
+    const base = createFakeAnalyzer({
+      hitches: 10,
+      blockMs: 20,
+      launchMs: 300,
+      memoryMB: 100,
+    });
+    const analyze: TraceAnalyzer = async (input) => {
+      if (input.template !== "hitches") {
+        return base(input);
+      }
+      return {
+        metrics: [],
+        warnings: ["No frames between 10000ms and 11000ms."],
+        windowMiss: {
+          window: { fromMs: 10_000, toMs: 11_000 },
+          frameStartsMs: [],
+          totalFrames: 0,
+        },
+      };
+    };
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze,
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("invalid");
+    expect(outcome.summary.gate).toBe("unknown");
+    expect(
+      outcome.summary.metrics.find((metric) => metric.name === "hitches"),
+    ).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  alignHitchWindow,
   analyzeHitchesXml,
   classifyHitch,
 } from "../../analysis/parsers/animation-hitches.js";
@@ -208,6 +209,156 @@ describe("analyzeHitchesXml", () => {
         `<trace-query-result><node><schema name="something-else"></schema></node></trace-query-result>`,
       ),
     ).toThrow(/Unsupported Animation Hitches table/);
+  });
+});
+
+describe("alignHitchWindow", () => {
+  it("exposes the frame timeline when the declared window misses", () => {
+    const xml = frameTableXml([
+      { startMs: 2_000, durationMs: 16, color: "Green" },
+      { startMs: 2_100, durationMs: 16, color: "Green" },
+      { startMs: 9_000, durationMs: 16, color: "Green" },
+    ]);
+    const analysis = analyzeHitchesXml(xml, {
+      window: { fromMs: 20_000, toMs: 21_000 },
+    });
+    expect(analysis.windowMiss).toEqual({
+      window: { fromMs: 20_000, toMs: 21_000 },
+      frameStartsMs: [2_000, 2_100, 9_000],
+      totalFrames: 3,
+    });
+  });
+
+  it("shifts to the frame cluster the declared window missed", () => {
+    const miss = {
+      window: { fromMs: 10_000, toMs: 11_000 },
+      frameStartsMs: [9_000, 9_050, 9_120, 9_200],
+      totalFrames: 4,
+    };
+    const result = alignHitchWindow(miss);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.alignment.shiftMs).toBe(-1_000);
+    expect(result.alignment.window).toEqual({ fromMs: 9_000, toMs: 10_000 });
+    expect(result.alignment.frameCount).toBe(4);
+  });
+
+  it("is deterministic across repeated calls", () => {
+    const miss = {
+      window: { fromMs: 10_000, toMs: 11_000 },
+      frameStartsMs: [9_200, 9_000, 9_120, 9_050],
+      totalFrames: 4,
+    };
+    const first = alignHitchWindow(miss);
+    const second = alignHitchWindow(miss);
+    expect(second).toEqual(first);
+    expect(first.ok && first.alignment.window).toEqual({
+      fromMs: 9_000,
+      toMs: 10_000,
+    });
+  });
+
+  it("refuses a shift larger than one window width", () => {
+    const miss = {
+      window: { fromMs: 20_000, toMs: 21_000 },
+      frameStartsMs: [2_000, 2_050],
+      totalFrames: 2,
+    };
+    const result = alignHitchWindow(miss);
+    expect(result).toEqual({
+      ok: false,
+      reason: expect.stringContaining("within 1000ms"),
+    });
+  });
+
+  it("never aligns to the cold-launch burst", () => {
+    const miss = {
+      window: { fromMs: 2_000, toMs: 3_000 },
+      frameStartsMs: [100, 150, 200],
+      totalFrames: 3,
+    };
+    const result = alignHitchWindow(miss);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("first 1000ms");
+  });
+
+  it("requires at least two frames in the candidate window", () => {
+    const miss = {
+      window: { fromMs: 10_000, toMs: 11_000 },
+      frameStartsMs: [9_000],
+      totalFrames: 1,
+    };
+    expect(alignHitchWindow(miss).ok).toBe(false);
+  });
+
+  it("reports a missing timeline instead of inventing a shift", () => {
+    const result = alignHitchWindow({
+      window: { fromMs: 10_000, toMs: 11_000 },
+      frameStartsMs: [],
+      totalFrames: 0,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: "the trace contains no usable frame timestamps",
+    });
+  });
+
+  it("keeps the startup-phase boundary as a hard floor", () => {
+    // 1000ms is the first offset that is not cold launch.
+    const atBoundary = alignHitchWindow({
+      window: { fromMs: 2_000, toMs: 3_000 },
+      frameStartsMs: [1_000, 1_050],
+      totalFrames: 2,
+    });
+    expect(atBoundary.ok).toBe(true);
+    if (!atBoundary.ok) return;
+    expect(atBoundary.alignment.window).toEqual({
+      fromMs: 1_000,
+      toMs: 2_000,
+    });
+  });
+
+  it("never starts a candidate before the startup-phase boundary", () => {
+    const justBefore = alignHitchWindow({
+      window: { fromMs: 2_000, toMs: 3_000 },
+      frameStartsMs: [999, 1_010],
+      totalFrames: 2,
+    });
+    // Only the 999ms candidate would fit the width; it is startup, so no
+    // candidate remains (1_010ms alone is below the two-frame minimum).
+    expect(justBefore.ok).toBe(false);
+  });
+});
+
+describe("legacy hitches table", () => {
+  it("does not treat an empty hang table as a window miss", () => {
+    const analysis = analyzeHitchesXml(hangTableXml([]), {
+      window: { fromMs: 1_000, toMs: 2_000 },
+    });
+    // Zero hang rows in the window is a valid smooth result; it must not feed
+    // the frame-timeline alignment path.
+    expect(analysis.hitches).toBe(0);
+    expect(analysis.windowMiss).toBeUndefined();
+    expect(analysis.warnings.join(" ")).not.toContain("No frames between");
+  });
+
+  it("warns when every hang row falls outside the declared window", () => {
+    const analysis = analyzeHitchesXml(
+      hangTableXml([
+        { startNs: 500_000_000, durationNs: 40_000_000 },
+        { startNs: 600_000_000, durationNs: 30_000_000 },
+      ]),
+      { window: { fromMs: 2_000, toMs: 3_000 } },
+    );
+    // The trace did hang, just not where the window was declared. A bare
+    // `hitches = 0` would read as healthy, so the mismatch must be surfaced.
+    expect(analysis.hitches).toBe(0);
+    expect(analysis.windowMiss).toBeUndefined();
+    expect(analysis.window?.framesOutside).toBe(2);
+    expect(analysis.warnings.join(" ")).toContain(
+      "fall outside the declared window",
+    );
   });
 });
 

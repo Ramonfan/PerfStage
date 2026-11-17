@@ -4,8 +4,10 @@ import { join } from "node:path";
 import {
   DeviceError,
   type AppInstallation,
+  type CrashEntry,
   type DeviceDriver,
   type DeviceInfo,
+  type DeviceRecoveryEvent,
   type ForegroundApp,
   type LogStream,
   type UiElement,
@@ -300,24 +302,112 @@ export function createMobilecliDriver(
     return binary;
   };
 
+  const recoveryEvents: DeviceRecoveryEvent[] = [];
+  /**
+   * One transport recovery per driver instance (= one Take).
+   *
+   * `mobilecli`'s daemon owns the iOS tunnel. When it wedges, every later
+   * command times out; the documented escape hatch is `daemon stop` and a
+   * fresh tunnel. Retrying unbounded would multiply the device load, so the
+   * budget is exactly one restart.
+   */
+  let recoveryUsed = false;
+
+  const isTransportFailure = (error: unknown): boolean => {
+    if (!(error instanceof DeviceError)) return false;
+    const text = `${error.message}\n${error.details ?? ""}`;
+    return /timed out|timeout|did not finish within|failed to start agent|Timed out waiting for response|transport|tunnel|WebDriverAgent|daemon/i.test(
+      text,
+    );
+  };
+
+  const restartDaemon = async (triggerTimeoutMs: number): Promise<void> => {
+    // Never let recovery outlive the command that triggered it: a caller with
+    // a 150ms bound must not wait 5s for a wedged daemon.
+    await run(mobilecliPath(), ["daemon", "stop"], {
+      timeoutMs: Math.min(5_000, triggerTimeoutMs),
+    }).catch(() => undefined);
+  };
+
   const mobilecli = async (
     args: string[],
     context: string,
+    options: { timeoutMs?: number } = {},
   ): Promise<string> => {
-    const result = await run(mobilecliPath(), args, { timeoutMs });
-    if (result.code !== 0) {
-      throw new DeviceError(
-        `${context} failed (exit ${result.code}): ${result.stderr.trim() || result.stdout.trim()}`,
-        "command-failed",
-        result.stderr,
-      );
+    const attempt = async (): Promise<CommandResult> => {
+      const result = await run(mobilecliPath(), args, {
+        timeoutMs: options.timeoutMs ?? timeoutMs,
+      });
+      if (result.code !== 0) {
+        throw new DeviceError(
+          `${context} failed (exit ${result.code}): ${result.stderr.trim() || result.stdout.trim()}`,
+          "command-failed",
+          result.stderr,
+        );
+      }
+      return result;
+    };
+
+    try {
+      return (await attempt()).stdout;
+    } catch (error) {
+      if (recoveryUsed || !isTransportFailure(error)) {
+        throw error;
+      }
+      recoveryUsed = true;
+      const message = error instanceof Error ? error.message : String(error);
+      log(`transport failure in ${context}; restarting mobilecli daemon once`);
+      await restartDaemon(options.timeoutMs ?? timeoutMs);
+      try {
+        const stdout = (await attempt()).stdout;
+        recoveryEvents.push({
+          context,
+          error: message,
+          recovered: true,
+        });
+        return stdout;
+      } catch (retryError) {
+        recoveryEvents.push({
+          context,
+          error: `${message}; retry failed: ${
+            retryError instanceof Error ? retryError.message : String(retryError)
+          }`,
+          recovered: false,
+        });
+        // The contract is to surface the original failure, not the retry's.
+        throw error;
+      }
     }
-    return result.stdout;
   };
 
-  const mobilecliData = async <T>(args: string[], context: string): Promise<T> => {
-    const stdout = await mobilecli(args, context);
+  const mobilecliData = async <T>(
+    args: string[],
+    context: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<T> => {
+    const stdout = await mobilecli(args, context, options);
     return parseMobilecliJson<T>(stdout, context);
+  };
+
+  const readCrashEntries = async (deviceId: string): Promise<CrashEntry[]> => {
+    const data = await mobilecliData<
+      Array<{ id?: string; processName?: string; timestamp?: string }>
+    >(["device", "crashes", "list", "--device", deviceId], "device crashes list");
+    return data
+      .filter(
+        (entry): entry is { id: string; processName?: string; timestamp?: string } =>
+          typeof entry.id === "string" && entry.id.length > 0,
+      )
+      .map((entry) => ({
+        id: entry.id,
+        ...(typeof entry.processName === "string" && entry.processName.length > 0
+          ? { process: entry.processName }
+          : {}),
+        ...(typeof entry.timestamp === "string" && entry.timestamp.length > 0
+          ? { timestamp: entry.timestamp }
+          : {}),
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id));
   };
 
   return {
@@ -528,14 +618,24 @@ export function createMobilecliDriver(
     },
 
     async crashIds(deviceId: string): Promise<string[]> {
-      const data = await mobilecliData<Array<{ id?: string }>>(
-        ["device", "crashes", "list", "--device", deviceId],
-        "device crashes list",
+      const entries = await readCrashEntries(deviceId);
+      return entries.map((entry) => entry.id);
+    },
+
+    async crashReports(deviceId: string): Promise<CrashEntry[]> {
+      return readCrashEntries(deviceId);
+    },
+
+    async probeAgent(deviceId: string): Promise<void> {
+      await mobilecliData<Record<string, unknown>>(
+        ["apps", "foreground", "--device", deviceId],
+        "apps foreground preflight",
+        { timeoutMs: 10_000 },
       );
-      return data
-        .map((entry) => entry.id)
-        .filter((id): id is string => typeof id === "string" && id.length > 0)
-        .sort();
+    },
+
+    drainRecoveryEvents(): DeviceRecoveryEvent[] {
+      return recoveryEvents.splice(0, recoveryEvents.length);
     },
 
     startLogStream(deviceId: string, processName: string): LogStream {
@@ -591,9 +691,14 @@ export function createMobilecliDriver(
             }
           }
           const exitError = logStreamExitError(earlyExit);
+          const lineCount =
+            text.length === 0 ? 0 : text.split(/\r?\n/).length;
           return {
             text,
-            stderr: [stderr.trim(), exitError].filter(Boolean).join("\n"),
+            stderr,
+            exitedEarly: earlyExit !== null,
+            lineCount,
+            ...(exitError !== undefined ? { exitReason: exitError } : {}),
           };
         },
       };
@@ -623,8 +728,16 @@ export function createUnavailableDriver(reason: string): DeviceDriver {
     tap: async () => fail(),
     swipe: async () => fail(),
     crashIds: async () => fail(),
+    crashReports: async () => fail(),
+    probeAgent: async () => fail(),
+    drainRecoveryEvents: () => [],
     startLogStream: () => ({
-      stop: async () => ({ text: "", stderr: reason }),
+      stop: async () => ({
+        text: "",
+        stderr: reason,
+        exitedEarly: false,
+        lineCount: 0,
+      }),
     }),
   };
 }

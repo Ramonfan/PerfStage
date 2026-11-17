@@ -15,6 +15,8 @@ export const lifecycleKindSchema = z.enum([
   "springboard",
   "system_alert",
   "device_disconnect",
+  /** The driver restarted `mobilecli` once after a transport failure. */
+  "daemon_restart",
 ]);
 
 export type LifecycleKind = z.infer<typeof lifecycleKindSchema>;
@@ -65,9 +67,16 @@ export const diagnosticInputSchema = z.object({
   crashIdsBefore: z.array(z.string()).optional(),
   crashIdsAfter: z.array(z.string()).optional(),
   crashReports: z.array(crashReportSchema).optional(),
+  /**
+   * New crash ids classified as known system reports. They stay in the
+   * evidence but must not fail the Take.
+   */
+  ignoredIds: z.array(z.string()).optional(),
   lifecycle: z.array(lifecycleEventSchema).optional(),
   crashQueryError: z.string().optional(),
   logQueryError: z.string().optional(),
+  logTruncated: z.boolean().optional(),
+  logTruncationReason: z.string().optional(),
   lifecycleQueryError: z.string().optional(),
 });
 
@@ -184,6 +193,12 @@ export interface LogEvidence {
   lineCount: number;
   status: "available" | "unavailable";
   error?: string;
+  /**
+   * The stream ended before the Take did. The text is real but incomplete, so
+   * the Take must not present it as clean evidence.
+   */
+  truncated?: boolean;
+  truncationReason?: string;
   filters?: LogFilters;
   categories: LogCategories;
 }
@@ -195,6 +210,8 @@ export interface CrashEvidence {
   before: string[];
   after: string[];
   newIds: string[];
+  /** New reports attributed to known system processes; evidence only. */
+  ignoredIds?: string[];
 }
 
 export interface LifecycleEvidence {
@@ -222,9 +239,16 @@ export interface DiagnosticImpact {
  * Sorting is part of the public contract so callers can rely on a
  * stable order for reports and snapshot diffs.
  */
-export function diffCrashIds(before: string[], after: string[]): string[] {
+export function diffCrashIds(
+  before: string[],
+  after: string[],
+  ignored: readonly string[] = [],
+): string[] {
   const beforeSet = new Set(before);
-  return after.filter((id) => !beforeSet.has(id)).sort();
+  const ignoredSet = new Set(ignored);
+  return after
+    .filter((id) => !beforeSet.has(id) && !ignoredSet.has(id))
+    .sort();
 }
 
 export function normalizeDiagnostics(
@@ -241,6 +265,10 @@ export function normalizeDiagnostics(
         lineCount: countLines(input.logText),
         status: "unavailable",
         error: input.logQueryError,
+        truncated: input.logTruncated === true,
+        ...(input.logTruncationReason !== undefined
+          ? { truncationReason: input.logTruncationReason }
+          : {}),
         filters: input.logFilters,
         categories: UNKNOWN_CATEGORIES,
       }
@@ -250,6 +278,10 @@ export function normalizeDiagnostics(
           text: input.logText,
           lineCount: countLines(input.logText),
           status: "available",
+          truncated: input.logTruncated === true,
+          ...(input.logTruncationReason !== undefined
+            ? { truncationReason: input.logTruncationReason }
+            : {}),
           filters: input.logFilters,
           categories: scanCategories(input.logText),
         }
@@ -265,12 +297,14 @@ export function normalizeDiagnostics(
           path: undefined,
           text: undefined,
           lineCount: 0,
+          truncated: false,
           categories: UNKNOWN_CATEGORIES,
         };
 
   const beforeIds = input.crashIdsBefore ?? [];
   const afterIds = input.crashIdsAfter ?? [];
   const reports = input.crashReports ?? [];
+  const ignoredIds = input.ignoredIds ?? [];
   /**
    * Presence, not length, decides whether the crash query succeeded.
    *
@@ -295,6 +329,7 @@ export function normalizeDiagnostics(
         before: beforeIds,
         after: afterIds,
         newIds: [],
+        ignoredIds,
       }
     : hasCrashEvidence
       ? {
@@ -302,7 +337,8 @@ export function normalizeDiagnostics(
           reports,
           before: beforeIds,
           after: afterIds,
-          newIds: diffCrashIds(beforeIds, afterIds),
+          newIds: diffCrashIds(beforeIds, afterIds, ignoredIds),
+          ignoredIds,
         }
       : {
           // Same conservative rule as logs: no data ⇒ unavailable, not
@@ -313,6 +349,7 @@ export function normalizeDiagnostics(
           before: [],
           after: [],
           newIds: [],
+          ignoredIds: [],
         };
 
   const lifecycleEvents = input.lifecycle ?? [];
@@ -364,6 +401,12 @@ export function classifyDiagnosticImpact(
     warning = true;
     reasons.push("log-evidence-unavailable");
   } else {
+    if (evidence.logs.truncated) {
+      // A fragment may omit the crash/watchdog line entirely. Warning (not
+      // failure): the metrics themselves can still be valid.
+      warning = true;
+      reasons.push("log-truncated");
+    }
     const cats = evidence.logs.categories;
     if (cats.jetsam === true) {
       failure = true;

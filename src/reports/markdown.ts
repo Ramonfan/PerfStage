@@ -31,16 +31,26 @@ function summarizeCrashes(diagnostics: DiagnosticEvidence): string {
     return `未能读取 Crash 列表，不能据此证明没有崩溃（${crashes.error ?? "无错误细节"}）`;
   }
   const newIds = crashes.newIds;
+  const ignoredIds = crashes.ignoredIds ?? [];
+  const ignored =
+    ignoredIds.length > 0
+      ? `（另有 ${ignoredIds.length} 个已知系统报告记录为证据：${ignoredIds.join("、")}）`
+      : "";
   if (newIds.length === 0) {
-    return "未发现新增 Crash。";
+    return `未发现新增 App Crash。${ignored}`.trim();
   }
-  return `发现 ${newIds.length} 个新增 Crash：${newIds.join("、")}`;
+  return `发现 ${newIds.length} 个新增 Crash：${newIds.join("、")}${ignored}`;
 }
 
 function summarizeLogs(diagnostics: DiagnosticEvidence): string {
   const logs = diagnostics.logs;
   if (logs.status === "unavailable") {
     return `未能读取设备日志，无法评估稳定性（${logs.error ?? "无错误细节"}）`;
+  }
+  if (logs.truncated) {
+    return `日志共 ${logs.lineCount} 行，但日志流在 Take 结束前中断，内容不完整（${
+      logs.truncationReason ?? "未提供原因"
+    }）；按类别的命中情况见下表。`;
   }
   return `日志共 ${logs.lineCount} 行，按类别的命中情况见下表。`;
 }
@@ -147,6 +157,13 @@ function renderLimits(report: JsonReport): string {
   }
   if (report.diagnostics.logs.status === "unavailable") {
     limits.push("- 设备日志不可用，本工具不据此判定稳定性。");
+  }
+  if (report.diagnostics.logs.truncated) {
+    limits.push(
+      `- 设备日志不完整（${
+        report.diagnostics.logs.truncationReason ?? "未提供原因"
+      }），结论按 partial 处理。`,
+    );
   }
   if (report.diagnostics.lifecycle.status === "unavailable") {
     limits.push("- 生命周期事件不可用，本工具不据此判定稳定性。");

@@ -1,8 +1,10 @@
 import {
   DeviceError,
   type AppInstallation,
+  type CrashEntry,
   type DeviceDriver,
   type DeviceInfo,
+  type DeviceRecoveryEvent,
   type ForegroundApp,
   type LogStream,
   type UiElement,
@@ -24,6 +26,18 @@ export interface FakeDriverOptions {
   logLines?: string[];
   /** Crash ids visible at start. */
   crashIds?: string[];
+  /** Crash entries visible at start, including their process. */
+  crashEntries?: CrashEntry[];
+  /** Process used by `crashOnLaunch`; defaults to the app's process name. */
+  crashOnLaunchProcess?: string;
+  /** Fail the preflight agent probe as a wedged WDA would. */
+  agentUnavailable?: boolean;
+  /** Report the device log stream as having exited before the Take ended. */
+  logExitsEarly?: boolean;
+  /** Make `LogStream.stop()` throw, as a killed log process would. */
+  logStopFails?: boolean;
+  /** Recovery events the driver should hand to the Runner on drain. */
+  recoveryEvents?: DeviceRecoveryEvent[];
   /** Throw on the Nth call of a given operation (1-based). */
   failOn?: Partial<Record<FakeOperation, number>>;
   /** Simulated delay applied to every operation. */
@@ -77,7 +91,9 @@ export type FakeOperation =
   | "dumpElements"
   | "tap"
   | "swipe"
-  | "crashIds";
+  | "crashIds"
+  | "crashReports"
+  | "probeAgent";
 
 export interface FakeDriver extends DeviceDriver {
   /** Calls observed so far, in order, for assertions. */
@@ -96,6 +112,8 @@ export interface FakeDriver extends DeviceDriver {
   setElements(elements: UiElement[]): void;
   /** Replace the crash id list (simulates a crash mid-Take). */
   setCrashIds(ids: string[]): void;
+  /** Replace the crash entries, including process names. */
+  setCrashEntries(entries: CrashEntry[]): void;
   /** Append lines that future log streams will emit. */
   pushLogLines(lines: string[]): void;
   /** Simulate the app being killed by the system. */
@@ -141,7 +159,11 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
   const openedUrls: string[] = [];
 
   let elements = options.elements ?? [];
-  let crashIds = [...(options.crashIds ?? [])];
+  let crashEntries: CrashEntry[] =
+    options.crashEntries !== undefined
+      ? [...options.crashEntries]
+      : [...(options.crashIds ?? [])].map((id) => ({ id }));
+  let recoveryEvents: DeviceRecoveryEvent[] = [...(options.recoveryEvents ?? [])];
   let logLines = [...(options.logLines ?? [])];
   let running = false;
   let foregroundBundleId = "com.apple.springboard";
@@ -188,7 +210,10 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
       elements = next;
     },
     setCrashIds(ids) {
-      crashIds = [...ids];
+      crashEntries = [...ids].map((id) => ({ id }));
+    },
+    setCrashEntries(entries) {
+      crashEntries = [...entries];
     },
     pushLogLines(lines) {
       logLines = [...logLines, ...lines];
@@ -254,7 +279,13 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
         foregroundBundleId = bundleId;
       }
       if (options.crashOnLaunch === true) {
-        crashIds = [...crashIds, `FakeCrash-${crashIds.length + 1}.ips`].sort();
+        crashEntries = [
+          ...crashEntries,
+          {
+            id: `FakeCrash-${crashEntries.length + 1}.ips`,
+            process: options.crashOnLaunchProcess ?? app.processName,
+          },
+        ].sort((left, right) => left.id.localeCompare(right.id));
       }
       if (options.exitOnLaunch === true) {
         running = false;
@@ -353,16 +384,54 @@ export function createFakeDriver(options: FakeDriverOptions = {}): FakeDriver {
     async crashIds(_deviceId) {
       record("crashIds");
       await delay();
-      return [...crashIds].sort();
+      return crashEntries
+        .map((entry) => entry.id)
+        .sort((left, right) => left.localeCompare(right));
+    },
+
+    async crashReports(_deviceId) {
+      record("crashReports");
+      await delay();
+      return [...crashEntries]
+        .map((entry) => ({ ...entry }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    },
+
+    async probeAgent(_deviceId) {
+      record("probeAgent");
+      await delay();
+      if (options.agentUnavailable === true) {
+        throw new DeviceError(
+          "apps foreground preflight timed out; the automation agent is not responding",
+          "timeout",
+        );
+      }
+    },
+
+    drainRecoveryEvents() {
+      return recoveryEvents.splice(0, recoveryEvents.length);
     },
 
     startLogStream(_deviceId: string, _processName: string): LogStream {
       calls.push("startLogStream");
       const captured = logLines.join("\n");
+      const exitedEarly = options.logExitsEarly === true;
       return {
         async stop() {
           calls.push("stopLogStream");
-          return { text: captured, stderr: "" };
+          if (options.logStopFails === true) {
+            throw new Error("fake log stream stop failed");
+          }
+          return {
+            text: captured,
+            stderr: "",
+            exitedEarly,
+            lineCount:
+              captured.length === 0 ? 0 : captured.split(/\r?\n/).length,
+            ...(exitedEarly
+              ? { exitReason: "log stream ended before the Take finished" }
+              : {}),
+          };
         },
       };
     },

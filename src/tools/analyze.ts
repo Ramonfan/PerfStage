@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   AnimationHitchesAnalysis,
   AnimationHitchesOptions,
+  HitchWindowMiss,
 } from "../analysis/parsers/animation-hitches.js";
 import { analyzeHitchesTrace } from "../analysis/parsers/animation-hitches.js";
 import type { AppLaunchAnalysis } from "../analysis/parsers/app-launch.js";
@@ -49,6 +50,12 @@ export interface AnalyzeTraceResult {
   warnings: string[];
   /** Template-specific analysis, trimmed for tool output. */
   analysis: Record<string, unknown>;
+  /**
+   * Frame timeline for a window that missed every frame. Kept out of the
+   * public `analysis` payload (it can hold thousands of timestamps) and used
+   * by the Runner to attempt one bounded alignment.
+   */
+  windowMiss?: HitchWindowMiss;
 }
 
 /** Map an Animation Hitches analysis to the two canonical metrics (D11). */
@@ -137,13 +144,27 @@ export async function analyzePerformanceTrace(
         ...(input.window !== undefined ? { window: input.window } : {}),
       };
       const analysis = await analyzeHitchesTrace(input.tracePath, options);
-      const { topHitches, ...rest } = analysis;
+      const { topHitches, windowMiss, ...rest } = analysis;
       return {
         template: input.template,
         tracePath: input.tracePath,
         metrics: hitchesMetrics(analysis, input.tracePath),
         warnings: analysis.warnings,
-        analysis: { ...rest, topHitches: topHitches.slice(0, 5) },
+        analysis: {
+          ...rest,
+          topHitches: topHitches.slice(0, 5),
+          // Keep the public payload small: the full timeline is internal to
+          // the Runner's alignment attempt.
+          ...(windowMiss !== undefined
+            ? {
+                windowMiss: {
+                  window: windowMiss.window,
+                  totalFrames: windowMiss.totalFrames,
+                },
+              }
+            : {}),
+        },
+        ...(windowMiss !== undefined ? { windowMiss } : {}),
       };
     }
 

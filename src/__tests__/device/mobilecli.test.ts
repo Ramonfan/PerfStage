@@ -239,3 +239,119 @@ describe("mobilecli command settling", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+/**
+ * The daemon owns the iOS tunnel. When it wedges, the documented escape hatch
+ * is `mobilecli daemon stop` and a fresh tunnel; the driver may do that once
+ * per Take, never in a loop.
+ */
+describe("mobilecli transport recovery", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "perfstage-mobilecli-recovery-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function driverFor(lines: string[], timeoutMs = 5_000) {
+    const binary = join(root, "mobilecli");
+    await writeFile(
+      binary,
+      ["#!/bin/bash", ...lines.map((line) => line.replaceAll("__ROOT__", root)), ""].join(
+        "\n",
+      ),
+      { mode: 0o755 },
+    );
+    const { createMobilecliDriver } = await import("../../device/mobilecli.js");
+    return createMobilecliDriver({ binary, timeoutMs });
+  }
+
+  async function daemonStops(): Promise<string[]> {
+    const { readFile } = await import("node:fs/promises");
+    return readFile(join(root, "daemon-stops"), "utf8")
+      .then((text) => text.split("\n").filter(Boolean))
+      .catch(() => []);
+  }
+
+  const ok = `printf '{"status":"ok","data":{"packageName":"com.nndev.im"}}\\n'`;
+  const transportFailure = `echo "Timed out waiting for response from the agent" >&2; exit 1`;
+  const daemonStop = [
+    `if [ "$1" = "daemon" ] && [ "$2" = "stop" ]; then`,
+    `  echo stop >> __ROOT__/daemon-stops`,
+    `  exit 0`,
+    `fi`,
+  ];
+
+  it("restarts the daemon once and retries the same command", async () => {
+    const driver = await driverFor([
+      ...daemonStop,
+      `if [ ! -f __ROOT__/attempted ]; then`,
+      `  touch __ROOT__/attempted`,
+      `  ${transportFailure}`,
+      `fi`,
+      ok,
+    ]);
+
+    await expect(driver.foreground("device")).resolves.toMatchObject({
+      bundleId: "com.nndev.im",
+    });
+    expect(await daemonStops()).toHaveLength(1);
+    const events = driver.drainRecoveryEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ recovered: true });
+    expect(events[0]?.context).toContain("apps foreground");
+  });
+
+  it("surfaces the original error when the retry fails too", async () => {
+    const driver = await driverFor([...daemonStop, transportFailure]);
+
+    await expect(driver.foreground("device")).rejects.toThrow(
+      /Timed out waiting for response/,
+    );
+    expect(await daemonStops()).toHaveLength(1);
+    const events = driver.drainRecoveryEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ recovered: false });
+  });
+
+  it("does not restart the daemon for a non-transport error", async () => {
+    const driver = await driverFor([
+      ...daemonStop,
+      `echo "app is not installed" >&2; exit 1`,
+    ]);
+
+    await expect(driver.foreground("device")).rejects.toThrow(
+      /app is not installed/,
+    );
+    expect(await daemonStops()).toHaveLength(0);
+    expect(driver.drainRecoveryEvents()).toEqual([]);
+  });
+
+  it("uses its single recovery budget across the whole Take", async () => {
+    const driver = await driverFor([
+      ...daemonStop,
+      `if [ ! -f __ROOT__/attempted ]; then`,
+      `  touch __ROOT__/attempted`,
+      `  ${transportFailure}`,
+      `fi`,
+      `if [ ! -f __ROOT__/served ]; then`,
+      `  touch __ROOT__/served`,
+      `  ${ok}`,
+      `  exit 0`,
+      `fi`,
+      transportFailure,
+    ]);
+
+    await expect(driver.foreground("device")).resolves.toMatchObject({
+      bundleId: "com.nndev.im",
+    });
+    await expect(driver.foreground("device")).rejects.toThrow(
+      /Timed out waiting for response/,
+    );
+    // The second failure must not trigger another daemon restart.
+    expect(await daemonStops()).toHaveLength(1);
+  });
+});

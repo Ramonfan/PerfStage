@@ -38,9 +38,12 @@ const finalizeDiagnosticsSchema = z
     crashIdsBefore: z.array(z.string()).optional(),
     crashIdsAfter: z.array(z.string()).optional(),
     crashReports: z.array(crashReportSchema).optional(),
+    ignoredIds: z.array(z.string()).optional(),
     lifecycle: z.array(lifecycleEventSchema).optional(),
     crashQueryError: z.string().optional(),
     logQueryError: z.string().optional(),
+    logTruncated: z.boolean().optional(),
+    logTruncationReason: z.string().optional(),
     lifecycleQueryError: z.string().optional(),
   })
   .passthrough();

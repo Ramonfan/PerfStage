@@ -778,7 +778,13 @@ metrics:
 不重写；查询时发现缺失会从 `run.json` 补全并在结果中报告 `unindexed`。
 
 Crash 差集与生命周期分类写入 `report.json` 的 `diagnostics`（含降级结论与 Crash ID），
-运行目录不单独落盘；`run.json.notes` 只记录执行备注与失败归因。v0.1 不采集网络抓包，
+运行目录不单独落盘；`run.json.notes` 只记录执行备注与失败归因。新增 Crash 只有归因到
+已知系统进程时才忽略；被测 App 作用域、未知进程与缺少 `process` 的报告都按 App Crash
+失败。`SFA-*`、`DTServiceHub.*` 等已知系统报告记入 `diagnostics.crashes.ignoredIds`，
+不改变 verdict。日志流提前退出时，
+`diagnostics.logs.truncated = true` 并给出原因，状态按 warning 降为 `partial`；
+日志读取整体失败仍是 `unavailable`。`mobilecli` 传输故障最多触发一次
+`daemon stop` 重试，报告以 lifecycle `daemon_restart` 记录。v0.1 不采集网络抓包，
 也不会在失败时生成截图，因此没有对应的目录。
 
 `report.json` 不重复内联 `device.log` 的正文，只保留分类统计与 `lineCount`，
@@ -920,7 +926,7 @@ claude mcp list
 
 **报告是 `partial` 而不是 `completed`**
 
-查看 `report.md` 的「稳定性诊断」和「限制与未知项」。常见原因是日志 / Crash 查询失败、指标缺少 trace 或诊断证据不完整。
+查看 `report.md` 的「稳定性诊断」和「限制与未知项」。常见原因是日志 / Crash 查询失败、日志流提前中断（`truncated`）、指标缺少 trace 或诊断证据不完整。
 
 **设备日志为空**
 
@@ -930,7 +936,9 @@ Runner 在第一次录制前就启动日志流，所以正常情况下不会为�
 
 **新增了 Crash**
 
-查看 `report.md` 的稳定性诊断段与 `report.json` 的 `diagnostics.crashes`。新增 Crash 会让状态降级，报告会列出 Crash ID、异常信息和降级原因。
+查看 `report.md` 的稳定性诊断段与 `report.json` 的 `diagnostics.crashes`。只有归因到
+已知系统进程的新 Crash 会被忽略；`SFA-*`、`DTServiceHub.*` 等已知系统报告会列在
+`ignoredIds` 中作为证据，不影响 verdict。未知进程与缺少 `process` 的报告仍按 App Crash 处理。
 
 **真机上某次 Take 失败**
 
@@ -951,10 +959,16 @@ Runner 在第一次录制前就启动日志流，所以正常情况下不会为�
   - **`--launch` 在 App 已运行时挂住**：极少数情况下 xctrace 会停在
     “Launching process” 不再进入录制。录制层会在超时后先 SIGINT、宽限期后再
     强制结束，并按既有重试策略再录一次；没有 trace 的 Take 一律不会记成成功。
+  - **窗口错过交互**：解析器发现声明窗口内没有 frame 时，Runner 会基于 trace 内的
+    frame 时间线做一次有界平移（不超过原窗口宽度、至少 2 个 frame、排除启动 1s），
+    并在 notes 记录原窗口与对齐窗口。仍无法对齐时 Take 判 `invalid`，不会记成
+    `hitches = 0`。
 - `Cannot find process matching name` 只会出现在手动用 `--attach` 调用底层
   录制 API 时；Runner 的一键执行路径不会走到这里。
 - `timed out waiting for WebDriverAgent to be ready`：手机重启后 `mobilecli` 守护进程还握着旧的
-  隧道。执行 `mobilecli daemon stop`，下一条命令会自动用新隧道重启守护进程。
+  隧道。Runner 对传输类错误会自动执行一次 `mobilecli daemon stop` 并重试同一命令，报告以
+  lifecycle `daemon_restart` 记录；若仍失败，原始错误会出现在 notes 中。也可以在录制前
+  手动执行 `mobilecli daemon stop`。
 
 **手机重启后必须重启 `mobilecli` 守护进程**
 

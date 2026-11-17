@@ -105,6 +105,8 @@ function describeDiagnosticReason(reason: string): string {
       return "无法读取 Crash 列表；本次不能据此判定稳定性。";
     case "log-evidence-unavailable":
       return "无法读取设备日志；本次不能据此判定稳定性。";
+    case "log-truncated":
+      return "设备日志流在 Take 结束前中断，日志内容不完整。";
     case "lifecycle-evidence-unavailable":
       return "无法读取生命周期事件；本次不能据此判定稳定性。";
     default:
@@ -124,6 +126,9 @@ function describeDiagnosticReason(reason: string): string {
 const WARNING_REASONS = new Set([
   "crash-detection-unavailable",
   "log-evidence-unavailable",
+  // Incomplete logs reduce confidence in the stability verdict; they do not
+  // prove instability, so they must not be rendered as a failure finding.
+  "log-truncated",
   "lifecycle-evidence-unavailable",
   "memory-warning",
   "app-backgrounded",

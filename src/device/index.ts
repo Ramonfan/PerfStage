@@ -9,9 +9,11 @@
 export { DeviceError } from "./types.js";
 export type {
   AppInstallation,
+  CrashEntry,
   DeviceDriver,
   DeviceErrorKind,
   DeviceInfo,
+  DeviceRecoveryEvent,
   ForegroundApp,
   LogStream,
   UiElement,

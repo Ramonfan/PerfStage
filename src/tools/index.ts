@@ -340,7 +340,22 @@ export function registerTools(
       if ("error" in result) {
         return toToolErrorResult(result.error);
       }
-      return toToolResult(result);
+      // The frame timeline is internal to the Runner's alignment attempt; a
+      // 40s trace can hold thousands of timestamps. Keep only the summary in
+      // the MCP payload so a direct `analyze_performance_trace` call does not
+      // dump it to the agent.
+      const { windowMiss, ...publicResult } = result;
+      return toToolResult({
+        ...publicResult,
+        ...(windowMiss !== undefined
+          ? {
+              windowMiss: {
+                window: windowMiss.window,
+                totalFrames: windowMiss.totalFrames,
+              },
+            }
+          : {}),
+      });
     },
   );
 

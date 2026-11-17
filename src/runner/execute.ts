@@ -1,8 +1,19 @@
 import { promises as fs } from "node:fs";
 import { posix, relative, resolve, sep } from "node:path";
+import {
+  alignHitchWindow,
+  type HitchWindowMiss,
+} from "../analysis/parsers/animation-hitches.js";
 import { extractDeviceFailureCause } from "../diagnostics/cause.js";
 import type { DiagnosticInput } from "../diagnostics/normalize.js";
-import type { DeviceDriver, ForegroundApp, UiElement } from "../device/types.js";
+import { DeviceError } from "../device/types.js";
+import type {
+  AppInstallation,
+  CrashEntry,
+  DeviceDriver,
+  ForegroundApp,
+  UiElement,
+} from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
 import type { ActionRecord, MetricResult, TestRun } from "../model/test-run.js";
 import type {
@@ -41,6 +52,11 @@ export interface TraceAnalyzerInput {
 export interface TraceAnalyzerResult {
   metrics: MetricResult[];
   warnings?: string[];
+  /**
+   * Set by the hitches analyzer when the declared window contained no frames.
+   * The Runner uses it for one bounded alignment attempt.
+   */
+  windowMiss?: HitchWindowMiss;
 }
 
 export type TraceAnalyzer = (
@@ -88,6 +104,91 @@ function isPreconditionFailure(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * The declared hitches window missed every frame and no bounded shift could
+ * recover it.
+ *
+ * This is a measurement failure, not a device failure: the trace is usable but
+ * does not contain the declared interaction. Reporting `invalid` keeps the
+ * Take out of regression baselines without inventing `hitches = 0`.
+ */
+export class WindowAlignmentFailure extends Error {
+  override readonly name = "WindowAlignmentFailure";
+}
+
+function isWindowAlignmentFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof WindowAlignmentFailure) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Processes whose reports are device diagnostics, not app crashes.
+ *
+ * Deliberately a short allow-list: anything not matched below is treated as
+ * app scope, so an unknown process still fails the Take. `JetsamEvent` is
+ * intentionally absent — it can describe our app being memory-killed, and
+ * ignoring it would hide a real failure.
+ */
+const KNOWN_SYSTEM_PROCESS_PATTERNS: readonly RegExp[] = [
+  /^SFA-/,
+  /^DTServiceHub(?:\.|$)/,
+  /^WiFiLQMMetrics$/,
+  /^locationd(?:\.|$)/,
+  /^proactive_event_tracker-/,
+  /^xp_amp_/,
+];
+
+/**
+ * Decide whether a crash report belongs to the app under test.
+ *
+ * `process` is the only stable attribution the device layer exposes. A report
+ * without it is app scope: a missing field must never turn a real crash into a
+ * silent "system report".
+ */
+export function isAppScopedCrash(
+  entry: CrashEntry,
+  installation: AppInstallation,
+): boolean {
+  const process = entry.process?.trim();
+  if (process === undefined || process.length === 0) {
+    return true;
+  }
+  if (
+    process === installation.processName ||
+    process === installation.bundleId ||
+    process.startsWith(`${installation.bundleId}.`)
+  ) {
+    return true;
+  }
+  return !KNOWN_SYSTEM_PROCESS_PATTERNS.some((pattern) => pattern.test(process));
+}
+
+export function classifyFreshCrashes(
+  entries: readonly CrashEntry[],
+  knownIds: ReadonlySet<string>,
+  installation: AppInstallation,
+): { appScoped: CrashEntry[]; system: CrashEntry[] } {
+  const appScoped: CrashEntry[] = [];
+  const system: CrashEntry[] = [];
+  for (const entry of entries) {
+    if (knownIds.has(entry.id)) {
+      continue;
+    }
+    if (isAppScopedCrash(entry, installation)) {
+      appScoped.push(entry);
+    } else {
+      system.push(entry);
+    }
+  }
+  return { appScoped, system };
 }
 
 export interface TakeExecution {
@@ -201,7 +302,11 @@ const defaultAnalyzer: TraceAnalyzer = async (input) => {
   if ("error" in result) {
     return { error: result.error };
   }
-  return { metrics: result.metrics, warnings: result.warnings };
+  return {
+    metrics: result.metrics,
+    warnings: result.warnings,
+    ...(result.windowMiss !== undefined ? { windowMiss: result.windowMiss } : {}),
+  };
 };
 
 function toRunRelative(runDir: string, absolutePath: string): string {
@@ -250,7 +355,6 @@ export async function executeTake(
   const passes: PassRecord[] = [];
   const lifecycle: NonNullable<DiagnosticInput["lifecycle"]> = [];
   const tracesDir = resolve(deps.runDir, "traces");
-  await fs.mkdir(tracesDir, { recursive: true });
 
   const planning = planPasses(plan.metrics.map((metric) => metric.name));
   const repetitions = Math.max(1, plan.repetitions);
@@ -274,6 +378,21 @@ export async function executeTake(
   let logStream: ReturnType<DeviceDriver["startLogStream"]> | null = null;
   let fullLogText: string | undefined;
   let deviceFacts: TestRun["device"];
+  /**
+   * Preflight facts the finally block needs after the try scope ends. A Take
+   * that failed before installation resolution leaves it undefined, and the
+   * crash classifier then treats every new report conservatively.
+   */
+  let installationForDiagnostics: AppInstallation | undefined;
+  /**
+   * Whether the pre-Take crash baseline was actually read.
+   *
+   * Without a baseline every report on the device looks "new"; querying the
+   * list anyway would turn the device's crash history into a fabricated
+   * `new-crash` failure on a Take that failed before recording even started.
+   */
+  let crashBaselineCaptured = false;
+  const knownCrashIds = new Set<string>();
 
   try {
     // ── Preflight ────────────────────────────────────────────────────
@@ -298,7 +417,30 @@ export async function executeTake(
     log(
       `app ${installation.name} ${installation.version} container=${installation.containerUuid}`,
     );
-    diagnostics.crashIdsBefore = await deps.device.crashIds(deviceId);
+    // A wedged WDA/agent turns every later device call into a 30s timeout.
+    // Probe it before any trace so that failure costs one bounded query
+    // instead of a recorded session plus repeated retries.
+    try {
+      await deps.device.probeAgent(deviceId);
+    } catch (error) {
+      // Keep the device error kind (`timeout`, `device-unavailable`, ...) so
+      // callers can classify the failure without parsing the message.
+      throw new DeviceError(
+        `device preflight failed: the automation agent did not answer for ${plan.app.bundleId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        error instanceof DeviceError ? error.kind : "device-unavailable",
+        error instanceof DeviceError ? error.details : undefined,
+      );
+    }
+    log("preflight: automation agent responded");
+    const crashBaseline = await deps.device.crashReports(deviceId);
+    diagnostics.crashIdsBefore = crashBaseline.map((entry) => entry.id);
+    for (const entry of crashBaseline) {
+      knownCrashIds.add(entry.id);
+    }
+    installationForDiagnostics = installation;
+    crashBaselineCaptured = true;
     log(`crash list before: ${diagnostics.crashIdsBefore.length} entries`);
     logStream = deps.device.startLogStream(deviceId, installation.processName);
 
@@ -347,17 +489,28 @@ export async function executeTake(
             "refusing to record an app that cannot start (check device.log, then relaunch by hand)",
         );
       }
-      const crashes = await deps.device.crashIds(deviceId).catch(() => []);
-      const known = new Set(diagnostics.crashIdsBefore ?? []);
-      const fresh = crashes.filter((id) => !known.has(id));
-      if (fresh.length > 0) {
+      const crashes = await deps.device.crashReports(deviceId).catch(() => []);
+      const { appScoped, system } = classifyFreshCrashes(
+        crashes,
+        knownCrashIds,
+        installation,
+      );
+      if (system.length > 0) {
+        notes.push(
+          `ignored system crash reports during the health check: ${system
+            .map((entry) => entry.id)
+            .join(", ")}`,
+        );
+      }
+      if (appScoped.length > 0) {
+        const ids = appScoped.map((entry) => entry.id);
         lifecycle.push({
           kind: "app_exit",
           occurredAt: nowIso(),
-          notes: `new crash reports: ${fresh.join(", ")}`,
+          notes: `new crash reports: ${ids.join(", ")}`,
         });
         throw new Error(
-          `${plan.app.bundleId} crashed during the health check (${fresh.join(", ")}); ` +
+          `${plan.app.bundleId} crashed during the health check (${ids.join(", ")}); ` +
             "refusing to record until the app starts cleanly",
         );
       }
@@ -365,6 +518,11 @@ export async function executeTake(
     };
 
     await checkAppHealth();
+
+    // Only now can a recording happen. Keeping the directory creation behind
+    // preflight means a failed agent probe leaves no `traces/` directory at
+    // all, not just an empty one.
+    await fs.mkdir(tracesDir, { recursive: true });
 
     for (let round = 1; round <= repetitions; round += 1) {
       if (repetitions > 1) {
@@ -415,7 +573,7 @@ export async function executeTake(
     }
   } catch (error) {
     fatalError = error instanceof Error ? error.message : String(error);
-    if (isPreconditionFailure(error)) {
+    if (isPreconditionFailure(error) || isWindowAlignmentFailure(error)) {
       fatalStatus = "invalid";
       // Metrics from earlier passes stay in the report as evidence, but they
       // must not read as a verdict on a scene whose starting state was wrong.
@@ -430,38 +588,125 @@ export async function executeTake(
   } finally {
     // Evidence is collected even when the Take fails: a failed report with logs
     // and crashes is how the operator learns why it failed.
-    try {
-      diagnostics.crashIdsAfter = await deps.device.crashIds(deviceId);
-    } catch (error) {
+    //
+    // The post-Take crash diff is only meaningful against a baseline. When the
+    // preflight failed before that baseline was read, querying the list would
+    // label the device's whole crash history as new — a fabricated `new-crash`
+    // failure. Report the evidence gap instead.
+    if (!crashBaselineCaptured) {
+      diagnostics.crashQueryError =
+        "crash baseline was not captured before the preflight failed; new crashes cannot be determined";
       notes.push(
-        `crash list after failed: ${error instanceof Error ? error.message : String(error)}`,
+        "crash evidence unavailable: the pre-Take baseline was not read before the failure",
       );
+    } else {
+      try {
+        const after = await deps.device.crashReports(deviceId);
+        diagnostics.crashIdsAfter = after.map((entry) => entry.id);
+        diagnostics.crashReports = after;
+        const { appScoped, system } = classifyFreshCrashes(
+          after,
+          knownCrashIds,
+          // A baseline implies an installation; the fallback keeps legacy
+          // callers conservative if that invariant is ever broken.
+          installationForDiagnostics ?? {
+            bundleId: "",
+            processName: "",
+            name: "",
+            version: "",
+            containerUuid: "",
+          },
+        );
+        if (system.length > 0) {
+          diagnostics.ignoredIds = system.map((entry) => entry.id);
+          notes.push(
+            `ignored system crash reports during the take: ${system
+              .map(
+                (entry) =>
+                  `${entry.id}${entry.process !== undefined ? ` (${entry.process})` : ""}`,
+              )
+              .join(", ")}`,
+          );
+        }
+        if (appScoped.length > 0) {
+          notes.push(
+            `new crash reports during the take: ${appScoped
+              .map((entry) => entry.id)
+              .join(", ")}`,
+          );
+        }
+      } catch (error) {
+        // Cannot diff without the post-Take list either: mark the evidence
+        // unavailable rather than letting an empty diff look clean.
+        diagnostics.crashQueryError =
+          error instanceof Error ? error.message : String(error);
+        notes.push(`crash list after failed: ${diagnostics.crashQueryError}`);
+      }
     }
     if (logStream !== null) {
-      const captured = await logStream.stop().catch(() => ({ text: "", stderr: "" }));
-      // Keep the whole stream for the category scan. `report.json` drops the
-      // text itself once `device.log` exists (see `buildJsonReport`), so the
-      // report stays small while diagnostics still see every line — capping
-      // the text here would silently hide errors from the first half of a
-      // long log.
-      diagnostics.logText = captured.text;
-      diagnostics.logQueryError = captured.stderr.trim() || undefined;
-      fullLogText = captured.text;
-      // The device log is the only place that says *why* the app died. On a
-      // failed Take, put the first actionable line in the report instead of
-      // making the reader search `device.log`.
-      const cause = extractDeviceFailureCause(captured.text);
-      if (cause !== null && fatalError !== undefined) {
-        notes.push(`device log: ${cause}`);
-        fatalError = `${fatalError}; device log: ${cause}`;
+      let captured:
+        | {
+            text: string;
+            stderr: string;
+            exitedEarly: boolean;
+            lineCount: number;
+            exitReason?: string;
+          }
+        | undefined;
+      try {
+        captured = await logStream.stop();
+      } catch (error) {
+        // A failed stop tells us nothing about the log's completeness. Falling
+        // through with empty text would look exactly like a clean, empty log;
+        // record the read failure instead.
+        const message = error instanceof Error ? error.message : String(error);
+        diagnostics.logQueryError = message;
+        notes.push(`device log stream failed to stop: ${message}`);
       }
-      const known = new Set(diagnostics.crashIdsBefore ?? []);
-      const fresh = (diagnostics.crashIdsAfter ?? []).filter(
-        (id) => !known.has(id),
-      );
-      if (fresh.length > 0) {
-        notes.push(`new crash reports during the take: ${fresh.join(", ")}`);
+      if (captured !== undefined) {
+        // Keep the whole stream for the category scan. `report.json` drops the
+        // text itself once `device.log` exists (see `buildJsonReport`), so the
+        // report stays small while diagnostics still see every line — capping
+        // the text here would silently hide errors from the first half of a
+        // long log.
+        diagnostics.logText = captured.text;
+        if (captured.exitedEarly) {
+          // A stream that ended on its own is a fragment. Do not turn it into
+          // `logQueryError` (that means "could not read"); expose it as a
+          // truncation warning so the report can distinguish "empty", "partial"
+          // and "unavailable".
+          diagnostics.logTruncated = true;
+          diagnostics.logTruncationReason =
+            captured.exitReason ??
+            (captured.stderr.trim() || "the log stream ended before the Take finished");
+          notes.push(`device log truncated: ${diagnostics.logTruncationReason}`);
+        } else {
+          diagnostics.logQueryError = captured.stderr.trim() || undefined;
+        }
+        fullLogText = captured.text;
+        log(`device log stream ended after ${captured.lineCount} line(s)`);
+        // The device log is the only place that says *why* the app died. On a
+        // failed Take, put the first actionable line in the report instead of
+        // making the reader search `device.log`.
+        const cause = extractDeviceFailureCause(captured.text);
+        if (cause !== null && fatalError !== undefined) {
+          notes.push(`device log: ${cause}`);
+          fatalError = `${fatalError}; device log: ${cause}`;
+        }
       }
+    }
+    // Recovery events are recorded by the device driver during this Take
+    // (at most one daemon restart). Surface them as lifecycle evidence rather
+    // than leaving the restart invisible in the report.
+    for (const event of deps.device.drainRecoveryEvents()) {
+      lifecycle.push({
+        kind: "daemon_restart",
+        // Use the Take clock for every lifecycle event; the driver has no
+        // injected clock, and mixing its wall clock with `deps.now()` would
+        // put this event outside the run window in tests and reports.
+        occurredAt: nowIso(),
+        notes: `${event.recovered ? "recovered" : "retry failed"} after ${event.context}: ${event.error}`,
+      });
     }
   }
 
@@ -867,7 +1112,41 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     },
   ): Promise<void> => {
     const relativePath = toRunRelative(deps.runDir, trace.tracePath);
-    const analyzed = await deps.analyze({
+    const pushWarnings = (result: TraceAnalyzerResult): void => {
+      // Analyzer warnings matter to trust: "no frames in the window" or a
+      // skipped row means the number may under-count. They must reach the
+      // report instead of living only in the trace-analysis response.
+      if (result.warnings !== undefined && result.warnings.length > 0) {
+        notes.push(`${pass.template} analysis: ${result.warnings.join("; ")}`);
+      }
+    };
+    const recordPass = (): void => {
+      recorded.push({
+        template: pass.template,
+        passIndex: pass.index,
+        tracePath: relativePath,
+        absoluteTracePath: trace.tracePath,
+        attempts: trace.attempts,
+        issues: trace.issues,
+        durationMs: trace.durationMs,
+        metrics: pass.metrics,
+      });
+      if (trace.attempts > 1) {
+        notes.push(
+          `${pass.template} pass needed ${trace.attempts} attempts (recording infrastructure)`,
+        );
+      }
+      const errors = trace.issues.filter((issue) => issue.level === "error");
+      if (errors.length > 0) {
+        notes.push(
+          `${pass.template} pass reported ${errors.length} xctrace error(s): ${errors
+            .map((issue) => issue.message)
+            .join("; ")}`,
+        );
+      }
+    };
+
+    let analyzed = await deps.analyze({
       template: pass.template,
       tracePath: trace.tracePath,
       ...extra,
@@ -877,39 +1156,62 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
         `analyze_performance_trace failed for ${pass.template}: ${analyzed.error}`,
       );
     }
+    // A declared window can miss the interaction when the recording session
+    // starts later than `during` observed. Retry once with a bounded shift
+    // derived from the trace's own frame timeline; never report the empty
+    // window as `hitches = 0`.
+    const alignmentAttempted =
+      pass.template === "hitches" &&
+      extra.window !== undefined &&
+      analyzed.windowMiss !== undefined;
+    if (alignmentAttempted) {
+      // Persist the trace and the parser's original reasons before deciding:
+      // if alignment fails the Take is `invalid`, and the trace that caused it
+      // must still be referenced instead of becoming an orphan file.
+      pushWarnings(analyzed);
+      recordPass();
+      const declared = extra.window!;
+      const alignment = alignHitchWindow(analyzed.windowMiss!);
+      if (!alignment.ok) {
+        throw new WindowAlignmentFailure(
+          `hitches window ${Math.round(declared.fromMs)}–${Math.round(declared.toMs)}ms ` +
+            `missed the recorded interaction and could not be aligned: ${alignment.reason}`,
+        );
+      }
+      const aligned = alignment.alignment;
+      notes.push(
+        `hitches window realigned: declared ${Math.round(declared.fromMs)}–${Math.round(
+          declared.toMs,
+        )}ms, shift ${Math.round(aligned.shiftMs)}ms, aligned ${Math.round(
+          aligned.window.fromMs,
+        )}–${Math.round(aligned.window.toMs)}ms (${aligned.frameCount} frames)`,
+      );
+      const realigned = await deps.analyze({
+        template: pass.template,
+        tracePath: trace.tracePath,
+        ...extra,
+        window: aligned.window,
+      });
+      if ("error" in realigned) {
+        throw new WindowAlignmentFailure(
+          `analyze_performance_trace failed for ${pass.template} after a bounded window alignment: ${realigned.error}`,
+        );
+      }
+      if (realigned.windowMiss !== undefined) {
+        throw new WindowAlignmentFailure(
+          `hitches window ${Math.round(aligned.window.fromMs)}–${Math.round(
+            aligned.window.toMs,
+          )}ms still contained no frames after alignment`,
+        );
+      }
+      analyzed = realigned;
+    }
     for (const metric of analyzed.metrics) {
       metrics.push({ ...metric, tracePath: relativePath });
     }
-    // Analyzer warnings matter to trust: "no frames in the window" or a
-    // skipped row means the number may under-count. They must reach the
-    // report instead of living only in the trace-analysis response.
-    if (analyzed.warnings !== undefined && analyzed.warnings.length > 0) {
-      notes.push(
-        `${pass.template} analysis: ${analyzed.warnings.join("; ")}`,
-      );
-    }
-    recorded.push({
-      template: pass.template,
-      passIndex: pass.index,
-      tracePath: relativePath,
-      absoluteTracePath: trace.tracePath,
-      attempts: trace.attempts,
-      issues: trace.issues,
-      durationMs: trace.durationMs,
-      metrics: pass.metrics,
-    });
-    if (trace.attempts > 1) {
-      notes.push(
-        `${pass.template} pass needed ${trace.attempts} attempts (recording infrastructure)`,
-      );
-    }
-    const errors = trace.issues.filter((issue) => issue.level === "error");
-    if (errors.length > 0) {
-      notes.push(
-        `${pass.template} pass reported ${errors.length} xctrace error(s): ${errors
-          .map((issue) => issue.message)
-          .join("; ")}`,
-      );
+    pushWarnings(analyzed);
+    if (!alignmentAttempted) {
+      recordPass();
     }
   };
 
@@ -1102,7 +1404,9 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
   if (memoryPass !== undefined) {
     await sleep(deps.passCooldownMs ?? DEFAULTS.passCooldownMs);
     // The launch pass already left the app running; otherwise bring it up.
-    const foreground = await deps.device.foreground(deviceId).catch(() => null);
+    // Use the bounded probe: a wedged WDA between passes must not hold the
+    // Take open indefinitely (the preflight only proves it was healthy then).
+    const foreground = await probeForeground();
     if (foreground === null || foreground.bundleId !== plan.app.bundleId) {
       await bringToForeground();
     }

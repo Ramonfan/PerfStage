@@ -126,6 +126,96 @@ describe("normalizeDiagnostics", () => {
     expect(classifyDiagnosticImpact(evidence).reasons).toContain("watchdog");
   });
 
+  it("does not fail on new crash ids attributed to known system processes", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "everything is fine",
+        crashIdsBefore: [],
+        crashIdsAfter: ["DTServiceHub.diskwrites_resource-1.ips"],
+        ignoredIds: ["DTServiceHub.diskwrites_resource-1.ips"],
+        lifecycle: [],
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.crashes.newIds).toEqual([]);
+    expect(evidence.crashes.ignoredIds).toEqual([
+      "DTServiceHub.diskwrites_resource-1.ips",
+    ]);
+    expect(classifyDiagnosticImpact(evidence).reasons).not.toContain("new-crash");
+  });
+
+  it("keeps failing when a new crash id is not ignored", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "everything is fine",
+        crashIdsBefore: [],
+        crashIdsAfter: ["App-1.ips"],
+        ignoredIds: ["DTServiceHub.diskwrites_resource-1.ips"],
+        lifecycle: [],
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.crashes.newIds).toEqual(["App-1.ips"]);
+    expect(classifyDiagnosticImpact(evidence).reasons).toContain("new-crash");
+  });
+
+  it("keeps old crash evidence readable without ignoredIds", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "everything is fine",
+        crashIdsBefore: [],
+        crashIdsAfter: ["App-1.ips"],
+        lifecycle: [],
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.crashes.newIds).toEqual(["App-1.ips"]);
+    expect(evidence.crashes.ignoredIds).toEqual([]);
+  });
+
+  it("marks a truncated log as partial evidence instead of clean", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "line one",
+        crashIdsBefore: [],
+        crashIdsAfter: [],
+        lifecycle: [],
+        logTruncated: true,
+        logTruncationReason: "stream ended before the Take finished",
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.logs.status).toBe("available");
+    expect(evidence.logs.truncated).toBe(true);
+    expect(evidence.logs.truncationReason).toBe(
+      "stream ended before the Take finished",
+    );
+    const impact = classifyDiagnosticImpact(evidence);
+    expect(impact.severity).toBe("warning");
+    expect(impact.reasons).toContain("log-truncated");
+  });
+
+  it("leaves a normally stopped log as complete", () => {
+    const evidence = normalizeDiagnostics(
+      {
+        logText: "line one",
+        crashIdsBefore: [],
+        crashIdsAfter: [],
+        lifecycle: [],
+      },
+      "2026-10-17T00:00:00.000Z",
+      "2026-10-17T00:01:00.000Z",
+    );
+    expect(evidence.logs.truncated).toBe(false);
+    expect(classifyDiagnosticImpact(evidence).reasons).not.toContain(
+      "log-truncated",
+    );
+  });
+
   it("makes an incomplete Crash query unavailable rather than clean", () => {
     const evidence = normalizeDiagnostics(
       { crashQueryError: "device disconnected" },
