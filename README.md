@@ -67,7 +67,7 @@ PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属�
 
 **边界要说清**：Skill 是 **agent 层**的调用契约，PerfStage 的输入始终是场景 ID（MCP 字段名 `scenarioId`，CLI 位置参数 `<sceneId>`）或 `adHocPlan`。Runner 不解析 `SKILL.md`，也没有 `perfstage run --skill` 这样的入口。这样 Skill 可以自由演进（调整措辞、补前置检查、改输出说明），平台只依赖稳定的工具入参与输出契约。
 
-PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管服务与趋势图。
+PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发、CI 托管服务与趋势图。
 
 ### 命名约定
 
@@ -91,7 +91,7 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度、托管
 PerfStage 已经能**在真机上一键跑完一次 Take**：驱动设备、按指标录制（最多 3 个 pass）、解析 trace、判定并出报告。完整清单、状态与证据见 [4.4 平台能力矩阵](#44-平台能力矩阵)；本节只给结论。
 
 - **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比；`perfstage gate` / `evaluate_regression_gate` 按目标 run 的 `plan.json` 回归规则给出 `pass` / `fail` / `not-evaluated`。
-- **今天不可用**：趋势图、基线落盘与 CI 托管、多设备并发、HTML / JUnit 报告。
+- **今天不可用**：趋势图、HTML / JUnit 报告。
 - **两个入口**：Skill 与 CLI 走 `run_performance_test` 一键执行；需要人工接管时用 `prepare_performance_test` + `finalize_performance_test`。
 
 **现在的真实执行链路是：**
@@ -895,8 +895,8 @@ GitHub Actions 片段：
 
 - **iOS only。** 动作模型面向 iOS accessibility，不承诺 Android / Web / 桌面。
 - **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
-- **单设备串行。** 一次只跑一个 Take；没有调度器、并发或设备池。
-- **有基线对比与回归门禁，无趋势。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；`perfstage gate` 按目标 run 的 `plan.json` 规则给出 `pass` / `fail` / `not-evaluated`，缺数据时 fail-closed。没有基线快照文件、趋势图或 CI 托管；绝对阈值门禁仍只对单次 Take 生效，两者互不替代。
+- **单设备串行，不做多设备并发。** 一次只跑一个 Take；不提供调度器、并发执行、设备池或多设备编排，且明确不计划支持。
+- **有基线对比与回归门禁，无趋势。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；`perfstage gate` 按目标 run 的 `plan.json` 规则给出 `pass` / `fail` / `not-evaluated`，缺数据时 fail-closed。没有基线快照文件或趋势图；CI 托管明确不做，产品只提供本地 CLI 与退出码，由使用者自行接入 CI。绝对阈值门禁仍只对单次 Take 生效，两者互不替代。
 - **无 App 生命周期管理。** 不负责安装、卸载、签名与截图，只驱动已安装的 App。
 
 ### 路线图
