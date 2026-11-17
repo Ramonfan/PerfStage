@@ -188,6 +188,27 @@ const recordingConfigSchema = z.object({
 });
 
 /**
+ * Launch page-fault diagnostics (see `add-launch-pagein-diagnostics`).
+ *
+ * Four measurement scalars, all scoped to the launched process's main thread
+ * inside the same window `launchMs` spans. Absence means "not measured" and
+ * must never be rendered as 0. These values are evidence for cold-start I/O
+ * attribution only: they must not feed thresholds, regression tolerances or
+ * `gate`.
+ */
+export const pageFaultsSchema = z.object({
+  /** `File Backed Page In` rows on the main thread. */
+  fileBackedPageIns: z.number().int().nonnegative(),
+  /** Summed `File Backed Page In` duration in milliseconds. */
+  fileBackedPageInMs: z.number().nonnegative(),
+  /** Every `virtual-memory` operation on the main thread in the window. */
+  totalFaults: z.number().int().nonnegative(),
+  /** Summed duration of every operation, in milliseconds. */
+  totalFaultMs: z.number().nonnegative(),
+});
+export type PageFaults = z.infer<typeof pageFaultsSchema>;
+
+/**
  * Per-pass execution facts (D8 of `define-perfstage-roadmap`).
  *
  * Issue *details* deliberately stay out: counts are enough to tell whether a
@@ -223,6 +244,11 @@ export const passRecordSchema = z.object({
    * expose the save phase; it is never derived from the pass wall clock.
    */
   saveMs: z.number().nonnegative().optional(),
+  /**
+   * Launch page-fault diagnostics. Optional because only the launch pass
+   * measures it and a failed export leaves it unmeasured; absence is never 0.
+   */
+  pageFaults: pageFaultsSchema.optional(),
   /** Canonical metric names this pass produced. */
   metrics: z.array(z.string().min(1)).default([]),
   errorCount: z.number().int().nonnegative().default(0),

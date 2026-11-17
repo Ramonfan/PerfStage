@@ -2,7 +2,12 @@ import { promises as fs } from "node:fs";
 import { resolve } from "node:path";
 import type { DeviceDriver } from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
-import type { GateResult, RunStatus, TestRun } from "../model/test-run.js";
+import type {
+  GateResult,
+  PageFaults,
+  RunStatus,
+  TestRun,
+} from "../model/test-run.js";
 import type {
   RecordingConfig,
   TraceRecorder,
@@ -86,6 +91,7 @@ export interface RunTakeSummary {
     durationMs: number;
     traceBytes?: number;
     saveMs?: number;
+    pageFaults?: PageFaults;
     recording?: RecordingConfig;
     errorCount: number;
     warningCount: number;
@@ -230,6 +236,9 @@ export async function runTake(
           ? { traceBytes: pass.traceBytes }
           : {}),
         ...(pass.saveMs !== undefined ? { saveMs: pass.saveMs } : {}),
+        ...(pass.pageFaults !== undefined
+          ? { pageFaults: pass.pageFaults }
+          : {}),
         ...(pass.recording !== undefined ? { recording: pass.recording } : {}),
         metrics: pass.metrics,
         errorCount: pass.issues.filter((issue) => issue.level === "error")
@@ -385,6 +394,7 @@ function passSummary(pass: PassRecord): RunTakeSummary["passes"][number] {
     durationMs: pass.durationMs,
     ...(pass.traceBytes !== undefined ? { traceBytes: pass.traceBytes } : {}),
     ...(pass.saveMs !== undefined ? { saveMs: pass.saveMs } : {}),
+    ...(pass.pageFaults !== undefined ? { pageFaults: pass.pageFaults } : {}),
     ...(pass.recording !== undefined ? { recording: pass.recording } : {}),
     errorCount: pass.issues.filter((issue) => issue.level === "error").length,
     warningCount: pass.issues.filter((issue) => issue.level === "warning").length,

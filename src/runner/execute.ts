@@ -16,6 +16,7 @@ import type {
 } from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
 import type { ActionRecord, MetricResult, TestRun } from "../model/test-run.js";
+import { pageFaultsSchema, type PageFaults } from "../model/test-run.js";
 import type {
   RecordedTrace,
   RecordingConfig,
@@ -58,6 +59,11 @@ export interface TraceAnalyzerResult {
    * The Runner uses it for one bounded alignment attempt.
    */
   windowMiss?: HitchWindowMiss;
+  /**
+   * Launch page-fault diagnostics, when the analyzer measured them. Persisted
+   * with the pass and surfaced in notes; never an input to metrics or `gate`.
+   */
+  pageFaults?: PageFaults;
 }
 
 export type TraceAnalyzer = (
@@ -79,6 +85,8 @@ export interface PassRecord {
   traceBytes?: number;
   /** Observed xctrace save duration; omitted when the phase was not seen. */
   saveMs?: number;
+  /** Launch page-fault diagnostics; omitted when unmeasured. */
+  pageFaults?: PageFaults;
   /** Metrics this pass produced (canonical names). */
   metrics: string[];
 }
@@ -298,7 +306,14 @@ const DEFAULTS = {
  */
 const FOREGROUND_PROBE_TIMEOUT_MS = 5_000;
 
-const defaultAnalyzer: TraceAnalyzer = async (input) => {
+/**
+ * Production analyzer used when no test double is injected.
+ *
+ * Exported for the coverage that guards the launch page-fault glue: the
+ * template gate, schema validation and warning path would otherwise only run
+ * against a real `xctrace`.
+ */
+export const defaultAnalyzer: TraceAnalyzer = async (input) => {
   const result = await analyzePerformanceTrace({
     template: input.template,
     tracePath: input.tracePath,
@@ -309,10 +324,25 @@ const defaultAnalyzer: TraceAnalyzer = async (input) => {
   if ("error" in result) {
     return { error: result.error };
   }
+  // The launch analyzer publishes the summary inside `analysis`; validate it
+  // on the way out so a malformed payload can never reach `run.json`.
+  const rawPageFaults =
+    input.template === "launch" ? result.analysis.pageFaults : undefined;
+  const pageFaults =
+    rawPageFaults === undefined
+      ? undefined
+      : pageFaultsSchema.safeParse(rawPageFaults);
+  const warnings = [...(result.warnings ?? [])];
+  if (pageFaults !== undefined && !pageFaults.success) {
+    warnings.push(
+      "launch page-fault summary was malformed and was dropped; launchMs is unaffected.",
+    );
+  }
   return {
     metrics: result.metrics,
-    warnings: result.warnings,
+    ...(warnings.length > 0 ? { warnings } : {}),
     ...(result.windowMiss !== undefined ? { windowMiss: result.windowMiss } : {}),
+    ...(pageFaults?.success === true ? { pageFaults: pageFaults.data } : {}),
   };
 };
 
@@ -1239,6 +1269,23 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       metrics.push({ ...metric, tracePath: relativePath });
     }
     pushWarnings(analyzed);
+    // Diagnostic only: record what the launch pass measured about cold-start
+    // paging so a later reader can tell an I/O-cold device from a code
+    // regression. It never enters `metrics`, thresholds or `gate`.
+    if (pass.template === "launch" && analyzed.pageFaults !== undefined) {
+      const faults = analyzed.pageFaults;
+      passRecord.pageFaults = faults;
+      const launchValue = analyzed.metrics.find(
+        (metric) => metric.name === "launchMs",
+      )?.value;
+      const share =
+        typeof launchValue === "number" && launchValue > 0
+          ? `（占 launchMs ${((100 * faults.fileBackedPageInMs) / launchValue).toFixed(1)}%）`
+          : "";
+      notes.push(
+        `launch page-in ${faults.fileBackedPageIns} 次/${faults.fileBackedPageInMs}ms${share}；环境归因，不参与 gate`,
+      );
+    }
     // Analysis succeeded, so the pass can now claim the metrics it produced.
     passRecord.metrics = pass.metrics;
   };

@@ -16,6 +16,7 @@ import {
 import { runTake, type RunDependencies } from "../../runner/run.js";
 import type { TraceAnalyzer } from "../../runner/execute.js";
 import type { TestPlan } from "../../model/test-plan.js";
+import type { PageFaults } from "../../model/test-run.js";
 import {
   callExpectingSuccess,
   createTestToolHarness,
@@ -31,6 +32,7 @@ interface MetricValues {
   blockMs?: number | null;
   launchMs?: number | null;
   memoryMB?: number | null;
+  pageFaults?: PageFaults;
 }
 
 /**
@@ -64,7 +66,12 @@ function createFakeAnalyzer(values: MetricValues): TraceAnalyzer {
       };
     }
     if (template === "launch") {
-      return { metrics: [metric("launchMs", values.launchMs, "ms", "App Launch")] };
+      return {
+        metrics: [metric("launchMs", values.launchMs, "ms", "App Launch")],
+        ...(values.pageFaults !== undefined
+          ? { pageFaults: values.pageFaults }
+          : {}),
+      };
     }
     return {
       metrics: [metric("memoryMB", values.memoryMB, "MB", "Activity Monitor")],
@@ -310,6 +317,70 @@ describe("runTake", () => {
       scenarioId: null,
       deviceId: DEVICE_ID,
     });
+
+    // Analyzers that do not measure page faults must leave the field absent;
+    // "not measured" is never persisted as zero.
+    expect(stored.passes[1]).not.toHaveProperty("pageFaults");
+    expect(outcome.summary.notes.join(" | ")).not.toContain("page-in");
+  });
+
+  it("persists launch page-fault diagnostics without changing the gate", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(
+      harness,
+      adHocPlan({
+        metrics: [{ name: "launchMs", threshold: { warn: 800, fail: 1500 } }],
+      }),
+    );
+    const pageFaults = {
+      fileBackedPageIns: 3_229,
+      fileBackedPageInMs: 280.3,
+      totalFaults: 8_792,
+      totalFaultMs: 298.3,
+    };
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({ launchMs: 500, pageFaults }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    // Diagnostics never reroute the gate: 500ms is a plain pass.
+    expect(outcome.summary.gate).toBe("pass");
+    expect(outcome.summary.passes[0]).toMatchObject({
+      template: "launch",
+      pageFaults,
+    });
+    expect(outcome.summary.metrics.map((metric) => metric.name)).toEqual([
+      "launchMs",
+    ]);
+    expect(outcome.summary.notes.join(" | ")).toContain(
+      "launch page-in 3229 次/280.3ms（占 launchMs 56.1%）；环境归因，不参与 gate",
+    );
+
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes[0].pageFaults).toEqual(pageFaults);
+
+    // The same line reaches the human report's 执行记录 section via notes.
+    const markdown = await readFile(
+      join(harness.root, "runs", prepared.runId, "report.md"),
+      "utf8",
+    );
+    expect(markdown).toContain(
+      "launch page-in 3229 次/280.3ms（占 launchMs 56.1%）；环境归因，不参与 gate",
+    );
   });
 
   it("persists the compact profile for the hitches pass only", async () => {

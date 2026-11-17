@@ -360,6 +360,9 @@ export interface CollectedMetric {
 - `mobile_get_device_logs` 是**同步阻塞**调用（最多 30 秒静默或到达 limit），必须用独立 MCP client 异步启动，动作结束后再 await；否则会阻塞动作执行。
 - `memoryMB` 走 `Activity Monitor` 的 `--all-processes`（该模板不支持 `--launch`）；8s trace 约 1.7MB，按进程名筛选目标。
 - `launchMs` 依赖 E0-7：解析器必须按 `life-cycle-period` / `dyld-activity-interval` 取值。
+- `launchMs` 的单次值受设备文件页换入冷态影响，不能单独作为回归判据；page-in
+  归因、诊断字段与复算方法见 `docs/launch-pagein.md`。该字段只作证据，不改变
+  阈值或 `gate`。
 
 ### 4.6 证据门禁与状态
 

@@ -91,6 +91,54 @@ describe("passRecordSchema", () => {
     // Absence means "not measured"; a 0 would look like an empty trace.
     expect(parsed.traceBytes).toBeUndefined();
     expect(parsed.saveMs).toBeUndefined();
+    expect(parsed.pageFaults).toBeUndefined();
+  });
+
+  it("carries launch page-fault diagnostics when they were measured", () => {
+    const parsed = passRecordSchema.parse({
+      template: "launch",
+      tracePath: "traces/launch.trace",
+      durationMs: 40_000,
+      pageFaults: {
+        fileBackedPageIns: 3_229,
+        fileBackedPageInMs: 280.3,
+        totalFaults: 8_792,
+        totalFaultMs: 298.3,
+      },
+    });
+    expect(parsed.pageFaults).toEqual({
+      fileBackedPageIns: 3_229,
+      fileBackedPageInMs: 280.3,
+      totalFaults: 8_792,
+      totalFaultMs: 298.3,
+    });
+  });
+
+  it("rejects impossible page-fault counts", () => {
+    expect(() =>
+      passRecordSchema.parse({
+        template: "launch",
+        durationMs: 1,
+        pageFaults: {
+          fileBackedPageIns: -1,
+          fileBackedPageInMs: 1,
+          totalFaults: 1,
+          totalFaultMs: 1,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      passRecordSchema.parse({
+        template: "launch",
+        durationMs: 1,
+        pageFaults: {
+          fileBackedPageIns: 1.5,
+          fileBackedPageInMs: 1,
+          totalFaults: 2,
+          totalFaultMs: 1,
+        },
+      }),
+    ).toThrow();
   });
 
   it("rejects negative or fractional footprint values", () => {

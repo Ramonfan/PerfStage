@@ -1,3 +1,4 @@
+import type { PageFaults } from "../../model/test-run.js";
 import { exportTraceTable } from "../trace/export.js";
 import {
   columnFmt,
@@ -36,6 +37,12 @@ export interface AppLaunchAnalysis {
   phases: LaunchPhase[];
   rowCount: number;
   dyld: DyldActivitySummary | null;
+  /**
+   * Main-thread fault summary from `virtual-memory`, scoped to the same
+   * process and window as `launchMs`. Absent means "not measured"; it is never
+   * an implicit 0. Purely diagnostic: it must not feed thresholds or `gate`.
+   */
+  pageFaults?: PageFaults;
   warnings: string[];
 }
 
@@ -44,6 +51,11 @@ export interface AppLaunchOptions {
   processName?: string;
   /** Export and summarize the dyld table as well. Defaults to true. */
   includeDyld?: boolean;
+  /**
+   * Export and summarize `virtual-memory` as well. Defaults to true; pass
+   * `false` when a caller only needs `launchMs`.
+   */
+  includePageFaults?: boolean;
 }
 
 interface LaunchRow {
@@ -298,6 +310,135 @@ export function parseDyldActivityTable(
 }
 
 /**
+ * Summarize `virtual-memory` faults for one process's main thread inside a
+ * trace-relative window.
+ *
+ * The window must be the same one `launchMs` spans. Counts and durations are
+ * measurement facts only: callers may persist them, but they must not change
+ * metric values, thresholds or `gate`. Returns `null` when the table has no
+ * row in scope so callers can distinguish "not measured" from "zero faults".
+ */
+export function parseVirtualMemoryTable(
+  xml: string,
+  options: { processName?: string; window: { fromMs: number; toMs: number } },
+): PageFaults | null {
+  const table = parseTraceTable(xml);
+  if (table.columns.length === 0) {
+    return null;
+  }
+  const target =
+    options.processName !== undefined
+      ? normalizeProcessName(options.processName).toLowerCase()
+      : undefined;
+  if (target === undefined || target.length === 0) {
+    return null;
+  }
+
+  let fileBackedPageIns = 0;
+  let fileBackedNs = 0;
+  let totalFaults = 0;
+  let totalNs = 0;
+
+  for (const row of table.rows) {
+    const thread = columnFmt(table, row, "thread") ?? "";
+    if (!thread.startsWith("Main Thread")) {
+      continue;
+    }
+    const processName = normalizeProcessName(
+      columnFmt(table, row, "process") ?? "",
+    ).toLowerCase();
+    if (processName !== target) {
+      continue;
+    }
+    const startNs = Number(columnText(table, row, "start"));
+    if (!Number.isFinite(startNs)) {
+      continue;
+    }
+    const startMs = startNs / NS_PER_MS;
+    // Same bounds as `launchMs`: first lifecycle start inclusive, last end
+    // exclusive, so a fault exactly at the end is not double counted as tail.
+    if (startMs < options.window.fromMs || startMs >= options.window.toMs) {
+      continue;
+    }
+    // A row without a usable duration still counts as a fault: dropping it
+    // would undercount the event, while treating it as 0 ms only undercounts
+    // time for that one row. `virtual-memory` normally always reports it.
+    const durationNs = Number(columnText(table, row, "duration") ?? 0);
+    const faultNs = Number.isFinite(durationNs) ? durationNs : 0;
+    const operation = columnText(table, row, "operation") ?? "";
+    totalFaults += 1;
+    totalNs += faultNs;
+    if (operation === "File Backed Page In") {
+      fileBackedPageIns += 1;
+      fileBackedNs += faultNs;
+    }
+  }
+
+  if (totalFaults === 0) {
+    return null;
+  }
+  return {
+    fileBackedPageIns,
+    fileBackedPageInMs: round(fileBackedNs / NS_PER_MS, 1),
+    totalFaults,
+    totalFaultMs: round(totalNs / NS_PER_MS, 1),
+  };
+}
+
+/**
+ * Best-effort page-fault attachment.
+ *
+ * A diagnostic field must never make `launchMs` fail: every failure path here
+ * records a warning and leaves `pageFaults` absent. The exporter is injectable
+ * so those failure paths are testable without a device or a real `xctrace`.
+ */
+export async function attachPageFaults(
+  tracePath: string,
+  analysis: AppLaunchAnalysis,
+  exportTable: (tracePath: string, schema: string) => Promise<string> = exportTraceTable,
+): Promise<void> {
+  // Without a launch span there is no shared window to scope to, and the
+  // lifecycle parser has already explained why (`launchMs` is null).
+  if (analysis.phases.length === 0) {
+    return;
+  }
+  // The spec requires a warning, not a silent omission, when the lifecycle
+  // rows exist but do not identify a process: otherwise the reader cannot tell
+  // "not measured" from "measured and zero".
+  if (analysis.processName === null) {
+    analysis.warnings.push(
+      "virtual-memory page faults not measured: launch lifecycle rows did not identify a process.",
+    );
+    return;
+  }
+  // Reuse the reported phase bounds (rounded to 0.01 ms) so the window is
+  // reproducible from `analysis.phases`. `launchMs` itself uses the unrounded
+  // endpoints, so they can differ by at most 0.01 ms at the edges.
+  const fromMs = Math.min(...analysis.phases.map((phase) => phase.startMs));
+  const toMs = Math.max(...analysis.phases.map((phase) => phase.endMs));
+  try {
+    const xml = await exportTable(tracePath, "virtual-memory");
+    const summary = parseVirtualMemoryTable(xml, {
+      processName: analysis.processName,
+      window: { fromMs, toMs },
+    });
+    if (summary === null) {
+      analysis.warnings.push(
+        "virtual-memory table contained no matching main-thread faults in the launch window (table missing, other process, or out of window).",
+      );
+      return;
+    }
+    analysis.pageFaults = summary;
+  } catch (error) {
+    analysis.warnings.push(
+      `Could not read page faults: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
  * Export and analyze an App Launch trace, optionally including the dyld summary.
  */
 export async function analyzeAppLaunchTrace(
@@ -306,6 +447,10 @@ export async function analyzeAppLaunchTrace(
 ): Promise<AppLaunchAnalysis> {
   const lifecycleXml = await exportTraceTable(tracePath, "life-cycle-period");
   const analysis = parseAppLaunchTable(lifecycleXml, options);
+
+  if (options.includePageFaults !== false) {
+    await attachPageFaults(tracePath, analysis);
+  }
 
   if (options.includeDyld === false) {
     return analysis;

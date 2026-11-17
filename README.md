@@ -624,6 +624,10 @@ PerfStage 提供 9 个工具。`run_performance_test` 是一键入口；
 - `blockMs` 是这批卡顿帧里最长的一帧时长，与 `hitches` 共用同一条 trace。
 - `memoryMB` 取目标进程 `phys_footprint` 的中位数，不是峰值。
 - `launchMs` 取 `life-cycle-period` 的首尾跨度；没有生命周期行时不补 0。
+- `launch` 分析还会 best-effort 汇总被测进程主线程在 launch 窗口内的
+  `virtual-memory` 页换入诊断（`analysis.pageFaults`），并随 pass 写入
+  `run.json` 的 `passes[].pageFaults`。它是冷启动环境归因，**不参与**阈值、
+  回归容差或 `gate`；口径、样本与复算命令见 `docs/launch-pagein.md`。
 
 ### `finalize_performance_test`
 
