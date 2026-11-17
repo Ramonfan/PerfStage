@@ -57,8 +57,13 @@ runTake
 
 1. 同名可执行文件的第二份构建可以并存运行。hitches pass 用 `--launch`，不受
    影响；memory pass 按容器 UUID 选择进程（`0c6b77a`），也不再要求单实例。
-   矩阵脚本仍会在每个 Take 前终止另一份 NN（`com.nnhuyu.im`），作为保守清理；
-   双构建并存的 memory pass 尚未在真机复测，M4 需补证据。
+   2026-11-17 已真机复测（Take `2026-11-17T09-19-07.289Z--HUsG7Qz`）：被测
+   6.8.0（容器 `91491322…`）与干扰 10.0.0（`6498351D…`）同时存活时，memory
+   trace 同时包含 `NNIM (646)` 与 `NNIM (654)`，`memoryMB` 取目标容器 pid 654
+   的中位数 110.77 MiB，未混入干扰安装的 105.61 MiB（证据见 OpenSpec change
+   `verify-dual-install-memory` 的 `evidence/verdict.md`）。
+   矩阵脚本仍在每个 Take 前终止另一份 NN（`com.nnhuyu.im`），作为保守清理，
+   不是硬性前置条件。
 2. 设备必须处于干净的前台状态：别的 App 的系统弹窗会让被测 App 拿不到前台，
    `--launch` 录制同样会因等不到前台而失败（原因见 §4.3 / §4.4）。
 
@@ -226,6 +231,11 @@ pid 再试一次。
 
 ### 4.4 同名可执行文件会让 attach 永久失败（D15 后只影响 memory pass）
 
+下表是 6.7.1 时期的历史记录（容器 `B224D589…` / `533869D3…`）。2026-11-17 的
+复测使用 6.8.0（`91491322…`）与 10.0.0（`6498351D…`），结论见 §5 的同名进程
+条目（该条其余部分仍未解决）与 `verify-dual-install-memory` 的
+`evidence/verdict.md`。
+
 设备上同时装了两个 NN：
 
 | Bundle | 容器 | 版本 | 可执行文件 |
@@ -255,8 +265,9 @@ D15 之后 hitches pass 不再 attach，这个冲突只剩 **memory pass** 会�
 `0c6b77a` 进一步把 `resolvePid` 改为按容器 UUID 选择目标进程（容器 UUID
 唯一标识一次安装），同名构建因此不再被判为致命，`duplicate-process` 不再
 触发；测试见 `src/__tests__/device/mobilecli.test.ts`
-（`resolvePid container selection`）。双构建并存的 memory pass 还没有真机
-复测，矩阵脚本的单实例前置终止保留为保守清理，而不是硬性前置条件。
+（`resolvePid container selection`）。双构建并存的 memory pass 已于 2026-11-17
+真机复测：两份同名进程在 memory trace 中同时存在，指标只取目标容器进程；矩阵
+脚本的单实例前置终止保留为保守清理，而不是硬性前置条件。
 
 ### 4.5 工具链既有行为（已在 M2 记录，本次再次确认）
 
@@ -507,8 +518,10 @@ SIGINT 收尾）、`src/__tests__/runner/run.test.ts`（前台查询不返回 �
 - **hitches pass 不再依赖 attach，但 `--launch` 有自己的失败模式。** `--launch`
   在 App 已经运行时可能停在 “Launching process” 之后不再进入 live。录制层会在
   30s live 超时后先 SIGINT、宽限期（5 分钟）后再 SIGKILL，并按既有策略重试；
-  没有 trace 的 Take 会如实失败，不会记成成功。memory pass 的 pid 解析已改为
-  按容器 UUID 选择（`0c6b77a`），但双构建并存场景尚未在真机复测。
+  没有 trace 的 Take 会如实失败，不会记成成功。memory pass 的 pid 解析按容器
+  UUID 选择（`0c6b77a`）。**同名双安装部分已于 2026-11-17 真机复测（Take
+  `HUsG7Qz`）：两份同名进程同时存活时，`memoryMB` 只来自目标容器的 pid；本条
+  剩余未解决的是 `--launch` 的 live 超时失败模式。**
 - **动作时间窗与 trace 起点之间有一个保守的近似。** 窗口用 `during` 回调内的
   主机时间差计算，而 `during` 是会话进入 live 后立刻调用的，因此主机差被当作
   trace 相对时间使用。误差约 ±1s，方向是窗口可能**提前**开始（包含少量

@@ -185,6 +185,16 @@ describe("resolvePid container selection", () => {
 `);
     await expect(driver.resolvePid("device", TARGET)).resolves.toBeNull();
   });
+
+  it("returns null when only another build of the same executable is running", async () => {
+    // The target container is gone but a same-name process still exists. The
+    // resolver must not fall back to it: that would attribute another
+    // install's footprint to this Take.
+    const driver = await driverFor(`
+  501 /private/var/containers/Bundle/Application/${OTHER}/NNIM.app/NNIM
+`);
+    await expect(driver.resolvePid("device", TARGET)).resolves.toBeNull();
+  });
 });
 
 /**

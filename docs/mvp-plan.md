@@ -674,8 +674,9 @@ perfstage report <runId>
   短退避重试覆盖）与同名可执行文件冲突（D15 后用 `--launch` 绕开 hitches）。
   M3 后期的 D15 把 hitches pass 从 `--attach <pid>` 改为 `--launch` + 动作
   时间窗；随后 `resolvePid` 也改为按容器 UUID 选择进程（`0c6b77a`），同名构建
-  不再被视为致命。该路径尚未在真机上复测，M4 需要补一次双构建并存的 memory
-  pass 证据。矩阵脚本仍保留单实例前置终止，作为保守清理而不是硬性前置条件。
+  不再被视为致命。该路径已于 2026-11-17 真机复测（Take `HUsG7Qz`）：两份同名
+  安装同时运行时，memory trace 同时包含两个进程，`memoryMB` 只取目标容器的
+  pid。矩阵脚本仍保留单实例前置终止，作为保守清理而不是硬性前置条件。
 
 ---
 

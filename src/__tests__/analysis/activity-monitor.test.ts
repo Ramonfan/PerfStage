@@ -91,6 +91,15 @@ describe("analyzeActivityMonitorTable", () => {
     ).toThrowError(ActivityMonitorSelectionError);
   });
 
+  it("throws when an explicit pid is absent instead of falling back", async () => {
+    // The runner always supplies the pid resolved from the install container.
+    // A missing pid must fail the pass, never fall back to another process.
+    const xml = await fixture("activity-monitor-process-live.xml");
+    expect(() =>
+      analyzeActivityMonitorTable(xml, { pid: 999999 }),
+    ).toThrowError(ActivityMonitorSelectionError);
+  });
+
   it("falls back to the largest median footprint with a warning", async () => {
     const analysis = analyzeActivityMonitorTable(
       await fixture("activity-monitor-process-live.xml"),

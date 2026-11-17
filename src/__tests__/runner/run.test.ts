@@ -935,6 +935,58 @@ describe("runTake", () => {
     expect(hitches?.tracePath).toBe("traces/hitches.trace");
   });
 
+  it("fails the memory pass when the target pid cannot be resolved", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    // Two installs can share one executable name. If the target container is
+    // absent from the process list there is no safe fallback: reporting another
+    // process' footprint would silently misattribute the metric.
+    const base = createFakeDriver();
+    const device = Object.assign({}, base, {
+      resolvePid: async () => null,
+    });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder: createDeviceRecorder(device),
+        analyze: createFakeAnalyzer({
+          hitches: 42,
+          blockMs: 55,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    expect(outcome.summary.gate).toBe("unknown");
+    expect(outcome.summary.notes.join(" ")).toContain(
+      "could not resolve the app pid",
+    );
+    expect(outcome.summary.metrics.map((metric) => metric.name)).toEqual([
+      "hitches",
+      "blockMs",
+      "launchMs",
+    ]);
+    expect(outcome.summary.passes.map((pass) => pass.template)).toEqual([
+      "hitches",
+      "launch",
+    ]);
+
+    // The artifact must not contain a memory value either.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.status).toBe("failed");
+    expect(
+      stored.metrics.some((metric: { name: string }) => metric.name === "memoryMB"),
+    ).toBe(false);
+  });
+
   it("names what is actually in front when the app never comes up", async () => {
     if (!harness) throw new Error("harness not initialized");
     // Real-device case: another app's local-network alert sits on top, so the
