@@ -322,7 +322,7 @@ sceneId / adHocPlan
 | 运行历史索引与查询（`index.jsonl`、CLI `runs`、`list_performance_runs`） | ✅ 单测 | `src/storage/runs.ts`、`src/tools/runs.ts` |
 | 基线对比（`compare`、`compare_performance_runs`、多 Take 中位数与范围） | ✅ 单测 | `src/analysis/compare.ts`、`src/tools/compare.ts` |
 | 回归门禁（`gate`、`evaluate_regression_gate`、`pass` / `fail` / `not-evaluated`） | ✅ 单测 | `src/analysis/regression.ts`、`src/tools/regression.ts` |
-| 阈值重标定 | ❌ | 路线图第三阶段（C4） |
+| 阈值重标定 | ✅ 真机 | `docs/threshold-calibration.md`（2 场景 × 5 Take，同设备/同构建） |
 | HTML 报告 / JUnit / CI 注解 | ❌ | 未规划 |
 
 **平台支撑**
@@ -704,7 +704,8 @@ metrics:
   - name: hitches
     instrument: Animation Hitches
     threshold: { warn: 3, fail: 5 }
-    # 可选：回归规则。示例容差不是产品默认值，C4 会按多 Take 分布重标定。
+    # 可选：回归规则。示例容差不是产品默认值，已按多 Take 分布重标定；
+    # 依据见 docs/threshold-calibration.md。
     regression:
       worse: higher          # higher = 越大越差；lower = 越小越差
       maxWorseningPercent: 20
@@ -742,7 +743,7 @@ metrics:
 - `launchUrl` 只在每次 App 进程启动后应用一次，且只作用于动作窗口所在的 pass；`launchMs` 始终测纯冷启动，不注入深链。
 - `preconditions` 是运行期断言，至少声明一个可校验字段（`foregroundBundleId` / `accessibilityText`）：不符或屏上找不到文本时，本次 Take 以 `invalid` 结束（`gate=unknown`），不会把错页面的数据写成 `completed`。只写 `description` 会校验失败，因为没有任何可比较的值。
 - `analysisFocus` 与 `execution` 已移除：分析范围由 `metrics` 决定，交互与非交互由调用的工具入口表达；旧场景继续声明它们会加载失败并给出迁移提示。
-- `metrics[].regression` 是可选的回归规则：`worse` 必填，`maxWorseningPercent` / `maxWorseningAbsolute` 至少一个，负数与未知键会被拒绝。规则随本次运行的 `plan.json` 快照固化；示例里的 `20` 只是演示值，不是产品默认策略，C4 会按多 Take 分布重标定。
+- `metrics[].regression` 是可选的回归规则：`worse` 必填，`maxWorseningPercent` / `maxWorseningAbsolute` 至少一个，负数与未知键会被拒绝。规则随本次运行的 `plan.json` 快照固化；示例里的 `20` 只是演示值，不是产品默认策略。两个 shipped 场景的阈值与容差已按同设备、同构建的多 Take 分布重标定，样本与公式见 [`docs/threshold-calibration.md`](docs/threshold-calibration.md)。
 - 场景目前不做版本管理，修改 YAML 即生效（历史 run 的门禁仍用其自己的 `plan.json` 快照）。
 
 ---
@@ -892,7 +893,8 @@ GitHub Actions 片段：
 - [x] 运行历史索引与查询（`perfstage runs`、`list_performance_runs`、`run.json.passes`、`index.jsonl`）
 - [x] 基线对比（`perfstage compare`、`compare_performance_runs`、`run.json.device`）
 - [x] 回归门禁（`perfstage gate`、`evaluate_regression_gate`、`plan.json` 规则快照、退出码 4）
-- [ ] 趋势图与阈值重标定（C4）
+- [x] 阈值重标定（C4 `recalibrate-thresholds`，2 场景 × 5 Take，依据见 `docs/threshold-calibration.md`）
+- [ ] 趋势图
 - [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
 
 ---

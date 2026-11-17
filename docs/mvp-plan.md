@@ -655,17 +655,19 @@ perfstage report <runId>
 - [x] `perfstage compare`（基线对比，C2）
 - [x] 回归门禁（`perfstage gate` / `evaluate_regression_gate`，规则随 `plan.json` 快照，C3 `add-regression-gate`）
 - [x] CI 示例（README §9，消费退出码 `4`）
-- [ ] 趋势图与阈值重标定（C4 `recalibrate-thresholds`）
+- [x] 阈值重标定（C4 `recalibrate-thresholds`；2 场景 × 5 Take，样本与公式见 `docs/threshold-calibration.md`）
+- [ ] 趋势图
 
 **M2/M3 真机结论带入 M4：**
 
 - `hitches` 是单次窗口内的卡顿帧计数，跨次波动最大（M2 三次 Take 极差 35.4%）。
   基线必须用**多 Take 中位数**，不能拿单次结果当基准。
-- 示例阈值仍是 M0 的占位值（`hitches` warn 5 / fail 15）。真机滑动普遍在
-  180–370 之间，需要按「同一场景、同一设备、多 Take 分布」重新标定，
-  而不是为了变绿而放宽。
-- `blockMs`、`launchMs`、`memoryMB` 的跨次极差分别为 19.2% / 4.3% / 1.1%，
-  更适合先做回归门禁。
+- 占位阈值（`hitches` warn 5 / fail 15）已由 C4 按「同一场景、同一设备、多 Take
+  分布」重标定为 564 / 705（社区首页）与 133 / 153（消息列表）；过程中没有为了变绿
+  而放宽带宽。
+- `blockMs`、`launchMs`、`memoryMB` 的跨次极差（M2 三次）分别为 19.2% / 4.3% / 1.1%，
+  更适合先做回归门禁。C4 用 5 个同口径 Take 重测后，`blockMs` / `launchMs` 的极差
+  放大到 250% / 73%（极值型指标重尾），已在 `docs/threshold-calibration.md` 标注判定力弱。
 - 基线对比要区分「设备/系统变化」与「代码回归」，报告中应记录设备型号与
   iOS 版本。
 - M3 真机矩阵暴露的环境级故障已定位两类：设备侧进程表滞后（已用同 pid

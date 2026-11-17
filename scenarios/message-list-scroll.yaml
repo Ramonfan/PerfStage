@@ -25,23 +25,39 @@ actions:
     durationMs: 500
     waitAfterMs: 1500
 metrics:
+  # Thresholds and regression tolerances are calibrated from 5 same-device,
+  # same-build takes; see docs/threshold-calibration.md for sample runIds,
+  # statistics and formulas.
   - name: hitches
     instrument: Animation Hitches
     threshold:
-      warn: 5
-      fail: 15
+      warn: 133
+      fail: 153
+    regression:
+      worse: higher
+      maxWorseningPercent: 20
   - name: blockMs
     instrument: Animation Hitches
     threshold:
-      warn: 100
-      fail: 250
+      warn: 59
+      fail: 68
+    regression:
+      worse: higher
+      maxWorseningPercent: 45
   - name: launchMs
     instrument: App Launch
     threshold:
-      warn: 800
-      fail: 1500
+      warn: 398
+      fail: 497
+    regression:
+      worse: higher
+      maxWorseningPercent: 10
   - name: memoryMB
     instrument: Activity Monitor
     threshold:
-      warn: 300
-      fail: 500
+      warn: 119
+      fail: 137
+    regression:
+      worse: higher
+      maxWorseningPercent: 5
+      maxWorseningAbsolute: 2
