@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildRecordArgs,
   createXctraceRecorder,
+  hitchesProfileFromEnv,
+  hitchesWindowFromEnv,
   parseRecordingIssues,
   resolveLaunchTrace,
 } from "../../recording/xctrace.js";
+import { COMPACT_HITCHES_MISSING_DIAGNOSTICS } from "../../recording/types.js";
 import type { RecordRequest } from "../../recording/types.js";
 
 const DEVICE = "00008150-001E49E40128C01C";
@@ -103,6 +106,132 @@ describe("buildRecordArgs", () => {
     expect(buildRecordArgs(request({ template: "hitches" }))).toContain("20s");
     expect(buildRecordArgs(request({ template: "launch" }))).toContain("12s");
     expect(buildRecordArgs(request({ template: "memory" }))).toContain("12s");
+  });
+
+  it("keeps the historical argv when the hitches profile is full", () => {
+    // The switch must be a no-op by default: same template, no --instrument,
+    // same option order. A later default flip can then be reverted byte for
+    // byte by setting the profile back to full.
+    expect(
+      buildRecordArgs(request({ template: "hitches", timeLimit: "40s" }), "full"),
+    ).toEqual([
+      "record",
+      "--template",
+      "Animation Hitches",
+      "--device",
+      DEVICE,
+      "--time-limit",
+      "40s",
+      "--no-prompt",
+      "--attach",
+      "4242",
+      "--output",
+      "/tmp/run/traces/hitches.trace",
+    ]);
+  });
+
+  it("switches only the hitches pass to Blank + Hitches when compact", () => {
+    const args = buildRecordArgs(
+      request({ template: "hitches", timeLimit: "40s" }),
+      "compact",
+    );
+    expect(args.slice(0, 5)).toEqual([
+      "record",
+      "--template",
+      "Blank",
+      "--instrument",
+      "Hitches",
+    ]);
+    expect(args).not.toContain("Animation Hitches");
+    expect(args[args.indexOf("--time-limit") + 1]).toBe("40s");
+    // The target and output handling stay exactly as before.
+    expect(args.slice(args.indexOf("--attach"))).toEqual([
+      "--attach",
+      "4242",
+      "--output",
+      "/tmp/run/traces/hitches.trace",
+    ]);
+  });
+
+  it("adds --window before the target only when the request sets it", () => {
+    const plain = buildRecordArgs(request({ template: "hitches" }), "full");
+    expect(plain).not.toContain("--window");
+
+    const clipped = buildRecordArgs(
+      request({ template: "hitches", window: "11s" }),
+      "full",
+    );
+    expect(clipped[clipped.indexOf("--window") + 1]).toBe("11s");
+    // Options must stay before `--attach`: xctrace treats everything after a
+    // launch `--` as the child command.
+    expect(clipped.indexOf("--window")).toBeLessThan(
+      clipped.indexOf("--attach"),
+    );
+  });
+
+  it("rejects a malformed --window duration", () => {
+    expect(() =>
+      buildRecordArgs(request({ template: "hitches", window: "11" })),
+    ).toThrow(/--window/);
+  });
+
+  it("leaves launch and memory on their templates under the compact profile", () => {
+    const launch = buildRecordArgs(
+      request({
+        template: "launch",
+        target: { kind: "launch", bundleId: "com.nndev.im" },
+      }),
+      "compact",
+    );
+    expect(launch).toContain("App Launch");
+    expect(launch).not.toContain("--instrument");
+    const memory = buildRecordArgs(
+      request({ template: "memory", target: { kind: "allProcesses" } }),
+      "compact",
+    );
+    expect(memory).toContain("Activity Monitor");
+    expect(memory).not.toContain("--instrument");
+  });
+});
+
+describe("hitchesProfileFromEnv", () => {
+  it("defaults to full and accepts compact case-insensitively", () => {
+    expect(hitchesProfileFromEnv({})).toBe("full");
+    expect(hitchesProfileFromEnv({ PERFSTAGE_HITCHES_PROFILE: "" })).toBe("full");
+    expect(
+      hitchesProfileFromEnv({ PERFSTAGE_HITCHES_PROFILE: "compact" }),
+    ).toBe("compact");
+    expect(
+      hitchesProfileFromEnv({ PERFSTAGE_HITCHES_PROFILE: " Compact " }),
+    ).toBe("compact");
+  });
+
+  it("rejects unknown values instead of silently recording the full profile", () => {
+    // A typo must not quietly invalidate an A/B run.
+    expect(() =>
+      hitchesProfileFromEnv({ PERFSTAGE_HITCHES_PROFILE: "tiny" }),
+    ).toThrow(/PERFSTAGE_HITCHES_PROFILE/);
+  });
+});
+
+describe("hitchesWindowFromEnv", () => {
+  it("defaults to full-session and accepts ms/s/m", () => {
+    expect(hitchesWindowFromEnv({})).toBeUndefined();
+    expect(hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "  " })).toBeUndefined();
+    expect(hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "11s" })).toBe("11s");
+    expect(hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "500ms" })).toBe(
+      "500ms",
+    );
+    expect(hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "2m" })).toBe("2m");
+  });
+
+  it("rejects values xctrace would not accept", () => {
+    expect(() =>
+      hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "11" }),
+    ).toThrow(/PERFSTAGE_HITCHES_WINDOW/);
+    expect(() =>
+      hitchesWindowFromEnv({ PERFSTAGE_HITCHES_WINDOW: "1h" }),
+    ).toThrow(/PERFSTAGE_HITCHES_WINDOW/);
   });
 });
 
@@ -229,6 +358,177 @@ describe("createXctraceRecorder retry", () => {
 
     expect(recorded.tracePath).toBe(outputPath);
     expect(recorded.attempts).toBe(1);
+  });
+
+  it("records the configuration the trace was produced with", async () => {
+    const script = join(root, "fake-xctrace.sh");
+    await writeFile(
+      script,
+      [
+        "#!/bin/bash",
+        "out=",
+        "prev=",
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "--output" ]; then out="$arg"; fi',
+        '  prev="$arg"',
+        "done",
+        'mkdir -p "$out"',
+        'printf x > "$out/payload"',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const base = {
+      template: "hitches" as const,
+      device: DEVICE,
+      target: { kind: "attach" as const, pid: 4242 },
+      maxAttempts: 1,
+    };
+    const compact = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+      hitchesProfile: "compact",
+    }).record({
+      ...base,
+      outputPath: join(root, "compact.trace"),
+      timeLimit: "40s",
+    });
+    expect(compact.recording).toEqual({
+      profile: "compact",
+      template: "Blank",
+      instruments: ["Hitches"],
+      timeLimit: "40s",
+      liveTimeoutMs: 90_000,
+      window: "full-session",
+      missingDiagnostics: [...COMPACT_HITCHES_MISSING_DIAGNOSTICS],
+    });
+
+    // Default stays the historical template, and the record states it.
+    const full = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({ ...base, outputPath: join(root, "full.trace") });
+    expect(full.recording).toEqual({
+      profile: "full",
+      template: "Animation Hitches",
+      timeLimit: "20s",
+      liveTimeoutMs: 90_000,
+      window: "full-session",
+    });
+  });
+
+  it("reads the internal profile switch from PERFSTAGE_HITCHES_PROFILE", async () => {
+    const script = join(root, "fake-xctrace.sh");
+    await writeFile(
+      script,
+      [
+        "#!/bin/bash",
+        "out=",
+        "prev=",
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "--output" ]; then out="$arg"; fi',
+        '  prev="$arg"',
+        "done",
+        'mkdir -p "$out"',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const previous = process.env.PERFSTAGE_HITCHES_PROFILE;
+    process.env.PERFSTAGE_HITCHES_PROFILE = "compact";
+    try {
+      const recorded = await createXctraceRecorder({
+        command: script,
+        sleep: async () => undefined,
+      }).record({
+        template: "hitches",
+        device: DEVICE,
+        target: { kind: "attach", pid: 4242 },
+        outputPath: join(root, "env-compact.trace"),
+        maxAttempts: 1,
+      });
+      expect(recorded.recording.profile).toBe("compact");
+      expect(recorded.recording.template).toBe("Blank");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PERFSTAGE_HITCHES_PROFILE;
+      } else {
+        process.env.PERFSTAGE_HITCHES_PROFILE = previous;
+      }
+    }
+  });
+
+  it("applies PERFSTAGE_HITCHES_WINDOW to the hitches pass only", async () => {
+    // Capture the argv so the assertion covers the xctrace call, not just the
+    // persisted config: the env value must reach the process.
+    const argvFile = join(root, "argv.txt");
+    const script = join(root, "fake-xctrace.sh");
+    await writeFile(
+      script,
+      [
+        "#!/bin/bash",
+        `for arg in "$@"; do printf '%s\\n' "$arg" >> ${JSON.stringify(argvFile)}; done`,
+        `printf '%s\\n' '---' >> ${JSON.stringify(argvFile)}`,
+        "out=",
+        "prev=",
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "--output" ]; then out="$arg"; fi',
+        '  prev="$arg"',
+        "done",
+        'mkdir -p "$out"',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const previous = process.env.PERFSTAGE_HITCHES_WINDOW;
+    process.env.PERFSTAGE_HITCHES_WINDOW = "11s";
+    try {
+      const recorder = createXctraceRecorder({
+        command: script,
+        sleep: async () => undefined,
+      });
+      const hitches = await recorder.record({
+        template: "hitches",
+        device: DEVICE,
+        target: { kind: "attach", pid: 4242 },
+        outputPath: join(root, "window-hitches.trace"),
+        maxAttempts: 1,
+      });
+      expect(hitches.recording.window).toBe("11s");
+
+      // The switch is a hitches A/B knob; other passes stay full-session.
+      const launch = await recorder.record({
+        template: "launch",
+        device: DEVICE,
+        target: { kind: "launch", bundleId: "com.nndev.im" },
+        outputPath: join(root, "window-launch.trace"),
+        maxAttempts: 1,
+      });
+      expect(launch.recording.window).toBe("full-session");
+
+      const calls = (await readFile(argvFile, "utf8"))
+        .split("---\n")
+        .filter((call) => call.trim() !== "");
+      expect(calls).toHaveLength(2);
+      const [hitchesArgs, launchArgs] = calls.map((call) =>
+        call.trimEnd().split("\n"),
+      );
+      expect(hitchesArgs).toContain("--window");
+      expect(hitchesArgs?.[hitchesArgs.indexOf("--window") + 1]).toBe("11s");
+      expect(launchArgs).not.toContain("--window");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PERFSTAGE_HITCHES_WINDOW;
+      } else {
+        process.env.PERFSTAGE_HITCHES_WINDOW = previous;
+      }
+    }
   });
 
   it("retries a kperf lock collision and reports the attempt count", async () => {
@@ -422,6 +722,201 @@ describe("createXctraceRecorder fatal-trace guards", () => {
     expect(error.kind).toBe("instruments-wedged");
     expect(error.message).toContain("device restart");
     expect((await readFile(counter, "utf8")).trim()).toBe("1");
+  });
+});
+
+describe("createXctraceRecorder footprint", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "perfstage-recorder-footprint-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function writeScript(lines: string[]): Promise<string> {
+    const path = join(root, "fake-xctrace.sh");
+    await writeFile(
+      path,
+      [
+        "#!/bin/bash",
+        'out=""; prev=""',
+        'for arg in "$@"; do',
+        '  if [ "$prev" = "--output" ]; then out="$arg"; fi',
+        '  prev="$arg"',
+        "done",
+        ...lines,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    return path;
+  }
+
+  it("sums regular files in the bundle and times the save phase", async () => {
+    const script = await writeScript([
+      'mkdir -p "$out/nested"',
+      `printf '0123456789' > "$out/top.bin"`,
+      `printf 'abcd' > "$out/nested/leaf.bin"`,
+      // Symlinks are skipped: following them would double count the target.
+      `ln -s "$out/top.bin" "$out/link.bin"`,
+      // Delay before the banner proves the timer starts at the banner rather
+      // than at spawn: if it started at `startedAt`, saveMs would ~= durationMs.
+      "sleep 0.3",
+      'echo "Recording completed. Saving output file..."',
+      "sleep 0.3",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      maxAttempts: 1,
+    });
+
+    expect(recorded.bytes).toBe(14);
+    // The banner is observed before the child exits; the measured span must
+    // come from that boundary, not from the pass wall clock.
+    expect(recorded.saveMs).toBeGreaterThanOrEqual(200);
+    expect(recorded.durationMs - (recorded.saveMs ?? 0)).toBeGreaterThanOrEqual(200);
+    expect(recorded.issues).toEqual([]);
+  });
+
+  it("omits saveMs when the session never announces the save phase", async () => {
+    const script = await writeScript([
+      'mkdir -p "$out"',
+      `printf 'abc' > "$out/data.bin"`,
+      "exit 0",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      maxAttempts: 1,
+    });
+
+    expect(recorded.bytes).toBe(3);
+    // Never guessed from durationMs: an unobserved phase stays absent.
+    expect(recorded.saveMs).toBeUndefined();
+  });
+
+  it("records saveMs when a normal SIGINT stop saves and exits cleanly", async () => {
+    const script = await writeScript([
+      `trap 'mkdir -p "$out"; printf abc > "$out/data.bin"; echo "Recording completed. Saving output file..."; sleep 0.3; exit 0' INT`,
+      'echo "Starting recording."',
+      'echo "Ctrl-C to stop the recording"',
+      "while true; do sleep 0.02; done",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+      sigkillGraceMs: 500,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      during: async () => undefined,
+      duringTimeoutMs: 5_000,
+      graceMs: 0,
+      maxAttempts: 1,
+      retryDelayMs: 0,
+    });
+
+    // Normal interactive stop is SIGINT; xctrace handles it, saves and exits 0.
+    // Only a signal-terminated process omits saveMs.
+    expect(recorded.bytes).toBe(3);
+    expect(recorded.saveMs).toBeGreaterThanOrEqual(200);
+  });
+
+  it("omits saveMs when the save phase is cut short by a signal", async () => {
+    const script = await writeScript([
+      'mkdir -p "$out"',
+      `printf 'abc' > "$out/data.bin"`,
+      'echo "Recording completed. Saving output file..."',
+      "kill -TERM $$",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      maxAttempts: 1,
+    });
+
+    // The trace is still evidence, but the save phase never completed.
+    expect(recorded.bytes).toBe(3);
+    expect(recorded.saveMs).toBeUndefined();
+  });
+
+  it("treats a bundle with no measurable bytes as unmeasured", async () => {
+    const script = await writeScript([
+      'mkdir -p "$out/nested"',
+      "exit 0",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      maxAttempts: 1,
+    });
+
+    expect(recorded.bytes).toBeUndefined();
+    expect(recorded.issues).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message: expect.stringContaining("no measurable bytes"),
+      }),
+    ]);
+  });
+
+  it("reports a warning and omits bytes when the bundle cannot be measured", async () => {
+    // A FIFO exists but is neither a regular file nor a directory, so the
+    // measurement fails. Recording the reason beats persisting a fake 0.
+    const script = await writeScript([
+      'mkfifo "$out"',
+      "exit 0",
+    ]);
+
+    const recorded = await createXctraceRecorder({
+      command: script,
+      sleep: async () => undefined,
+    }).record({
+      template: "hitches",
+      device: DEVICE,
+      target: { kind: "attach", pid: 4242 },
+      outputPath: join(root, "hitches.trace"),
+      maxAttempts: 1,
+    });
+
+    expect(recorded.bytes).toBeUndefined();
+    expect(recorded.issues).toEqual([
+      expect.objectContaining({
+        level: "warning",
+        message: expect.stringContaining("could not measure trace size"),
+      }),
+    ]);
   });
 });
 

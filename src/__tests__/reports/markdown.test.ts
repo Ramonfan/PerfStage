@@ -145,6 +145,7 @@ describe("renderMarkdownReport", () => {
       "## 动作时间线",
       "## 性能指标",
       "## 执行记录",
+      "## 录制配置",
       "## 稳定性诊断",
       "## 证据文件",
       "## 限制与未知项",
@@ -182,6 +183,113 @@ describe("renderMarkdownReport", () => {
   it("says so when there are no runner notes", () => {
     const md = renderMarkdownReport(makeReport({ run: makeRun({ notes: undefined }) }));
     expect(md).toContain("无执行备注");
+  });
+
+  it("never invents a recording config for a run that predates the field", () => {
+    const md = renderMarkdownReport(
+      makeReport({
+        run: makeRun({
+          passes: [
+            {
+              template: "hitches",
+              tracePath: "traces/hitches.trace",
+              attempts: 1,
+              durationMs: 26_000,
+              metrics: ["hitches", "blockMs"],
+              errorCount: 0,
+              warningCount: 0,
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(md).toContain("未记录录制配置");
+    // A missing window must not be rendered as `undefined`.
+    expect(md).not.toContain("undefined");
+    expect(md).not.toContain("profile `");
+  });
+
+  it("renders a missing window as 未记录 instead of undefined", () => {
+    const md = renderMarkdownReport(
+      makeReport({
+        run: makeRun({
+          passes: [
+            {
+              template: "hitches",
+              tracePath: "traces/hitches.trace",
+              attempts: 1,
+              durationMs: 26_000,
+              metrics: ["hitches"],
+              errorCount: 0,
+              warningCount: 0,
+              // A run written before `window` was persisted.
+              recording: {
+                profile: "full",
+                template: "Animation Hitches",
+                timeLimit: "40s",
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(md).toContain("窗口 `未记录`");
+    expect(md).not.toContain("undefined");
+  });
+
+  it("marks a compact pass and the diagnostics it did not record", () => {
+    const md = renderMarkdownReport(
+      makeReport({
+        run: makeRun({
+          passes: [
+            {
+              template: "hitches",
+              tracePath: "traces/hitches.trace",
+              attempts: 1,
+              durationMs: 26_000,
+              metrics: ["hitches", "blockMs"],
+              errorCount: 0,
+              warningCount: 0,
+              recording: {
+                profile: "compact",
+                template: "Blank",
+                instruments: ["Hitches"],
+                timeLimit: "40s",
+                duringTimeoutMs: 30_000,
+                liveTimeoutMs: 30_000,
+                window: "full-session",
+                missingDiagnostics: ["Time Profiler（time-profile）"],
+              },
+            },
+            {
+              template: "launch",
+              tracePath: "traces/launch.trace",
+              attempts: 1,
+              durationMs: 12_000,
+              metrics: ["launchMs"],
+              errorCount: 0,
+              warningCount: 0,
+              recording: {
+                profile: "full",
+                template: "App Launch",
+                timeLimit: "12s",
+                liveTimeoutMs: 90_000,
+                window: "full-session",
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(md).toContain("## 录制配置");
+    expect(md).toContain("profile `compact`");
+    expect(md).toContain("Time Profiler（time-profile）");
+    // A human reader must not mistake the compact trace for a full one.
+    expect(md).toContain("不是完整诊断 trace");
+    expect(md).not.toContain("未发现额外限制");
   });
 
   it("includes the unavailability caveat when crash listing is unavailable", () => {

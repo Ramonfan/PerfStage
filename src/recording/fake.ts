@@ -1,8 +1,11 @@
 import { promises as fs } from "node:fs";
 import {
   RecordingError,
+  recordingConfigFor,
+  type HitchesProfile,
   type RecordedTrace,
   type RecordRequest,
+  type RecordingIssue,
   type TraceRecorder,
 } from "./types.js";
 
@@ -31,6 +34,15 @@ export interface FakeRecorderOptions {
    * lets Runner tests assert how an internal retry is surfaced.
    */
   reportedAttempts?: Partial<Record<string, number>>;
+  /**
+   * Report this save duration on every pass. Tests use it to assert that
+   * footprint facts survive persistence; omitted means "not observed".
+   */
+  saveMs?: number;
+  /** Report these recording issues; defaults to none. */
+  issues?: RecordingIssue[];
+  /** Omit bytes to model a trace bundle that could not be measured. */
+  omitBytes?: boolean;
   /** Invoked while the fake "session is live". */
   onLive?: (request: RecordRequest) => Promise<void> | void;
   /**
@@ -42,6 +54,8 @@ export interface FakeRecorderOptions {
    * `FakeDriver.simulateExternalLaunch`.
    */
   onLaunch?: (request: RecordRequest) => Promise<void> | void;
+  /** Hitches profile the fake claims to have recorded. Defaults to `full`. */
+  hitchesProfile?: HitchesProfile;
 }
 
 export interface FakeRecorder extends TraceRecorder {
@@ -90,17 +104,22 @@ export function createFakeRecorder(
       }
 
       await fs.mkdir(request.outputPath, { recursive: true });
+      const marker = `${request.outputPath}/.fake`;
       await fs.writeFile(
-        `${request.outputPath}/.fake`,
+        marker,
         JSON.stringify({ template: request.template, attempt }),
       );
+      const { size } = await fs.stat(marker);
 
       return {
         tracePath: request.outputPath,
         template: request.template,
         attempts: options.reportedAttempts?.[request.template] ?? attempt,
-        issues: [],
+        recording: recordingConfigFor(request, options.hitchesProfile ?? "full"),
+        issues: options.issues ?? [],
         durationMs: Date.now() - startedAt,
+        ...(options.omitBytes === true ? {} : { bytes: size }),
+        ...(options.saveMs !== undefined ? { saveMs: options.saveMs } : {}),
       };
     },
   };

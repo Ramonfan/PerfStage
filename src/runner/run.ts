@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import type { DeviceDriver } from "../device/types.js";
 import type { TestPlan } from "../model/test-plan.js";
 import type { GateResult, RunStatus, TestRun } from "../model/test-run.js";
-import type { TraceRecorder } from "../recording/types.js";
+import type {
+  RecordingConfig,
+  TraceRecorder,
+} from "../recording/types.js";
 import { finalizeRun, type FinalizedRun } from "./finalize.js";
 import { isSafeRunRelative } from "../reports/evidence-paths.js";
 import {
@@ -81,6 +84,9 @@ export interface RunTakeSummary {
     tracePath: string;
     attempts: number;
     durationMs: number;
+    traceBytes?: number;
+    saveMs?: number;
+    recording?: RecordingConfig;
     errorCount: number;
     warningCount: number;
   }>;
@@ -220,6 +226,11 @@ export async function runTake(
           : {}),
         attempts: pass.attempts,
         durationMs: pass.durationMs,
+        ...(pass.traceBytes !== undefined
+          ? { traceBytes: pass.traceBytes }
+          : {}),
+        ...(pass.saveMs !== undefined ? { saveMs: pass.saveMs } : {}),
+        ...(pass.recording !== undefined ? { recording: pass.recording } : {}),
         metrics: pass.metrics,
         errorCount: pass.issues.filter((issue) => issue.level === "error")
           .length,
@@ -372,6 +383,9 @@ function passSummary(pass: PassRecord): RunTakeSummary["passes"][number] {
     tracePath: pass.tracePath,
     attempts: pass.attempts,
     durationMs: pass.durationMs,
+    ...(pass.traceBytes !== undefined ? { traceBytes: pass.traceBytes } : {}),
+    ...(pass.saveMs !== undefined ? { saveMs: pass.saveMs } : {}),
+    ...(pass.recording !== undefined ? { recording: pass.recording } : {}),
     errorCount: pass.issues.filter((issue) => issue.level === "error").length,
     warningCount: pass.issues.filter((issue) => issue.level === "warning").length,
   };

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HITCHES_PROFILES } from "../recording/types.js";
 import {
   actionSchema,
   deviceTargetSchema,
@@ -165,11 +166,34 @@ const runRelativePathSchema = z
   );
 
 /**
+ * Recording configuration persisted with a pass (see `reduce-trace-footprint`).
+ *
+ * `profile` mirrors `HITCHES_PROFILES`; `template` is the xctrace name that was
+ * actually passed, so `Animation Hitches` and `Blank` are distinguishable
+ * without re-recording. A compact profile also lists the diagnostics it did
+ * not record.
+ */
+const recordingConfigSchema = z.object({
+  profile: z.enum(HITCHES_PROFILES),
+  template: z.string().min(1),
+  instruments: z.array(z.string().min(1)).optional(),
+  timeLimit: z.string().min(1),
+  /** Effective `during` bound; only the hitches pass has that phase. */
+  duringTimeoutMs: z.number().int().positive().optional(),
+  /** Effective live-session timeout. Optional for runs predating the field. */
+  liveTimeoutMs: z.number().int().positive().optional(),
+  /** `full-session`, or the `--window` value once one is used. */
+  window: z.string().min(1).optional(),
+  missingDiagnostics: z.array(z.string().min(1)).optional(),
+});
+
+/**
  * Per-pass execution facts (D8 of `define-perfstage-roadmap`).
  *
- * Issue *details* deliberately stay out: they already live in `report.json`
- * findings and `device.log`. Counts are enough to tell whether a pass was
- * stable, and keeping one copy avoids a second fact source.
+ * Issue *details* deliberately stay out: counts are enough to tell whether a
+ * pass was stable, and keeping one copy avoids a second fact source. Note that
+ * the footprint measurement warning (`could not measure trace size: ...`) is
+ * currently only counted here, not persisted verbatim in `run.json`.
  */
 export const passRecordSchema = z.object({
   template: z.string().min(1),
@@ -182,6 +206,23 @@ export const passRecordSchema = z.object({
   tracePath: runRelativePathSchema.optional(),
   attempts: z.number().int().positive().default(1),
   durationMs: z.number().nonnegative(),
+  /**
+   * Recording configuration. Optional because runs created before
+   * `reduce-trace-footprint` never recorded it; absence means "predates
+   * profiles", which is the full template, not "unknown profile".
+   */
+  recording: recordingConfigSchema.optional(),
+  /**
+   * Regular-file bytes inside the trace bundle. Optional because runs created
+   * before `reduce-trace-footprint` never recorded it; absence is "not
+   * measured", never 0.
+   */
+  traceBytes: z.number().int().positive().optional(),
+  /**
+   * Observed xctrace save duration. Optional because a killed session may not
+   * expose the save phase; it is never derived from the pass wall clock.
+   */
+  saveMs: z.number().nonnegative().optional(),
   /** Canonical metric names this pass produced. */
   metrics: z.array(z.string().min(1)).default([]),
   errorCount: z.number().int().nonnegative().default(0),

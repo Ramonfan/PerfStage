@@ -69,6 +69,60 @@ describe("passRecordSchema", () => {
       }),
     ).toThrow(/run-relative/);
   });
+
+  it("carries the trace footprint when it was measured", () => {
+    const parsed = passRecordSchema.parse({
+      template: "hitches",
+      tracePath: "traces/hitches.trace",
+      durationMs: 1200,
+      traceBytes: 441_327_926,
+      saveMs: 8_400,
+    });
+    expect(parsed.traceBytes).toBe(441_327_926);
+    expect(parsed.saveMs).toBe(8_400);
+  });
+
+  it("keeps legacy passes without footprint fields distinct from zero", () => {
+    const parsed = passRecordSchema.parse({
+      template: "hitches",
+      tracePath: "traces/hitches.trace",
+      durationMs: 1200,
+    });
+    // Absence means "not measured"; a 0 would look like an empty trace.
+    expect(parsed.traceBytes).toBeUndefined();
+    expect(parsed.saveMs).toBeUndefined();
+  });
+
+  it("rejects negative or fractional footprint values", () => {
+    expect(() =>
+      passRecordSchema.parse({
+        template: "hitches",
+        durationMs: 1,
+        traceBytes: -1,
+      }),
+    ).toThrow();
+    expect(() =>
+      passRecordSchema.parse({
+        template: "hitches",
+        durationMs: 1,
+        traceBytes: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      passRecordSchema.parse({
+        template: "hitches",
+        durationMs: 1,
+        saveMs: -1,
+      }),
+    ).toThrow();
+    expect(() =>
+      passRecordSchema.parse({
+        template: "hitches",
+        durationMs: 1,
+        traceBytes: 1.5,
+      }),
+    ).toThrow();
+  });
 });
 
 describe("testRunSchema device", () => {
@@ -128,5 +182,72 @@ describe("testRunSchema passes", () => {
     );
     expect(parsed.passes?.[0]?.attempts).toBe(2);
     expect(parsed.passes?.[0]?.metrics).toEqual(["hitches", "blockMs"]);
+  });
+
+  it("keeps legacy pass records without footprint fields unmeasured", () => {
+    const parsed = testRunSchema.parse(
+      baseRun({
+        passes: [
+          {
+            template: "hitches",
+            tracePath: "traces/hitches.trace",
+            durationMs: 1_500,
+          },
+        ],
+      }),
+    );
+    expect(parsed.passes?.[0]?.traceBytes).toBeUndefined();
+    expect(parsed.passes?.[0]?.saveMs).toBeUndefined();
+    expect(parsed.passes?.[0]?.recording).toBeUndefined();
+  });
+
+  it("accepts the recording config persisted with a compact pass", () => {
+    const parsed = testRunSchema.parse(
+      baseRun({
+        passes: [
+          {
+            template: "hitches",
+            tracePath: "traces/hitches.trace",
+            durationMs: 1_500,
+            recording: {
+              profile: "compact",
+              template: "Blank",
+              instruments: ["Hitches"],
+              timeLimit: "40s",
+              duringTimeoutMs: 30_000,
+              liveTimeoutMs: 30_000,
+              window: "full-session",
+              missingDiagnostics: ["Time Profiler (time-profile)"],
+            },
+          },
+        ],
+      }),
+    );
+    expect(parsed.passes?.[0]?.recording).toEqual({
+      profile: "compact",
+      template: "Blank",
+      instruments: ["Hitches"],
+      timeLimit: "40s",
+      duringTimeoutMs: 30_000,
+      liveTimeoutMs: 30_000,
+      window: "full-session",
+      missingDiagnostics: ["Time Profiler (time-profile)"],
+    });
+  });
+
+  it("rejects an unknown recording profile", () => {
+    expect(() =>
+      testRunSchema.parse(
+        baseRun({
+          passes: [
+            {
+              template: "hitches",
+              durationMs: 1_000,
+              recording: { profile: "tiny", template: "Blank", timeLimit: "40s" },
+            },
+          ],
+        }),
+      ),
+    ).toThrow();
   });
 });

@@ -3,26 +3,24 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
+  DEFAULT_LIVE_TIMEOUT_MS,
+  HITCHES_PROFILES,
   RecordingError,
   TEMPLATE_TO_INSTRUMENTS,
+  WINDOW_DURATION_PATTERN,
+  type HitchesProfile,
   type RecordedTrace,
   type RecordRequest,
   type RecordingErrorKind,
   type RecordingIssue,
   type TraceRecorder,
+  recordingConfigFor,
+  resolveRecording,
 } from "./types.js";
 
 const XCTRACE = "xctrace";
 
-/** Default recording window per template, tuned on a physical iPhone. */
-const DEFAULT_TIME_LIMIT: Record<string, string> = {
-  hitches: "20s",
-  launch: "12s",
-  memory: "12s",
-};
-
 const DEFAULT_GRACE_MS = 1_500;
-const DEFAULT_LIVE_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 30_000;
 /**
@@ -70,6 +68,55 @@ export interface XctraceRecorderOptions {
   sigkillGraceMs?: number;
   /** Receive human-readable progress lines. Defaults to a no-op. */
   log?: (message: string) => void;
+  /**
+   * Hitches profile. Defaults to `PERFSTAGE_HITCHES_PROFILE` (`full` when
+   * unset). This is the internal A/B/revert switch; it is not a plan field.
+   */
+  hitchesProfile?: HitchesProfile;
+  /**
+   * Hitches `--window` duration. Defaults to `PERFSTAGE_HITCHES_WINDOW`
+   * (absent when unset). Applies only to the hitches pass.
+   */
+  hitchesWindow?: string;
+}
+
+/**
+ * Parse the internal C2 window switch.
+ *
+ * Absent/empty means `full-session`. This is an A/B knob, not a plan field:
+ * a fixed duration is only safe when the scenario's action window plus margin
+ * fits, which the caller must validate after recording.
+ */
+export function hitchesWindowFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const raw = env.PERFSTAGE_HITCHES_WINDOW?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return undefined;
+  if (!WINDOW_DURATION_PATTERN.test(raw)) {
+    throw new Error(
+      `PERFSTAGE_HITCHES_WINDOW must look like 500ms, 10s or 2m, got "${env.PERFSTAGE_HITCHES_WINDOW}"`,
+    );
+  }
+  return raw;
+}
+
+/**
+ * Parse the internal profile switch.
+ *
+ * Unknown values fail loudly: a typo must not silently record the full
+ * profile and quietly invalidate an A/B run.
+ */
+export function hitchesProfileFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): HitchesProfile {
+  const raw = env.PERFSTAGE_HITCHES_PROFILE?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return "full";
+  if ((HITCHES_PROFILES as readonly string[]).includes(raw)) {
+    return raw as HitchesProfile;
+  }
+  throw new Error(
+    `PERFSTAGE_HITCHES_PROFILE must be one of ${HITCHES_PROFILES.join(" | ")}, got "${env.PERFSTAGE_HITCHES_PROFILE}"`,
+  );
 }
 
 /**
@@ -199,17 +246,27 @@ function isLive(output: string): boolean {
  * `--` is the child command, so putting `--time-limit` there would silently
  * turn it into an app argument.
  */
-export function buildRecordArgs(request: RecordRequest): string[] {
-  const args = [
-    "record",
-    "--template",
-    TEMPLATE_TO_INSTRUMENTS[request.template] ?? request.template,
+export function buildRecordArgs(
+  request: RecordRequest,
+  profile: HitchesProfile = "full",
+): string[] {
+  const resolved = resolveRecording(request, profile);
+  const args = ["record", "--template", resolved.template];
+  for (const instrument of resolved.instruments ?? []) {
+    args.push("--instrument", instrument);
+  }
+  args.push(
     "--device",
     request.device,
     "--time-limit",
-    request.timeLimit ?? DEFAULT_TIME_LIMIT[request.template] ?? "20s",
+    resolved.timeLimit,
     "--no-prompt",
-  ];
+  );
+  if (resolved.window !== "full-session") {
+    // `--window` is a recording-time ring buffer. It must come before the
+    // target subcommand like every other option.
+    args.push("--window", resolved.window);
+  }
 
   switch (request.target.kind) {
     case "attach":
@@ -252,6 +309,8 @@ interface LiveSpawn {
   live: Promise<void>;
   exited: Promise<ExitedProcess>;
   output: () => string;
+  /** Epoch ms when the save phase was first observed, if ever. */
+  saveStartedAt: () => number | undefined;
   stop: () => void;
 }
 
@@ -279,6 +338,7 @@ function spawnRecording(
   });
 
   let output = "";
+  let saveStartedAt: number | undefined;
   let liveSettled = false;
   let settleLive: () => void = () => undefined;
   let rejectLive: (error: Error) => void = () => undefined;
@@ -301,6 +361,12 @@ function spawnRecording(
 
   const append = (chunk: Buffer | string): void => {
     output += chunk.toString();
+    // xctrace may print the save banner before the trace is fully written.
+    // Keep the first observation: retries create a fresh session, and the
+    // pass wall clock must not be used as a fallback.
+    if (saveStartedAt === undefined && output.includes("Saving output file")) {
+      saveStartedAt = Date.now();
+    }
     if (liveSettled) return;
     if (isStartFailure(output)) {
       const failure = classifyStartFailure(output);
@@ -394,6 +460,7 @@ function spawnRecording(
     live,
     exited,
     output: () => output,
+    saveStartedAt: () => saveStartedAt,
     stop: () => {
       child.kill("SIGINT");
     },
@@ -492,6 +559,14 @@ export function createXctraceRecorder(
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
   const log = options.log ?? (() => undefined);
+  const hitchesProfile = options.hitchesProfile ?? hitchesProfileFromEnv();
+  if (hitchesProfile === "compact") {
+    log("hitches profile: compact (Blank + Hitches)");
+  }
+  const hitchesWindow = options.hitchesWindow ?? hitchesWindowFromEnv();
+  if (hitchesWindow !== undefined) {
+    log(`hitches window: last ${hitchesWindow}`);
+  }
 
   return {
     async record(request: RecordRequest): Promise<RecordedTrace> {
@@ -499,6 +574,12 @@ export function createXctraceRecorder(
       const retryDelayMs = request.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
       const directory = dirname(request.outputPath);
       await fs.mkdir(directory, { recursive: true });
+      // The window is a hitches-only A/B knob; launch/memory keep their
+      // full-session recordings even when the switch is on.
+      const effectiveRequest =
+        hitchesWindow !== undefined && request.template === "hitches"
+          ? { ...request, window: hitchesWindow }
+          : request;
 
       let lastError: RecordingError | null = null;
 
@@ -519,11 +600,12 @@ export function createXctraceRecorder(
 
         try {
           return await recordOnce({
-            request,
+            request: effectiveRequest,
             command,
             directory,
             sleep,
             attempt,
+            profile: hitchesProfile,
             sigkillGraceMs: options.sigkillGraceMs ?? DEFAULT_SIGKILL_GRACE_MS,
           });
         } catch (error) {
@@ -559,9 +641,11 @@ async function recordOnce(input: {
   directory: string;
   sleep: (ms: number) => Promise<void>;
   attempt: number;
+  profile: HitchesProfile;
   sigkillGraceMs: number;
 }): Promise<RecordedTrace> {
-  const { request, command, directory, sleep, attempt, sigkillGraceMs } = input;
+  const { request, command, directory, sleep, attempt, profile, sigkillGraceMs } =
+    input;
   const startedAt = Date.now();
   const isLaunch = request.target.kind === "launch";
 
@@ -576,7 +660,7 @@ async function recordOnce(input: {
   const hardTimeoutMs =
     liveTimeoutMs + parseTimeLimitMs(request.timeLimit) + 180_000;
 
-  const session = spawnRecording(buildRecordArgs(request), {
+  const session = spawnRecording(buildRecordArgs(request, profile), {
     command,
     cwd: directory,
     liveTimeoutMs,
@@ -598,6 +682,17 @@ async function recordOnce(input: {
 
     const exited = await session.exited;
     const issues = parseRecordingIssues(exited.output);
+    // The save banner is the only observable boundary between recording and
+    // host-side transfer. Measuring it directly keeps `saveMs` honest when
+    // the trace is large; the pass wall clock includes startup and actions.
+    const saveStartedAt = session.saveStartedAt();
+    // A save phase cut short by a signal has no complete duration. The trace
+    // may still exist and be worth recording, so keep `bytes` but omit
+    // `saveMs` instead of reporting a partial (faster-looking) value.
+    const saveMs =
+      saveStartedAt === undefined || exited.signal !== null
+        ? undefined
+        : Math.max(0, Date.now() - saveStartedAt);
 
     if (isStartFailure(exited.output)) {
       await cleanupTrace(request.outputPath);
@@ -647,12 +742,42 @@ async function recordOnce(input: {
       throw new RecordingError(fatal.message, fatal.kind, false, exited.output);
     }
 
+    // A successful recording still needs an auditable footprint. If the
+    // bundle cannot be read, omit the number and surface the reason instead of
+    // reporting 0 (which would look like an empty trace).
+    //
+    // Snapshot the pass wall clock first: walking a large bundle only collects
+    // metadata, but it must not become part of the recording duration the
+    // baseline and candidates are compared on.
+    const durationMs = Date.now() - startedAt;
+    let bytes: number | undefined;
+    try {
+      const measured = await measureTraceBytes(tracePath);
+      if (measured === 0) {
+        // A bundle with no measurable bytes (empty or only zero-length files)
+        // carries no evidence and must be distinguishable from "not measured".
+        throw new Error("trace bundle has no measurable bytes");
+      }
+      bytes = measured;
+    } catch (error) {
+      issues.push({
+        level: "warning",
+        message: `could not measure trace size: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        line: "",
+      });
+    }
+
     return {
       tracePath,
       template: request.template,
       attempts: attempt,
+      recording: recordingConfigFor(request, profile),
       issues,
-      durationMs: Date.now() - startedAt,
+      durationMs,
+      ...(bytes !== undefined ? { bytes } : {}),
+      ...(saveMs !== undefined ? { saveMs } : {}),
     };
   } catch (error) {
     if (!interrupted) {
@@ -682,6 +807,33 @@ async function cleanupTrace(path: string): Promise<void> {
   if (existsSync(path)) {
     await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * Sum regular-file bytes inside a trace bundle.
+ *
+ * `.trace` is a directory, so `stat(path).size` is meaningless. Symlinks are
+ * deliberately skipped: following them could double count files or escape the
+ * bundle. The caller turns a read failure into a warning instead of a 0.
+ */
+async function measureTraceBytes(path: string): Promise<number> {
+  const info = await fs.lstat(path);
+  if (info.isFile()) {
+    return info.size;
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`${path} is not a regular file or directory`);
+  }
+  let total = 0;
+  for (const entry of await fs.readdir(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) {
+      total += await measureTraceBytes(child);
+    } else if (entry.isFile()) {
+      total += (await fs.lstat(child)).size;
+    }
+  }
+  return total;
 }
 
 /**

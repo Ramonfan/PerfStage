@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFakeDriver, type FakeDriver } from "../../device/fake.js";
@@ -8,7 +8,11 @@ import {
   type FakeRecorder,
   type FakeRecorderOptions,
 } from "../../recording/fake.js";
-import { RecordingError, type TraceRecorder } from "../../recording/types.js";
+import {
+  COMPACT_HITCHES_MISSING_DIAGNOSTICS,
+  RecordingError,
+  type TraceRecorder,
+} from "../../recording/types.js";
 import { runTake, type RunDependencies } from "../../runner/run.js";
 import type { TraceAnalyzer } from "../../runner/execute.js";
 import type { TestPlan } from "../../model/test-plan.js";
@@ -168,7 +172,7 @@ describe("runTake", () => {
     const device = createFakeDriver({
       elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
     });
-    const recorder = createDeviceRecorder(device);
+    const recorder = createDeviceRecorder(device, { saveMs: 1_234 });
     const prepared = await prepare(harness, adHocPlan());
 
     const outcome = await runTake(
@@ -234,6 +238,54 @@ describe("runTake", () => {
       outcome.summary.passes.map((pass) => pass.durationMs),
     );
 
+    // Footprint facts are persisted so a Take's size and save cost stay
+    // auditable after the trace is deleted or archived.
+    expect(outcome.summary.passes.map((pass) => pass.saveMs)).toEqual([
+      1_234, 1_234, 1_234,
+    ]);
+    for (const pass of outcome.summary.passes) {
+      expect(pass.traceBytes).toBeGreaterThan(0);
+    }
+    expect(
+      stored.passes.map((pass: { traceBytes: number; saveMs: number }) => ({
+        traceBytes: pass.traceBytes,
+        saveMs: pass.saveMs,
+      })),
+    ).toEqual(
+      outcome.summary.passes.map((pass) => ({
+        traceBytes: pass.traceBytes,
+        saveMs: pass.saveMs,
+      })),
+    );
+
+    // The recording config travels with each pass, so a compact trace can
+    // never be mistaken for a full diagnostic one after the Take.
+    expect(stored.passes.map((pass: { recording?: unknown }) => pass.recording))
+      .toEqual([
+        {
+          profile: "full",
+          template: "Animation Hitches",
+          timeLimit: "40s",
+          duringTimeoutMs: 30_000,
+          liveTimeoutMs: 30_000,
+          window: "full-session",
+        },
+        {
+          profile: "full",
+          template: "App Launch",
+          timeLimit: "12s",
+          liveTimeoutMs: 90_000,
+          window: "full-session",
+        },
+        {
+          profile: "full",
+          template: "Activity Monitor",
+          timeLimit: "12s",
+          liveTimeoutMs: 90_000,
+          window: "full-session",
+        },
+      ]);
+
     // Device facts from preflight are persisted for baseline grouping.
     expect(stored.device).toEqual({
       id: DEVICE_ID,
@@ -258,6 +310,61 @@ describe("runTake", () => {
       scenarioId: null,
       deviceId: DEVICE_ID,
     });
+  });
+
+  it("persists the compact profile for the hitches pass only", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver({
+      elements: [{ rect: { x: 0, y: 0, width: 393, height: 852 } }],
+    });
+    const recorder = createDeviceRecorder(device, { hitchesProfile: "compact" });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 40,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.passes.map((pass) => pass.recording?.profile)).toEqual([
+      "compact",
+      "full",
+      "full",
+    ]);
+
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes[0].recording).toEqual({
+      profile: "compact",
+      template: "Blank",
+      instruments: ["Hitches"],
+      timeLimit: "40s",
+      duringTimeoutMs: 30_000,
+      liveTimeoutMs: 30_000,
+      window: "full-session",
+      missingDiagnostics: [...COMPACT_HITCHES_MISSING_DIAGNOSTICS],
+    });
+    expect(stored.passes[1].recording).toEqual({
+      profile: "full",
+      template: "App Launch",
+      timeLimit: "12s",
+      liveTimeoutMs: 90_000,
+      window: "full-session",
+    });
+    // The compact pass still produced its metrics: the config is evidence,
+    // not a refusal to analyze.
+    expect(stored.passes[0].metrics).toEqual(["hitches", "blockMs"]);
   });
 
   it("keeps a Take finalizable when a pass trace lands outside the run directory", async () => {
@@ -528,6 +635,112 @@ describe("runTake", () => {
     expect(
       recorder.requests.some((request) => request.template === "hitches"),
     ).toBe(true);
+    // A failed window check must not discard the footprint of the trace that
+    // landed on disk.
+    expect(outcome.summary.passes.map((pass) => pass.template)).toEqual([
+      "hitches",
+    ]);
+    expect(outcome.summary.passes[0]?.traceBytes).toBeGreaterThan(0);
+    expect(
+      existsSync(join(harness.root, "runs", prepared.runId, "traces/hitches.trace")),
+    ).toBe(true);
+  });
+
+  it("keeps the recorded footprint when analysis fails", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver();
+    const recorder = createDeviceRecorder(device);
+    const prepared = await prepare(harness, adHocPlan());
+    const analyze: TraceAnalyzer = async ({ template }) =>
+      template === "hitches"
+        ? { error: "frame table malformed" }
+        : { metrics: [] };
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, { device, recorder, analyze }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("failed");
+    expect(outcome.summary.notes.join(" ")).toContain("frame table malformed");
+    expect(outcome.summary.passes.map((pass) => pass.template)).toEqual([
+      "hitches",
+    ]);
+    expect(outcome.summary.passes[0]?.traceBytes).toBeGreaterThan(0);
+
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes).toHaveLength(1);
+    expect(stored.passes[0]).toMatchObject({
+      template: "hitches",
+      tracePath: "traces/hitches.trace",
+    });
+    expect(stored.passes[0].traceBytes).toBeGreaterThan(0);
+    // The recording config is a fact about the trace, not about the analysis:
+    // it must survive a pass that produced no metric.
+    expect(stored.passes[0].recording).toMatchObject({
+      profile: "full",
+      template: "Animation Hitches",
+      window: "full-session",
+    });
+    // No value was produced, so the pass must not claim its requested metrics.
+    expect(stored.passes[0].metrics).toEqual([]);
+    // A failed analysis must not clean up the trace it could not score.
+    expect(
+      existsSync(join(harness.root, "runs", prepared.runId, "traces/hitches.trace")),
+    ).toBe(true);
+  });
+
+  it("persists a footprint warning count when bytes cannot be measured", async () => {
+    if (!harness) throw new Error("harness not initialized");
+    const device = createFakeDriver();
+    const recorder = createDeviceRecorder(device, {
+      omitBytes: true,
+      issues: [
+        {
+          level: "warning",
+          message: "could not measure trace size: EACCES",
+          line: "",
+        },
+      ],
+    });
+    const prepared = await prepare(harness, adHocPlan());
+
+    const outcome = await runTake(
+      { runId: prepared.runId, plan: prepared.plan, deviceId: DEVICE_ID },
+      takeDeps(harness, {
+        device,
+        recorder,
+        analyze: createFakeAnalyzer({
+          hitches: 10,
+          blockMs: 40,
+          launchMs: 300,
+          memoryMB: 100,
+        }),
+      }),
+    );
+
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.summary.status).toBe("completed");
+    expect(outcome.summary.passes[0]).toMatchObject({
+      template: "hitches",
+      warningCount: 1,
+    });
+    expect(outcome.summary.passes[0]?.traceBytes).toBeUndefined();
+
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    expect(stored.passes[0]).toMatchObject({
+      template: "hitches",
+      warningCount: 1,
+    });
+    // Absence is "not measured"; 0 would look like an empty trace.
+    expect(stored.passes[0]).not.toHaveProperty("traceBytes");
   });
 
   it("keeps status completed and gate fail when a threshold is missed", async () => {
@@ -786,6 +999,21 @@ describe("runTake", () => {
     );
     expect(hitches?.value).toBe(100);
     expect(hitches?.samples).toEqual([100, 100, 400]);
+
+    // Each round keeps its own trace: repeated templates must not share one
+    // path, otherwise earlier pass bytes could not be recomputed from disk.
+    const stored = JSON.parse(
+      await readFile(join(harness.root, "runs", prepared.runId, "run.json"), "utf8"),
+    );
+    const paths = stored.passes.map((pass: { tracePath: string }) => pass.tracePath);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(paths).toContain("traces/rep-1/hitches.trace");
+    expect(paths).toContain("traces/rep-3/hitches.trace");
+    for (const pass of stored.passes as Array<{ tracePath: string }>) {
+      expect(existsSync(join(harness.root, "runs", prepared.runId, pass.tracePath))).toBe(
+        true,
+      );
+    }
   });
 
   it("retries a retryable recording failure and records the attempt count", async () => {
@@ -922,6 +1150,36 @@ describe("run_performance_test tool", () => {
     expect(result.reportPath).toContain(result.runId);
     expect(result.metrics).toHaveLength(4);
     expect(result.actions).toHaveLength(2);
+  });
+
+  it("fails before prepare when the internal profile switch is invalid", async () => {
+    // A typo must not leave a `prepared` run with no terminal status: nothing
+    // is created when the switch cannot be parsed.
+    harness = await createTestToolHarness(undefined, {
+      device: createFakeDriver(),
+      analyze: createFakeAnalyzer({ hitches: 1 }),
+      sleep: async () => undefined,
+    });
+    const before = await readdir(harness.runsDir);
+
+    const previous = process.env.PERFSTAGE_HITCHES_PROFILE;
+    process.env.PERFSTAGE_HITCHES_PROFILE = "tiny";
+    try {
+      const result = await harness.call("run_performance_test", {
+        scenarioId: "community-home-scroll",
+        device: { id: DEVICE_ID },
+      });
+      expect(isToolError(result)).toBe(true);
+      if (!isToolError(result)) return;
+      expect(result.error).toContain("PERFSTAGE_HITCHES_PROFILE");
+      expect(await readdir(harness.runsDir)).toEqual(before);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PERFSTAGE_HITCHES_PROFILE;
+      } else {
+        process.env.PERFSTAGE_HITCHES_PROFILE = previous;
+      }
+    }
   });
 
   it("rejects a payload with both a scenario and an ad-hoc plan", async () => {

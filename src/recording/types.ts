@@ -33,6 +33,62 @@ export const TEMPLATE_TO_INSTRUMENTS: Record<RecordingTemplate, string> = {
   memory: "Activity Monitor",
 };
 
+/**
+ * Default recording window per template, tuned on a physical iPhone.
+ *
+ * Resolved here (not in the xctrace adapter) so the config recorded with a
+ * pass matches the argv even when the caller passed no `timeLimit`.
+ */
+export const DEFAULT_TIME_LIMIT: Record<string, string> = {
+  hitches: "20s",
+  launch: "12s",
+  memory: "12s",
+};
+
+/** How long to wait for the session to go live. Shared with the argv/config. */
+export const DEFAULT_LIVE_TIMEOUT_MS = 90_000;
+
+/**
+ * Hitches profiles.
+ *
+ * `full` is the historical `Animation Hitches` template. `compact` is the
+ * candidate C1 profile: only the table the hitches parser reads, without the
+ * kdebug/time-profile/Metal set that made one trace 480MB on a real device
+ * (docs/trace-footprint.md §9). C1 did not pass the metric-stability gate and
+ * is not adopted; the switch stays for a future re-baselining change. The
+ * profile is an internal recording choice, never a plan field.
+ */
+export const HITCHES_PROFILES = ["full", "compact"] as const;
+
+export type HitchesProfile = (typeof HITCHES_PROFILES)[number];
+
+/** `Blank` is the template that can take an explicit `--instrument`. */
+export const COMPACT_HITCHES_TEMPLATE = "Blank";
+/** `Frame Lifetimes` alone does not emit `hitches-frame-lifetimes`. */
+export const COMPACT_HITCHES_INSTRUMENTS = ["Hitches"] as const;
+/**
+ * Diagnostics the compact profile does not record.
+ *
+ * The full `Animation Hitches` trace exported 59 table schemas on a real
+ * device; `Blank + Hitches` exported 12. This list names the major diagnostic
+ * families that disappear, not every individual table: readers must not treat
+ * a compact trace as a full diagnostic trace. Re-record with `full` when CPU
+ * stacks, Metal details or system-call context are needed.
+ */
+export const COMPACT_HITCHES_MISSING_DIAGNOSTICS = [
+  "Time Profiler（time-profile / time-sample / thread-state / context-switch）",
+  "CPU 使用率（ProcessCPUUsage / SystemCPUUsage / ThreadCPUUsage / ThreadActivity）",
+  "Metal / GPU（metal-* / device-gpu-info）",
+  "图形与显示（display-* / visual-chain / visual-connection / displayed-surfaces-*）",
+  "线程快照（thread-snapshot / stackshot-info）",
+  "系统调用（syscall / syscall-name-map）",
+  "日志与 signpost（os-log / os-signpost）",
+  "hang 风险（hang-risks / potential-hangs）",
+  "生命周期（life-cycle-period）",
+  "虚拟内存与热状态（virtual-memory / device-thermal-state-intervals）",
+  "runloop（runloop-events）",
+] as const;
+
 /** What xctrace should attach to. */
 export type RecordingTarget =
   | {
@@ -84,6 +140,14 @@ export interface RecordRequest {
   /** xctrace `--time-limit`, e.g. `20s`. Defaults per template. */
   timeLimit?: string;
   /**
+   * xctrace `--window`, e.g. `11s`: keep only events from the last N of the
+   * recording (a ring buffer, not a post-hoc crop). Absent means
+   * `full-session`. Only set this when the declared action window plus a
+   * safety margin is known to fit; a too-short window silently drops the
+   * interaction and the Take must then be rejected by the window checks.
+   */
+  window?: string;
+  /**
    * Runs once the recording session is live (after xctrace prints
    * `Ctrl-C to stop the recording`). This is where the scenario actions run,
    * so the recorded window contains the interaction, not just idle time.
@@ -110,6 +174,115 @@ export interface RecordRequest {
   retryDelayMs?: number;
 }
 
+/**
+ * The `--template` / `--instrument` / `--time-limit` a request resolves to.
+ *
+ * `buildRecordArgs` and the persisted config both read this, so a trace can
+ * never be analysed under a different profile than the one recorded.
+ */
+export interface ResolvedRecording {
+  template: string;
+  instruments?: readonly string[];
+  timeLimit: string;
+  /** Effective bound on `during`; absent when the request has none. */
+  duringTimeoutMs?: number;
+  /** Effective live-session timeout. */
+  liveTimeoutMs: number;
+  /**
+   * `full-session` means no `--window` was passed. C1 does not clip the
+   * recording; keeping the value explicit means a later window profile cannot
+   * silently omit what it cut.
+   */
+  window: string;
+}
+
+/** xctrace `--window` accepts ms/s/m, but not hours. */
+export const WINDOW_DURATION_PATTERN = /^\d+(ms|s|m)$/;
+
+export function resolveRecording(
+  request: RecordRequest,
+  profile: HitchesProfile = "full",
+): ResolvedRecording {
+  const window = request.window?.trim();
+  if (window !== undefined && !WINDOW_DURATION_PATTERN.test(window)) {
+    throw new Error(
+      `xctrace --window must look like 500ms, 10s or 2m, got "${request.window}"`,
+    );
+  }
+  // Only the hitches pass has a compact variant: launch needs App Launch's
+  // life-cycle tables, and memory is already ~1.6MB.
+  const compact = profile === "compact" && request.template === "hitches";
+  return {
+    template: compact
+      ? COMPACT_HITCHES_TEMPLATE
+      : (TEMPLATE_TO_INSTRUMENTS[request.template] ?? request.template),
+    ...(compact ? { instruments: COMPACT_HITCHES_INSTRUMENTS } : {}),
+    timeLimit:
+      request.timeLimit ?? DEFAULT_TIME_LIMIT[request.template] ?? "20s",
+    liveTimeoutMs: request.liveTimeoutMs ?? DEFAULT_LIVE_TIMEOUT_MS,
+    ...(request.duringTimeoutMs !== undefined
+      ? { duringTimeoutMs: request.duringTimeoutMs }
+      : {}),
+    window: window ?? "full-session",
+  };
+}
+
+/**
+ * Recording configuration persisted with a pass.
+ *
+ * `profile` describes *this pass*, not the Take: launch and memory always run
+ * their default templates, so they report `full` even when the hitches pass is
+ * compact.
+ */
+export interface RecordingConfig {
+  profile: HitchesProfile;
+  /** xctrace `--template` value, e.g. `Animation Hitches` or `Blank`. */
+  template: string;
+  /** Explicit `--instrument` values; omitted when the template supplies them. */
+  instruments?: string[];
+  /** xctrace `--time-limit` value. */
+  timeLimit: string;
+  /**
+   * Effective bound on the `during` action replay. Present for the hitches
+   * pass (the only pass with a `during` phase); a healthy Take needs ~14s.
+   */
+  duringTimeoutMs?: number;
+  /** Effective bound on waiting for the recording session to go live. */
+  liveTimeoutMs: number;
+  /** `full-session`, or the `--window` value once one is used. */
+  window: string;
+  /**
+   * Diagnostics this profile does not record. Present for `compact`, absent
+   * for `full`; a compact trace is not a full diagnostic trace.
+   */
+  missingDiagnostics?: string[];
+}
+
+export function recordingConfigFor(
+  request: RecordRequest,
+  profile: HitchesProfile = "full",
+): RecordingConfig {
+  const resolved = resolveRecording(request, profile);
+  // Only the hitches pass has a compact variant; launch and memory keep their
+  // default templates and must not be labelled compact.
+  const compact = profile === "compact" && request.template === "hitches";
+  const instruments = resolved.instruments;
+  return {
+    profile: compact ? "compact" : "full",
+    template: resolved.template,
+    ...(instruments !== undefined ? { instruments: [...instruments] } : {}),
+    timeLimit: resolved.timeLimit,
+    ...(resolved.duringTimeoutMs !== undefined
+      ? { duringTimeoutMs: resolved.duringTimeoutMs }
+      : {}),
+    liveTimeoutMs: resolved.liveTimeoutMs,
+    window: resolved.window,
+    ...(compact
+      ? { missingDiagnostics: [...COMPACT_HITCHES_MISSING_DIAGNOSTICS] }
+      : {}),
+  };
+}
+
 export type RecordingIssueLevel = "error" | "warning";
 
 export interface RecordingIssue {
@@ -125,12 +298,36 @@ export interface RecordedTrace {
   /** 1 when the first attempt worked; >1 means a retry happened. */
   attempts: number;
   /**
+   * The recording configuration the trace was actually produced with.
+   *
+   * Persisted with the pass so a compact profile can never be mistaken for a
+   * full diagnostic trace after the fact.
+   */
+  recording: RecordingConfig;
+  /**
    * xctrace "run issues". Warnings are normal (sampling-period mismatches);
    * errors that did not abort the recording are surfaced so the Take can
    * record them instead of silently trusting a partial trace.
    */
   issues: RecordingIssue[];
   durationMs: number;
+  /**
+   * Regular-file bytes inside the trace bundle.
+   *
+   * Omitted when the bundle cannot be read, or when the regular files sum to
+   * zero (empty bundle / only zero-length files): both cases carry no
+   * evidence, and the recorder adds a warning issue instead of reporting a
+   * fabricated 0. `du` is not used because block allocation makes sizes
+   * incomparable across volumes.
+   */
+  bytes?: number;
+  /**
+   * Time from xctrace's "Saving output file..." line to process exit.
+   *
+   * Omitted when that phase was never observed (killed session, older
+   * xctrace). Never derived from the pass wall clock.
+   */
+  saveMs?: number;
 }
 
 export type RecordingErrorKind =

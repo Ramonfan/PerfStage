@@ -7,22 +7,30 @@
 export {
   RecordingError,
   RECORDING_TEMPLATES,
+  HITCHES_PROFILES,
   TEMPLATE_TO_INSTRUMENTS,
+  recordingConfigFor,
+  resolveRecording,
 } from "./types.js";
 export type {
+  HitchesProfile,
   RecordedTrace,
   RecordRequest,
+  RecordingConfig,
   RecordingErrorKind,
   RecordingIssue,
   RecordingIssueLevel,
   RecordingTarget,
   RecordingTemplate,
+  ResolvedRecording,
   TraceRecorder,
 } from "./types.js";
 export {
   buildRecordArgs,
   createXctraceRecorder,
   describeTarget,
+  hitchesProfileFromEnv,
+  hitchesWindowFromEnv,
   parseRecordingIssues,
   resolveLaunchTrace,
 } from "./xctrace.js";

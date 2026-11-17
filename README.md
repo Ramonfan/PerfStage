@@ -402,7 +402,24 @@ Skill 是项目资产，不是平台资产。它应该足够短：只描述「�
     { "name": "memoryMB", "value": 113.5, "unit": "MB", "verdict": "pass", "tracePath": "traces/memory.trace" }
   ],
   "actions": [{ "actionId": "scroll-up-1", "outcome": "executed" }],
-  "passes": [{ "template": "hitches", "tracePath": "traces/hitches.trace", "attempts": 1, "durationMs": 21000, "errorCount": 0, "warningCount": 1 }],
+  "passes": [{
+    "template": "hitches",
+    "tracePath": "traces/hitches.trace",
+    "attempts": 1,
+    "durationMs": 21000,
+    "traceBytes": 612420994,
+    "saveMs": 27175,
+    "recording": {
+      "profile": "full",
+      "template": "Animation Hitches",
+      "timeLimit": "40s",
+      "duringTimeoutMs": 30000,
+      "liveTimeoutMs": 30000,
+      "window": "full-session"
+    },
+    "errorCount": 0,
+    "warningCount": 1
+  }],
   "findings": [],
   "notes": [],
   "durationMs": 188000,
@@ -768,8 +785,13 @@ metrics:
 ```
 
 `run.json.passes` 记录每个已完成 pass 的 `template`、相对 `tracePath`、`attempts`、
-耗时、产出指标名与 issue 计数；旧 run 没有该字段时，历史列表用 `passCount: null`
-表示「未记录」。`run.json.device` 记录 preflight 拿到的 `id`、`name`、`osVersion`
+耗时、产出指标名与 issue 计数；`traceBytes` 是 trace bundle 内常规文件字节之和，
+`saveMs` 是 xctrace 保存阶段耗时（仅在该阶段可观察时记录），`recording` 记录实际
+使用的 profile / 模板 / instrument / 时间上限 / 动作回放与 live 超时 / 窗口；
+紧凑 profile 另带 `missingDiagnostics`，说明该 trace 缺少哪些诊断族，不能当作完整
+诊断 trace。默认仍是完整 `Animation Hitches` 模板，紧凑 profile 仅供内部 A/B 且
+未采用，取舍与 no-op 结论见 `docs/trace-footprint.md` §10。旧 run 没有这些字段时，
+历史列表用 `passCount: null` 表示「未记录」，体积/保存耗时保持未知，不补造。`run.json.device` 记录 preflight 拿到的 `id`、`name`、`osVersion`
 与 `modelIdentifier`，供基线按「场景 + 设备 + iOS」归组；旧 run 没有该字段时，
 设备标识从 `plan.json` 回退，iOS 记为未知。`report.json` 内嵌 `run` 快照，因此也包含
 同一份设备事实；这些字段只留在本地运行目录，不上传。录制产物意外落在运行目录之外时，该 pass 会省略 `tracePath`

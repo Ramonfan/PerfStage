@@ -147,8 +147,65 @@ function renderNotes(report: JsonReport): string {
     .join("\n");
 }
 
+/**
+ * Render the recording configuration each pass actually used.
+ *
+ * A compact trace is not a full diagnostic trace: readers must be able to see
+ * the profile, the missing diagnostic families and the failure bounds without
+ * opening `run.json`. Passes from runs that predate profiles have no
+ * `recording` and are reported as such rather than guessed.
+ */
+function renderRecording(report: JsonReport): string {
+  const passes = report.run.passes ?? [];
+  if (passes.length === 0) {
+    return "- 未记录 pass 信息。";
+  }
+  const lines = passes.map((pass) => {
+    const recording = pass.recording;
+    if (recording === undefined) {
+      return `- \`${pass.template}\`：未记录录制配置（早于 profile 字段的 run）。`;
+    }
+    const facts = [
+      `profile \`${recording.profile}\``,
+      `模板 \`${recording.template}\``,
+    ];
+    if (recording.instruments !== undefined && recording.instruments.length > 0) {
+      facts.push(
+        `instrument ${recording.instruments.map((item) => `\`${item}\``).join("、")}`,
+      );
+    }
+    facts.push(`时间上限 \`${recording.timeLimit}\``);
+    if (recording.duringTimeoutMs !== undefined) {
+      facts.push(`动作回放超时 \`${recording.duringTimeoutMs}ms\``);
+    }
+    if (recording.liveTimeoutMs !== undefined) {
+      facts.push(`等待 live 超时 \`${recording.liveTimeoutMs}ms\``);
+    }
+    // `window` is optional for runs that predate the field; never render
+    // `undefined` into a human report.
+    facts.push(`窗口 \`${recording.window ?? "未记录"}\``);
+    const missing =
+      recording.missingDiagnostics !== undefined &&
+      recording.missingDiagnostics.length > 0
+        ? `。**未记录**：${recording.missingDiagnostics.join("；")}；该 trace 不是完整诊断 trace，需要 CPU 栈、Metal 或系统调用细节时请用完整 profile 重录`
+        : "";
+    return `- \`${pass.template}\`：${facts.join("，")}${missing}`;
+  });
+  return lines.join("\n");
+}
+
 function renderLimits(report: JsonReport): string {
   const limits: string[] = [];
+  const compactPasses = (report.run.passes ?? []).filter(
+    (pass) => pass.recording?.profile === "compact",
+  );
+  if (compactPasses.length > 0) {
+    limits.push(
+      `- ${compactPasses
+        .map((pass) => `\`${pass.template}\``)
+        .join("、")} pass 使用紧凑录制配置，缺少 Time Profiler、Metal 等诊断表；不要把它当作完整诊断 trace，详见「录制配置」。`,
+    );
+  }
   if (report.run.endedAt === "unknown") {
     limits.push("- 结束时间戳缺失，报告中显示为 `未知`。");
   }
@@ -245,6 +302,9 @@ export function renderMarkdownReport(report: JsonReport): string {
     "",
     "## 执行记录",
     renderNotes(report),
+    "",
+    "## 录制配置",
+    renderRecording(report),
     "",
     "## 稳定性诊断",
     stabilitySection,

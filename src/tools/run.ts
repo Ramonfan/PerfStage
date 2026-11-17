@@ -2,7 +2,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { createMobilecliDriver } from "../device/mobilecli.js";
-import { createXctraceRecorder } from "../recording/xctrace.js";
+import {
+  createXctraceRecorder,
+  hitchesProfileFromEnv,
+  hitchesWindowFromEnv,
+} from "../recording/xctrace.js";
 import { runTake, type RunTakeSummary } from "../runner/run.js";
 import { prepareInputSchema, preparePerformanceTest } from "./plan.js";
 import { describeInputIssues } from "../diagnostics/removed-config.js";
@@ -60,6 +64,20 @@ export async function runPerformanceTest(
     };
   }
   const input = parsed.data;
+
+  // Validate the internal profile switch *before* prepare: a typo must not
+  // leave a `prepared` run with no terminal status. The recorder reads the
+  // same variable again; this only moves the failure earlier.
+  if (options.recorder === undefined) {
+    try {
+      hitchesProfileFromEnv();
+      hitchesWindowFromEnv();
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 
   // Prepare first: this validates the scenario, materializes the plan and
   // creates the run. Running without a plan would bypass the evidence contract.

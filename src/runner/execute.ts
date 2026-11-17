@@ -18,6 +18,7 @@ import type { TestPlan } from "../model/test-plan.js";
 import type { ActionRecord, MetricResult, TestRun } from "../model/test-run.js";
 import type {
   RecordedTrace,
+  RecordingConfig,
   RecordingIssue,
   RecordingTemplate,
   TraceRecorder,
@@ -72,6 +73,12 @@ export interface PassRecord {
   attempts: number;
   issues: RecordingIssue[];
   durationMs: number;
+  /** Template/instruments/time limit the trace was produced with. */
+  recording: RecordingConfig;
+  /** Regular-file bytes inside the trace bundle; omitted if unreadable. */
+  traceBytes?: number;
+  /** Observed xctrace save duration; omitted when the phase was not seen. */
+  saveMs?: number;
   /** Metrics this pass produced (canonical names). */
   metrics: string[];
 }
@@ -822,6 +829,13 @@ interface RoundSink {
 
 async function measureRound(input: MeasureRoundInput): Promise<void> {
   const { deps, plan, deviceId, installation, planning, tracesDir } = input;
+  // A multi-repetition Take records the same pass template several times. Keep
+  // each round's trace in its own directory: overwriting `traces/hitches.trace`
+  // would leave pass records whose bytes can no longer be recomputed from disk.
+  const roundTracesDir =
+    input.repetitions > 1
+      ? resolve(tracesDir, `rep-${input.round}`)
+      : tracesDir;
   const sleep = deps.sleep;
   const log = deps.log;
   const { actions, metrics, notes } = input.sink;
@@ -1102,6 +1116,47 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     );
   };
 
+  /**
+   * Persist a pass as soon as its trace is written.
+   *
+   * Analysis and the hitches window check can fail afterwards, but the trace
+   * that already landed on disk is evidence: its path, wall clock, bytes and
+   * save duration must survive so a failed Take stays auditable instead of
+   * leaving an orphan trace with no pass record.
+   */
+  const recordTrace = (pass: PassPlan, trace: RecordedTrace): PassRecord => {
+    const record: PassRecord = {
+      template: pass.template,
+      passIndex: pass.index,
+      tracePath: toRunRelative(deps.runDir, trace.tracePath),
+      absoluteTracePath: trace.tracePath,
+      attempts: trace.attempts,
+      issues: trace.issues,
+      durationMs: trace.durationMs,
+      recording: trace.recording,
+      ...(trace.bytes !== undefined ? { traceBytes: trace.bytes } : {}),
+      ...(trace.saveMs !== undefined ? { saveMs: trace.saveMs } : {}),
+      // Filled after analysis succeeds: a pass that never produced a value
+      // must not claim its requested metrics as evidence.
+      metrics: [],
+    };
+    recorded.push(record);
+    if (trace.attempts > 1) {
+      notes.push(
+        `${pass.template} pass needed ${trace.attempts} attempts (recording infrastructure)`,
+      );
+    }
+    const errors = trace.issues.filter((issue) => issue.level === "error");
+    if (errors.length > 0) {
+      notes.push(
+        `${pass.template} pass reported ${errors.length} xctrace error(s): ${errors
+          .map((issue) => issue.message)
+          .join("; ")}`,
+      );
+    }
+    return record;
+  };
+
   const analyzeTrace = async (
     pass: PassPlan,
     trace: RecordedTrace,
@@ -1110,6 +1165,7 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       pid?: number;
       window?: { fromMs: number; toMs: number };
     },
+    passRecord: PassRecord,
   ): Promise<void> => {
     const relativePath = toRunRelative(deps.runDir, trace.tracePath);
     const pushWarnings = (result: TraceAnalyzerResult): void => {
@@ -1118,31 +1174,6 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       // report instead of living only in the trace-analysis response.
       if (result.warnings !== undefined && result.warnings.length > 0) {
         notes.push(`${pass.template} analysis: ${result.warnings.join("; ")}`);
-      }
-    };
-    const recordPass = (): void => {
-      recorded.push({
-        template: pass.template,
-        passIndex: pass.index,
-        tracePath: relativePath,
-        absoluteTracePath: trace.tracePath,
-        attempts: trace.attempts,
-        issues: trace.issues,
-        durationMs: trace.durationMs,
-        metrics: pass.metrics,
-      });
-      if (trace.attempts > 1) {
-        notes.push(
-          `${pass.template} pass needed ${trace.attempts} attempts (recording infrastructure)`,
-        );
-      }
-      const errors = trace.issues.filter((issue) => issue.level === "error");
-      if (errors.length > 0) {
-        notes.push(
-          `${pass.template} pass reported ${errors.length} xctrace error(s): ${errors
-            .map((issue) => issue.message)
-            .join("; ")}`,
-        );
       }
     };
 
@@ -1165,11 +1196,9 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       extra.window !== undefined &&
       analyzed.windowMiss !== undefined;
     if (alignmentAttempted) {
-      // Persist the trace and the parser's original reasons before deciding:
-      // if alignment fails the Take is `invalid`, and the trace that caused it
-      // must still be referenced instead of becoming an orphan file.
+      // The parser's original reasons must reach the report before alignment
+      // is attempted; the trace has already been recorded by `recordTrace`.
       pushWarnings(analyzed);
-      recordPass();
       const declared = extra.window!;
       const alignment = alignHitchWindow(analyzed.windowMiss!);
       if (!alignment.ok) {
@@ -1210,9 +1239,8 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       metrics.push({ ...metric, tracePath: relativePath });
     }
     pushWarnings(analyzed);
-    if (!alignmentAttempted) {
-      recordPass();
-    }
+    // Analysis succeeded, so the pass can now claim the metrics it produced.
+    passRecord.metrics = pass.metrics;
   };
 
   const hitchesPass = passFor("hitches");
@@ -1258,7 +1286,7 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       device: deviceId,
       target: { kind: "launch", bundleId: plan.app.bundleId },
       ...(launchOptions !== undefined ? { launch: launchOptions } : {}),
-      outputPath: resolve(tracesDir, "hitches.trace"),
+      outputPath: resolve(roundTracesDir, "hitches.trace"),
       // `during` stops the session right after the last action; this is only a
       // safety cap. `duringTimeoutMs` is the real bound: it keeps a hung
       // device call from recording until the cap (M3 produced a 4.7GB trace
@@ -1312,6 +1340,8 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       },
     });
 
+    const hitchesRecord = recordTrace(pass, trace);
+
     const window = {
       fromMs: Math.max(0, actionStart - sessionStart),
       toMs: Math.max(0, actionEnd - sessionStart),
@@ -1333,7 +1363,7 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
     notes.push(
       `hitches window ${Math.round(window.fromMs)}–${Math.round(window.toMs)}ms of the trace`,
     );
-    await analyzeTrace(pass, trace, { window });
+    await analyzeTrace(pass, trace, { window }, hitchesRecord);
   } else if (plan.actions.length > 0) {
     if (launchPass !== undefined) {
       if (plan.preconditions.length > 0 && memoryPass === undefined) {
@@ -1376,13 +1406,19 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       device: deviceId,
       target: { kind: "launch", bundleId: plan.app.bundleId },
       ...(launchOptions !== undefined ? { launch: launchOptions } : {}),
-      outputPath: resolve(tracesDir, "launch.trace"),
+      outputPath: resolve(roundTracesDir, "launch.trace"),
     });
+    const launchRecord = recordTrace(launchPass, trace);
     // App Launch rows are keyed by the process display name (`NN`), not the
     // executable (`NNIM`) and not the bundle id.
-    await analyzeTrace(launchPass, trace, {
-      ...(installation.name.length > 0 ? { processName: installation.name } : {}),
-    });
+    await analyzeTrace(
+      launchPass,
+      trace,
+      {
+        ...(installation.name.length > 0 ? { processName: installation.name } : {}),
+      },
+      launchRecord,
+    );
     // The pass cold-started the app and left it on its initial screen, so a
     // later pass must navigate again.
     launchUrlApplied = false;
@@ -1423,8 +1459,9 @@ async function measureRound(input: MeasureRoundInput): Promise<void> {
       template: "memory",
       device: deviceId,
       target: { kind: "allProcesses" },
-      outputPath: resolve(tracesDir, "memory.trace"),
+      outputPath: resolve(roundTracesDir, "memory.trace"),
     });
-    await analyzeTrace(memoryPass, trace, { pid });
+    const memoryRecord = recordTrace(memoryPass, trace);
+    await analyzeTrace(memoryPass, trace, { pid }, memoryRecord);
   }
 }
