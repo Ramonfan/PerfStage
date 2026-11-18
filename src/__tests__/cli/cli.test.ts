@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EXIT_ENVIRONMENT,
@@ -920,5 +920,174 @@ describe("perfstage gate", () => {
     const help = capture();
     expect(await main(["--help"], { io: help.io })).toBe(EXIT_OK);
     expect(help.out.join("\n")).toContain("perfstage gate <runId>");
+  });
+});
+
+describe("perfstage report --format", () => {
+  async function completedRun(): Promise<{ runId: string; runDir: string }> {
+    await initWorkspace();
+    const planPath = await writePlan();
+    const json = capture();
+    const code = await main(
+      ["run", "--plan", planPath, "--device", DEVICE_ID, "--dir", root, "--json"],
+      runnerContext(
+        { hitches: 10, blockMs: 40, launchMs: 300, memoryMB: 100 },
+        json.io,
+      ),
+    );
+    expect(code).toBe(EXIT_OK);
+    const summary = JSON.parse(json.out.join("\n")) as {
+      runId: string;
+      reportPath: string;
+    };
+    return { runId: summary.runId, runDir: dirname(summary.reportPath) };
+  }
+
+  it("exports HTML next to report.json without touching existing reports", async () => {
+    const { runId, runDir } = await completedRun();
+    const jsonBefore = await readFile(join(runDir, "report.json"), "utf8");
+    const markdownBefore = await readFile(join(runDir, "report.md"), "utf8");
+
+    const out = capture();
+    const code = await main(
+      ["report", runId, "--format", "html", "--dir", root],
+      { io: out.io },
+    );
+
+    expect(code).toBe(EXIT_OK);
+    const target = join(runDir, "report.html");
+    expect(out.out.join("\n")).toContain(target);
+    const html = await readFile(target, "utf8");
+    expect(html).toContain("性能测试报告");
+    expect(html).toContain('<html lang="zh-CN">');
+    expect(await readFile(join(runDir, "report.json"), "utf8")).toBe(jsonBefore);
+    expect(await readFile(join(runDir, "report.md"), "utf8")).toBe(markdownBefore);
+  });
+
+  it("exports JUnit and is byte-stable across repeated exports", async () => {
+    const { runId, runDir } = await completedRun();
+    const out = capture();
+
+    expect(
+      await main(["report", runId, "--format", "junit", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+    const target = join(runDir, "report.junit.xml");
+    expect(out.out.join("\n")).toContain(target);
+    const first = await readFile(target, "utf8");
+    expect(first).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(first).toContain("<testsuites ");
+
+    expect(
+      await main(["report", runId, "--format", "junit", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+    expect(await readFile(target, "utf8")).toBe(first);
+  });
+
+  it("is byte-stable for repeated HTML exports", async () => {
+    const { runId, runDir } = await completedRun();
+    const out = capture();
+    expect(
+      await main(["report", runId, "--format", "html", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+    const target = join(runDir, "report.html");
+    const first = await readFile(target, "utf8");
+    expect(
+      await main(["report", runId, "--format", "html", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+    expect(await readFile(target, "utf8")).toBe(first);
+  });
+
+  it("fails with exit 3 and leaves no temporary file when the rename fails", async () => {
+    const { runId, runDir } = await completedRun();
+    const jsonBefore = await readFile(join(runDir, "report.json"), "utf8");
+    // A directory at the target path makes `rename` fail deterministically.
+    await mkdir(join(runDir, "report.html"));
+
+    const out = capture();
+    const code = await main(
+      ["report", runId, "--format", "html", "--dir", root],
+      { io: out.io },
+    );
+
+    expect(code).toBe(EXIT_ENVIRONMENT);
+    expect(out.err.join(" ")).toContain("导出 report.html 失败");
+    expect(await readFile(join(runDir, "report.json"), "utf8")).toBe(jsonBefore);
+    const entries = await readdir(runDir);
+    expect(entries.some((name) => name.startsWith(".report.html.tmp-"))).toBe(
+      false,
+    );
+  });
+
+  it("exports even when the gate failed, without changing the exit code", async () => {
+    await initWorkspace();
+    const planPath = await writePlan();
+    const json = capture();
+    await main(
+      ["run", "--plan", planPath, "--device", DEVICE_ID, "--dir", root, "--json"],
+      runnerContext(
+        { hitches: 5_000, blockMs: 40, launchMs: 300, memoryMB: 100 },
+        json.io,
+      ),
+    );
+    const summary = JSON.parse(json.out.join("\n")) as {
+      runId: string;
+      gate: string;
+      reportPath: string;
+    };
+    expect(summary.gate).toBe("fail");
+
+    const out = capture();
+    const code = await main(
+      ["report", summary.runId, "--format", "html", "--dir", root],
+      { io: out.io },
+    );
+    expect(code).toBe(EXIT_OK);
+    const html = await readFile(join(dirname(summary.reportPath), "report.html"), "utf8");
+    expect(html).toContain("fail");
+  });
+
+  it("rejects --format together with --json", async () => {
+    const { runId } = await completedRun();
+    const out = capture();
+    const code = await main(
+      ["report", runId, "--format", "html", "--json", "--dir", root],
+      { io: out.io },
+    );
+    expect(code).toBe(EXIT_ENVIRONMENT);
+    expect(out.err.join(" ")).toContain("--format");
+  });
+
+  it("rejects unknown formats", async () => {
+    const { runId } = await completedRun();
+    const out = capture();
+    const code = await main(
+      ["report", runId, "--format", "pdf", "--dir", root],
+      { io: out.io },
+    );
+    expect(code).toBe(EXIT_ENVIRONMENT);
+    expect(out.err.join(" ")).toContain("pdf");
+  });
+
+  it("fails with exit 3 when report.json is missing", async () => {
+    await initWorkspace();
+    const runId = "manual-run";
+    const runDir = join(root, ".performance-test", "runs", runId);
+    await mkdir(runDir, { recursive: true });
+
+    const out = capture();
+    const code = await main(["report", runId, "--format", "html", "--dir", root], {
+      io: out.io,
+    });
+    expect(code).toBe(EXIT_ENVIRONMENT);
+    expect(out.err.join(" ")).toContain("report.json");
+    await expect(readFile(join(runDir, "report.html"), "utf8")).rejects.toThrow();
   });
 });

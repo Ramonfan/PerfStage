@@ -49,7 +49,7 @@ Week 6  验收、文档与 v0.1
 | 场景解析 | `src/scenario/parser.ts`、`loader.ts` | YAML → TestPlan，未知动作直接报错 |
 | 运行存储 | `src/storage/runs.ts` | 独立 run 目录、证据边界、原子写、finalize 锁 |
 | 诊断归一化 | `src/diagnostics/normalize.ts` | 日志三态、Crash 差集、生命周期 |
-| 报告 | `src/reports/*.ts` | JSON + 中文 Markdown |
+| 报告 | `src/reports/*.ts` | JSON + 中文 Markdown；按需导出离线 HTML / JUnit XML |
 | 工作区隔离 | `src/workspace/*` | 项目即边界，不跨项目读写 |
 | 回归基线 | `src/__tests__` | 21 文件 / 163 用例，可作为重构保护网 |
 
@@ -490,6 +490,7 @@ perfstage init --app com.example.app
 perfstage list
 perfstage run community-home-scroll --device <UDID> [--json] [--strict]
 perfstage report <runId>
+perfstage report <runId> --format html|junit
 ```
 
 | 子命令 | 作用 | 关键参数 |
@@ -497,7 +498,7 @@ perfstage report <runId>
 | `init` | 初始化工作区 | `--app <bundleId>`、`--force` |
 | `list` | 列出场景与最近运行 | `--json` |
 | `run` | 执行一次 Take | `--device <udid>`、`--json`、`--strict` |
-| `report` | 打印已有报告 | `<runId>`、`--json` |
+| `report` | 打印已有报告，或按需导出 HTML / JUnit | `<runId>`、`--json`、`--format html\|junit` |
 
 退出码是 CLI 的核心价值：
 
@@ -659,6 +660,7 @@ perfstage report <runId>
 - [x] 回归门禁（`perfstage gate` / `evaluate_regression_gate`，规则随 `plan.json` 快照，C3 `add-regression-gate`）
 - [x] CI 示例（README §9，消费退出码 `4`）
 - [x] 阈值重标定（C4 `recalibrate-thresholds`；2 场景 × 5 Take，样本与公式见 `docs/threshold-calibration.md`）
+- [x] HTML 报告与 JUnit XML 按需导出（`perfstage report --format html|junit`）
 - [ ] 趋势图
 
 **M2/M3 真机结论带入 M4：**

@@ -91,7 +91,7 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发
 PerfStage 已经能**在真机上一键跑完一次 Take**：驱动设备、按指标录制（最多 3 个 pass）、解析 trace、判定并出报告。完整清单、状态与证据见 [4.4 平台能力矩阵](#44-平台能力矩阵)；本节只给结论。
 
 - **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比；`perfstage gate` / `evaluate_regression_gate` 按目标 run 的 `plan.json` 回归规则给出 `pass` / `fail` / `not-evaluated`。
-- **今天不可用**：趋势图、HTML / JUnit 报告。
+- **今天不可用**：趋势图、阶段归因。
 - **两个入口**：Skill 与 CLI 走 `run_performance_test` 一键执行；需要人工接管时用 `prepare_performance_test` + `finalize_performance_test`。
 
 **现在的真实执行链路是：**
@@ -206,6 +206,8 @@ perfstage gate <runId>               # 按 plan.json 的 regression 规则判定
 perfstage gate <runId> --json
 perfstage gate <runId> --allow-not-evaluated  # 无法评估时也放行（不伪造通过）
 perfstage report <runId>
+perfstage report <runId> --format html   # 生成离线 report.html
+perfstage report <runId> --format junit  # 生成 report.junit.xml，供 CI 解析
 ```
 
 或者对 Claude 说：
@@ -323,7 +325,9 @@ sceneId / adHocPlan
 | 基线对比（`compare`、`compare_performance_runs`、多 Take 中位数与范围） | ✅ 单测 | `src/analysis/compare.ts`、`src/tools/compare.ts` |
 | 回归门禁（`gate`、`evaluate_regression_gate`、`pass` / `fail` / `not-evaluated`） | ✅ 单测 | `src/analysis/regression.ts`、`src/tools/regression.ts` |
 | 阈值重标定 | ✅ 真机 | `docs/threshold-calibration.md`（2 场景 × 5 Take，同设备/同构建） |
-| HTML 报告 / JUnit / CI 注解 | ❌ | 未规划 |
+| HTML 报告导出（`perfstage report --format html`） | ✅ 单测 | `src/reports/html.ts`、`src/cli/index.ts` |
+| JUnit XML 导出（`perfstage report --format junit`） | ✅ 单测 | `src/reports/junit.ts`、`src/cli/index.ts` |
+| CI 注解 / PR 评论 | ❌ | 未排期（CI 托管本身不做，使用者自行接入） |
 
 **平台支撑**
 
@@ -781,6 +785,8 @@ metrics:
     ├── plan.json            # 本次解析后的完整 TestPlan（不含已移除字段）
     ├── report.json          # 机器可读报告（含 run 快照，因此也包含 run.device）
     ├── report.md            # 中文 Markdown 报告
+    ├── report.html          # 按需导出：perfstage report <runId> --format html
+    ├── report.junit.xml     # 按需导出：perfstage report <runId> --format junit
     ├── device.log           # 设备日志（默认采集；日志流无输出时不存在）
     └── traces/              # xctrace 原始产物
         ├── hitches.trace
@@ -824,6 +830,19 @@ perfstage runs --limit 10
 perfstage compare <runId>
 perfstage report <runId>
 ```
+
+需要分享或接入自有 CI 时按需导出：
+
+```bash
+perfstage report <runId> --format html   # 写 report.html，打印绝对路径
+perfstage report <runId> --format junit  # 写 report.junit.xml，打印绝对路径
+```
+
+两种导出都以已有的 `report.json` 为唯一输入，不改写 `report.json` / `report.md`，
+也不重新判定 gate；导出成功退出码为 `0`，即使该 Take 的 `gate=fail`。HTML 是离线
+单文件（内联样式、无脚本、无外部资源）；JUnit 以一次 Take 为一个 `testsuite`，
+失败指标、失败 gate、非 `completed` 状态与失败级发现项体现为 `failure`。重复导出会
+覆盖上一次的同格式产物，适合在每次 Take 后重新生成。
 
 运行目录是**证据**，不是测试管理数据库。确认不再需要后可以手动删除。平台永远不会把 A 项目的报告写进 B 项目。
 
@@ -926,6 +945,8 @@ GitHub Actions 片段：
 - [x] 基线对比（`perfstage compare`、`compare_performance_runs`、`run.json.device`）
 - [x] 回归门禁（`perfstage gate`、`evaluate_regression_gate`、`plan.json` 规则快照、退出码 4）
 - [x] 阈值重标定（C4 `recalibrate-thresholds`，2 场景 × 5 Take，依据见 `docs/threshold-calibration.md`）
+- [x] HTML 报告导出（`perfstage report --format html`，离线单文件）
+- [x] JUnit XML 导出（`perfstage report --format junit`，供 CI 解析）
 - [ ] 趋势图
 - [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
 

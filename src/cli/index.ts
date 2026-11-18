@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -20,6 +21,9 @@ import type { RegressionMetric } from "../analysis/regression.js";
 import { runStatusSchema } from "../model/test-run.js";
 import { runPerformanceTest } from "../tools/run.js";
 import type { RunTakeSummary } from "../runner/run.js";
+import { renderHtmlReport } from "../reports/html.js";
+import { renderJUnitReport } from "../reports/junit.js";
+import type { JsonReport } from "../reports/json.js";
 import type { TraceAnalyzer } from "../runner/execute.js";
 import type { DeviceDriver } from "../device/types.js";
 import type { TraceRecorder } from "../recording/types.js";
@@ -61,7 +65,7 @@ const USAGE = `PerfStage — 一次定义，次次上演。
   perfstage runs [--scenario <sceneId>] [--status <status>] [--limit <n>] [--json] [--dir <path>]
   perfstage compare <runId> [--against <runId>] [--samples <n>] [--json] [--dir <path>]
   perfstage gate <runId> [--against <runId>] [--samples <n>] [--allow-not-evaluated] [--json] [--dir <path>]
-  perfstage report <runId> [--json] [--dir <path>]
+  perfstage report <runId> [--format html|junit] [--json] [--dir <path>]
   perfstage --version | --help
 
 退出码：
@@ -126,6 +130,7 @@ export async function main(
         samples: { type: "string" },
         "allow-not-evaluated": { type: "boolean", default: false },
         repetitions: { type: "string" },
+        format: { type: "string" },
         json: { type: "boolean", default: false },
         strict: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
@@ -188,6 +193,7 @@ type ParsedValues = {
   samples?: string;
   "allow-not-evaluated"?: boolean;
   repetitions?: string;
+  format?: string;
   json?: boolean;
   strict?: boolean;
   help?: boolean;
@@ -656,6 +662,10 @@ async function commandReport(
   const ready = await requireWorkspace(manager, ctx);
   if (ready === null) return EXIT_ENVIRONMENT;
 
+  if (values.format !== undefined) {
+    return exportReport(runId, values, ready, ctx);
+  }
+
   const runDir = ready.store.runDirectory(runId);
   if (values.json === true) {
     try {
@@ -685,6 +695,74 @@ async function commandReport(
 interface ReadyContext {
   paths: { scenarioDirectory: string; runsDirectory: string };
   store: ReturnType<typeof createRunStore>;
+}
+
+const REPORT_EXPORT_FORMATS = {
+  html: { fileName: "report.html", render: renderHtmlReport },
+  junit: { fileName: "report.junit.xml", render: renderJUnitReport },
+} as const;
+
+/**
+ * Export a stored report on demand.
+ *
+ * `report.json` is the single input: the HTML/JUnit artifacts must reflect
+ * the judgement the user already saw, so this path never re-derives findings
+ * or gate from `run.json`. Export is not a verdict — it always exits 0 on
+ * success, even when the target run failed its gate.
+ */
+async function exportReport(
+  runId: string,
+  values: ParsedValues,
+  ready: ReadyContext,
+  ctx: CliContext,
+): Promise<ExitCode> {
+  const format = values.format;
+  if (values.json === true) {
+    return fail(
+      ctx,
+      "--format 不能与 --json 同时使用：导出会写入文件并打印路径，--json 会打印 report.json。",
+    );
+  }
+  if (format !== "html" && format !== "junit") {
+    return fail(
+      ctx,
+      `未知的报告格式：${format ?? ""}。可用格式：html、junit。`,
+    );
+  }
+
+  let runDir: string;
+  try {
+    runDir = await ready.store.ensureSafeRun(runId);
+  } catch (error) {
+    return fail(ctx, `无法定位运行 ${runId}：${errorText(error)}`);
+  }
+
+  let report: JsonReport;
+  try {
+    const raw = await readFile(join(runDir, "report.json"), "utf8");
+    report = JSON.parse(raw) as JsonReport;
+  } catch (error) {
+    return fail(
+      ctx,
+      `运行 ${runId} 没有可用的 report.json：${errorText(error)}`,
+    );
+  }
+
+  const exporter = REPORT_EXPORT_FORMATS[format];
+  const target = join(runDir, exporter.fileName);
+  // Write to a sibling temp file first: a failed export must never leave a
+  // truncated report.html / report.junit.xml behind.
+  const temporary = join(runDir, `.${exporter.fileName}.tmp-${randomUUID()}`);
+  try {
+    await writeFile(temporary, exporter.render(report), "utf8");
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    return fail(ctx, `导出 ${exporter.fileName} 失败：${errorText(error)}`);
+  }
+
+  ctx.io.out(target);
+  return EXIT_OK;
 }
 
 async function requireWorkspace(
