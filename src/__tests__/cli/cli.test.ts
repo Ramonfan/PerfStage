@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1089,5 +1089,343 @@ describe("perfstage report --format", () => {
     expect(code).toBe(EXIT_ENVIRONMENT);
     expect(out.err.join(" ")).toContain("report.json");
     await expect(readFile(join(runDir, "report.html"), "utf8")).rejects.toThrow();
+  });
+});
+
+async function seedTrendRun(input: {
+  id: string;
+  startedAt: string;
+  deviceId?: string | null;
+  osVersion?: string | null;
+  status?: string;
+  gate?: string;
+  metrics?: Array<{ name: string; value?: unknown; unit?: string }>;
+  planDevice?: { id: string; osVersion?: string };
+}): Promise<void> {
+  const runsDir = join(root, ".performance-test", "runs");
+  const runDir = join(runsDir, input.id);
+  await mkdir(runDir, { recursive: true });
+  const deviceId = input.deviceId === undefined ? "device-1" : input.deviceId;
+  const osVersion = input.osVersion === undefined ? "27.0.1" : input.osVersion;
+  await writeFile(
+    join(runDir, "run.json"),
+    JSON.stringify({
+      id: input.id,
+      planId: "scene-a",
+      ...(deviceId !== null
+        ? {
+            device: {
+              id: deviceId,
+              ...(osVersion !== null ? { osVersion } : {}),
+            },
+          }
+        : {}),
+      status: input.status ?? "completed",
+      startedAt: input.startedAt,
+      endedAt: input.startedAt,
+      gate: input.gate ?? "pass",
+      metrics: input.metrics ?? [{ name: "hitches", value: 10, unit: "次" }],
+    }),
+    "utf8",
+  );
+  await writeFile(
+    join(runDir, "plan.json"),
+    JSON.stringify({
+      id: "scene-a",
+      source: "scenario",
+      ...(input.planDevice !== undefined ? { device: input.planDevice } : {}),
+    }),
+    "utf8",
+  );
+}
+
+describe("perfstage trend", () => {
+  it("advertises trend in --help", async () => {
+    const help = capture();
+    expect(await main(["--help"], { io: help.io })).toBe(EXIT_OK);
+    expect(help.out.join("\n")).toContain("perfstage trend <sceneId>");
+  });
+
+  it("prints a text trend for the scene", async () => {
+    await initWorkspace();
+    await seedTrendRun({
+      id: "r1",
+      startedAt: "2026-11-15T00:00:00.000Z",
+      metrics: [{ name: "hitches", value: 10, unit: "次" }],
+    });
+    await seedTrendRun({
+      id: "r2",
+      startedAt: "2026-11-16T00:00:00.000Z",
+      metrics: [{ name: "hitches", value: 20, unit: "次" }],
+    });
+    await seedTrendRun({
+      id: "r3",
+      startedAt: "2026-11-17T00:00:00.000Z",
+      metrics: [{ name: "hitches", value: 30, unit: "次" }],
+    });
+
+    const out = capture();
+    const code = await main(["trend", "scene-a", "--dir", root], { io: out.io });
+
+    expect(code).toBe(EXIT_OK);
+    const text = out.out.join("\n");
+    expect(text).toContain("场景：scene-a");
+    expect(text).toContain("匹配 3 条，每分组最多 20 条");
+    expect(text).toContain("分组：device-1 / iOS 27.0.1");
+    expect(text).toContain("3 次 Take（2026-11-15 → 2026-11-17）");
+    expect(text).toContain("状态：completed 3、partial 0");
+    expect(text).toContain("最近 30");
+    expect(text).toContain("较上次测量 +10（+50%）");
+  });
+
+  it("filters by device and trims each group with --limit", async () => {
+    await initWorkspace();
+    await seedTrendRun({
+      id: "d1-old",
+      startedAt: "2026-11-15T00:00:00.000Z",
+      deviceId: "device-1",
+    });
+    await seedTrendRun({
+      id: "d1-new",
+      startedAt: "2026-11-16T00:00:00.000Z",
+      deviceId: "device-1",
+    });
+    await seedTrendRun({
+      id: "d2",
+      startedAt: "2026-11-17T00:00:00.000Z",
+      deviceId: "device-2",
+    });
+
+    const filtered = capture();
+    expect(
+      await main(["trend", "scene-a", "--device", "device-2", "--dir", root], {
+        io: filtered.io,
+      }),
+    ).toBe(EXIT_OK);
+    const onlySecond = filtered.out.join("\n");
+    expect(onlySecond).toContain("分组：device-2 / iOS 27.0.1");
+    expect(onlySecond).not.toContain("device-1");
+
+    const limited = capture();
+    expect(
+      await main(["trend", "scene-a", "--device", "device-1", "--limit", "1", "--dir", root], {
+        io: limited.io,
+      }),
+    ).toBe(EXIT_OK);
+    expect(limited.out.join("\n")).toContain("1 次 Take");
+  });
+
+  it("falls back to plan.json for legacy device and iOS facts", async () => {
+    await initWorkspace();
+    await seedTrendRun({
+      id: "legacy",
+      startedAt: "2026-11-16T00:00:00.000Z",
+      deviceId: null,
+      planDevice: { id: "legacy-device", osVersion: "26.4" },
+    });
+
+    const out = capture();
+    expect(await main(["trend", "scene-a", "--dir", root], { io: out.io })).toBe(
+      EXIT_OK,
+    );
+    expect(out.out.join("\n")).toContain("分组：legacy-device / iOS 26.4");
+  });
+
+  it("counts excluded terminal states without drawing them", async () => {
+    await initWorkspace();
+    await seedTrendRun({ id: "ok", startedAt: "2026-11-16T00:00:00.000Z" });
+    await seedTrendRun({
+      id: "failed",
+      startedAt: "2026-11-16T01:00:00.000Z",
+      status: "failed",
+    });
+    await seedTrendRun({
+      id: "invalid",
+      startedAt: "2026-11-16T02:00:00.000Z",
+      status: "invalid",
+    });
+
+    const out = capture();
+    expect(await main(["trend", "scene-a", "--dir", root], { io: out.io })).toBe(
+      EXIT_OK,
+    );
+    const text = out.out.join("\n");
+    expect(text).toContain("1 次 Take");
+    expect(text).toContain("排除（当前筛选）：invalid 1、failed 1、cancelled 0、不可读 0");
+  });
+
+  it("writes an offline trends/<scene>.html and is byte-stable", async () => {
+    await initWorkspace();
+    await seedTrendRun({
+      id: "r1",
+      startedAt: "2026-11-16T00:00:00.000Z",
+      metrics: [{ name: "hitches", value: 10, unit: "次" }],
+    });
+    await seedTrendRun({
+      id: "r2",
+      startedAt: "2026-11-17T00:00:00.000Z",
+      metrics: [{ name: "hitches", value: 12, unit: "次" }],
+    });
+    const runJson = await readFile(
+      join(root, ".performance-test", "runs", "r1", "run.json"),
+      "utf8",
+    );
+
+    const out = capture();
+    expect(
+      await main(["trend", "scene-a", "--format", "html", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+
+    const target = join(root, ".performance-test", "trends", "scene-a.html");
+    expect(out.out.join("\n")).toContain(target);
+    const first = await readFile(target, "utf8");
+    expect(first).toContain("性能趋势");
+    expect(first).toContain("<svg ");
+    expect(first).not.toMatch(/https?:\/\//);
+    expect(first).not.toContain("<script");
+    expect(
+      await readFile(join(root, ".performance-test", "runs", "r1", "run.json"), "utf8"),
+    ).toBe(runJson);
+
+    expect(
+      await main(["trend", "scene-a", "--format", "html", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+    expect(await readFile(target, "utf8")).toBe(first);
+  });
+
+  it("writes trends under the workspace data root when runs live elsewhere", async () => {
+    await initWorkspace();
+    const configPath = join(root, ".performance-test", "config.json");
+    const config = JSON.parse(
+      await readFile(configPath, "utf8"),
+    ) as Record<string, unknown>;
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        ...config,
+        runsDirectory: ".performance-test/data/runs",
+      }),
+      "utf8",
+    );
+    await mkdir(join(root, ".performance-test", "data", "runs"), {
+      recursive: true,
+    });
+
+    const out = capture();
+    expect(
+      await main(["trend", "scene-a", "--format", "html", "--dir", root], {
+        io: out.io,
+      }),
+    ).toBe(EXIT_OK);
+
+    const target = join(root, ".performance-test", "trends", "scene-a.html");
+    expect(out.out.join("\n")).toContain(target);
+    expect(await readFile(target, "utf8")).toContain("性能趋势");
+    await expect(
+      readFile(
+        join(root, ".performance-test", "data", "trends", "scene-a.html"),
+        "utf8",
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("keeps exit 0 when the newest Take failed its gate", async () => {
+    await initWorkspace();
+    await seedTrendRun({
+      id: "r1",
+      startedAt: "2026-11-16T00:00:00.000Z",
+      gate: "fail",
+      metrics: [{ name: "hitches", value: 9000, unit: "次" }],
+    });
+
+    const out = capture();
+    expect(await main(["trend", "scene-a", "--dir", root], { io: out.io })).toBe(
+      EXIT_OK,
+    );
+    expect(out.out.join("\n")).toContain("最近 9000");
+  });
+
+  it("reports no data instead of failing on an empty scene", async () => {
+    await initWorkspace();
+
+    const out = capture();
+    expect(await main(["trend", "scene-a", "--dir", root], { io: out.io })).toBe(
+      EXIT_OK,
+    );
+    expect(out.out.join("\n")).toContain("没有可用于趋势的运行。");
+  });
+
+  it("rejects an unsafe scene id", async () => {
+    await initWorkspace();
+
+    const out = capture();
+    const code = await main(
+      ["trend", "../evil", "--format", "html", "--dir", root],
+      { io: out.io },
+    );
+    expect(code).toBe(EXIT_ENVIRONMENT);
+    expect(out.err.join(" ")).toContain("不能用作文件名");
+    await expect(
+      readFile(join(root, ".performance-test", "evil.html"), "utf8"),
+    ).rejects.toThrow();
+  });
+
+  it("rejects unsupported formats, --json and bad limits", async () => {
+    await initWorkspace();
+
+    const junit = capture();
+    expect(
+      await main(["trend", "scene-a", "--format", "junit", "--dir", root], {
+        io: junit.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(junit.err.join(" ")).toContain("junit");
+
+    const json = capture();
+    expect(
+      await main(["trend", "scene-a", "--json", "--dir", root], { io: json.io }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(json.err.join(" ")).toContain("--json");
+
+    const limit = capture();
+    expect(
+      await main(["trend", "scene-a", "--limit", "0", "--dir", root], {
+        io: limit.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(limit.err.join(" ")).toContain("--limit");
+
+    const emptyDevice = capture();
+    expect(
+      await main(["trend", "scene-a", "--device", "", "--dir", root], {
+        io: emptyDevice.io,
+      }),
+    ).toBe(EXIT_ENVIRONMENT);
+    expect(emptyDevice.err.join(" ")).toContain("--device");
+  });
+
+  it("refuses to write through a symlinked trends directory", async () => {
+    await initWorkspace();
+    await seedTrendRun({ id: "r1", startedAt: "2026-11-16T00:00:00.000Z" });
+
+    const outside = await mkdtemp(join(tmpdir(), "perfstage-trends-outside-"));
+    try {
+      await symlink(outside, join(root, ".performance-test", "trends"));
+
+      const out = capture();
+      const code = await main(
+        ["trend", "scene-a", "--format", "html", "--dir", root],
+        { io: out.io },
+      );
+      expect(code).toBe(EXIT_ENVIRONMENT);
+      expect(out.err.join(" ")).toContain("趋势目录");
+      expect(await readdir(outside)).toHaveLength(0);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });

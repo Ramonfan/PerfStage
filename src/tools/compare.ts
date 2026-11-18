@@ -97,7 +97,7 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(
   terminalRunStatusSchema.options,
 );
 
-interface PlanDeviceFacts {
+export interface PlanDeviceFacts {
   id: string | null;
   osVersion: string | null;
   /** `false` when the plan file is missing or not valid JSON. */
@@ -112,7 +112,7 @@ interface PlanDeviceFacts {
  * yields `null`s instead of failing the comparison; `readable` lets the caller
  * distinguish a broken artifact from a plan that simply has no device.
  */
-async function readPlanDevice(
+export async function readPlanDevice(
   store: RunStore,
   runId: string,
 ): Promise<PlanDeviceFacts> {

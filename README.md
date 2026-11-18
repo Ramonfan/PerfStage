@@ -67,7 +67,7 @@ PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属�
 
 **边界要说清**：Skill 是 **agent 层**的调用契约，PerfStage 的输入始终是场景 ID（MCP 字段名 `scenarioId`，CLI 位置参数 `<sceneId>`）或 `adHocPlan`。Runner 不解析 `SKILL.md`，也没有 `perfstage run --skill` 这样的入口。这样 Skill 可以自由演进（调整措辞、补前置检查、改输出说明），平台只依赖稳定的工具入参与输出契约。
 
-PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发、CI 托管服务与趋势图。
+PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发、CI 托管服务。
 
 ### 命名约定
 
@@ -90,8 +90,8 @@ PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发
 
 PerfStage 已经能**在真机上一键跑完一次 Take**：驱动设备、按指标录制（最多 3 个 pass）、解析 trace、判定并出报告。完整清单、状态与证据见 [4.4 平台能力矩阵](#44-平台能力矩阵)；本节只给结论。
 
-- **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比；`perfstage gate` / `evaluate_regression_gate` 按目标 run 的 `plan.json` 回归规则给出 `pass` / `fail` / `not-evaluated`。
-- **今天不可用**：趋势图、阶段归因。
+- **今天可用**：场景定义 → `run_performance_test` / `perfstage run` → 报告与证据目录；包含前置条件校验、启动参数与环境变量、深链导航、证据门禁；`perfstage runs` / `list_performance_runs` 可按场景与状态查询历史 Take；`perfstage compare` / `compare_performance_runs` 可按「场景 + 设备 + iOS」派生基线并逐指标对比；`perfstage gate` / `evaluate_regression_gate` 按目标 run 的 `plan.json` 回归规则给出 `pass` / `fail` / `not-evaluated`；`perfstage report --format html|junit` 可按需导出离线 HTML 与 JUnit；`perfstage trend` 可按设备与 iOS 查看多 Take 指标趋势。
+- **今天不可用**：阶段归因。
 - **两个入口**：Skill 与 CLI 走 `run_performance_test` 一键执行；需要人工接管时用 `prepare_performance_test` + `finalize_performance_test`。
 
 **现在的真实执行链路是：**
@@ -208,6 +208,9 @@ perfstage gate <runId> --allow-not-evaluated  # 无法评估时也放行（不�
 perfstage report <runId>
 perfstage report <runId> --format html   # 生成离线 report.html
 perfstage report <runId> --format junit  # 生成 report.junit.xml，供 CI 解析
+perfstage trend <sceneId>                # 文本趋势：分组、统计量与火花线
+perfstage trend <sceneId> --limit 10 --device <udid>
+perfstage trend <sceneId> --format html  # 生成离线 trends/<sceneId>.html
 ```
 
 或者对 Claude 说：
@@ -327,6 +330,7 @@ sceneId / adHocPlan
 | 阈值重标定 | ✅ 真机 | `docs/threshold-calibration.md`（2 场景 × 5 Take，同设备/同构建） |
 | HTML 报告导出（`perfstage report --format html`） | ✅ 单测 | `src/reports/html.ts`、`src/cli/index.ts` |
 | JUnit XML 导出（`perfstage report --format junit`） | ✅ 单测 | `src/reports/junit.ts`、`src/cli/index.ts` |
+| 趋势视图（`perfstage trend`，设备 + iOS 分组、文本与离线 SVG） | ✅ 单测 + 真机历史 | `src/analysis/trend.ts`、`src/tools/trend.ts`、`src/reports/trend-*.ts` |
 | CI 注解 / PR 评论 | ❌ | 未排期（CI 托管本身不做，使用者自行接入） |
 
 **平台支撑**
@@ -344,7 +348,7 @@ sceneId / adHocPlan
 - **不依赖外部 MCP。** 早期版本的 `mobile-mcp` / `instruments-mcp-server` 已整体替换为内建 Runner，安装包不再需要额外的 MCP 服务。
 - **三个外部进程**：`mobilecli`（`npx @mobilenext/mobilecli`，或用 `PERFSTAGE_MOBILECLI` 指定路径）、`xcrun devicectl`、`xcrun xctrace`。它们都是普通子进程，不是网络依赖。
 - **无网络、无数据库、无后台服务。** 所有状态都在项目目录的 `.performance-test/` 下。
-- **基线对比与回归门禁已实现，趋势仍在路线图中。** 单次 Take 的阈值判定与证据门禁不变；`perfstage compare` 呈现相对历史基线的数值差异，`perfstage gate` 按目标 run 快照中的 `regression` 规则给出 `pass` / `fail` / `not-evaluated`，两者互不替代。
+- **基线对比、回归门禁与趋势视图均已实现。** 单次 Take 的阈值判定与证据门禁不变；`perfstage compare` 呈现相对历史基线的数值差异，`perfstage gate` 按目标 run 快照中的 `regression` 规则给出 `pass` / `fail` / `not-evaluated`，`perfstage trend` 只做描述性历史视图，三者互不替代，趋势也不参与任何判定。
 
 
 ---
@@ -778,20 +782,23 @@ metrics:
 每次 Take 写入当前项目的独立目录，运行根目录还有一个只追加的索引：
 
 ```text
-<project>/.performance-test/runs/
-├── index.jsonl              # 只追加的运行索引（摘要；可由 run.json 重建）
-└── <run-id>/
-    ├── run.json             # 运行状态、设备事实、动作、指标、pass 记录、notes 与证据路径字段
-    ├── plan.json            # 本次解析后的完整 TestPlan（不含已移除字段）
-    ├── report.json          # 机器可读报告（含 run 快照，因此也包含 run.device）
-    ├── report.md            # 中文 Markdown 报告
-    ├── report.html          # 按需导出：perfstage report <runId> --format html
-    ├── report.junit.xml     # 按需导出：perfstage report <runId> --format junit
-    ├── device.log           # 设备日志（默认采集；日志流无输出时不存在）
-    └── traces/              # xctrace 原始产物
-        ├── hitches.trace
-        ├── launch.trace
-        └── memory.trace
+<project>/.performance-test/
+├── runs/
+│   ├── index.jsonl              # 只追加的运行索引（摘要；可由 run.json 重建）
+│   └── <run-id>/
+│       ├── run.json             # 运行状态、设备事实、动作、指标、pass 记录、notes 与证据路径字段
+│       ├── plan.json            # 本次解析后的完整 TestPlan（不含已移除字段）
+│       ├── report.json          # 机器可读报告（含 run 快照，因此也包含 run.device）
+│       ├── report.md            # 中文 Markdown 报告
+│       ├── report.html          # 按需导出：perfstage report <runId> --format html
+│       ├── report.junit.xml     # 按需导出：perfstage report <runId> --format junit
+│       ├── device.log           # 设备日志（默认采集；日志流无输出时不存在）
+│       └── traces/              # xctrace 原始产物
+│           ├── hitches.trace
+│           ├── launch.trace
+│           └── memory.trace
+└── trends/                      # 按需生成：perfstage trend <sceneId> --format html
+    └── <scene-id>.html
 ```
 
 `run.json.passes` 记录每个已完成 pass 的 `template`、相对 `tracePath`、`attempts`、
@@ -843,6 +850,22 @@ perfstage report <runId> --format junit  # 写 report.junit.xml，打印绝对�
 单文件（内联样式、无脚本、无外部资源）；JUnit 以一次 Take 为一个 `testsuite`，
 失败指标、失败 gate、非 `completed` 状态与失败级发现项体现为 `failure`。重复导出会
 覆盖上一次的同格式产物，适合在每次 Take 后重新生成。
+
+查看一个场景的多 Take 走向：
+
+```bash
+perfstage trend <sceneId>                    # 文本视图：分组、统计量与火花线
+perfstage trend <sceneId> --limit 10         # 每个分组只看最近 10 次
+perfstage trend <sceneId> --device <udid>    # 只看指定设备
+perfstage trend <sceneId> --format html      # 写 .performance-test/trends/<sceneId>.html
+```
+
+趋势按「设备 + iOS」分组，只纳入 `completed` / `partial`，其余终态只计入排除数量；
+输出同时给出场景匹配数、分组内 `completed` / `partial` 数量与当前筛选的排除计数。
+数值来自 `run.json`，非数值不绘制也不补零；每个分组默认保留最近 20 次、最多检查
+最近 200 条历史。它是纯描述性视图：不重算阈值、不影响 gate 与退出码，成功即退出 `0`；
+文本视图不写任何文件，`--format html` 只写 `trends/` 下的单个离线 HTML（内联
+SVG，无脚本、无网络请求），重复生成字节一致。
 
 运行目录是**证据**，不是测试管理数据库。确认不再需要后可以手动删除。平台永远不会把 A 项目的报告写进 B 项目。
 
@@ -915,7 +938,7 @@ GitHub Actions 片段：
 - **iOS only。** 动作模型面向 iOS accessibility，不承诺 Android / Web / 桌面。
 - **单项目、本地。** 工作区即项目边界，不包含多租户、数据库、团队权限或 Web 控制台。
 - **单设备串行，不做多设备并发。** 一次只跑一个 Take；不提供调度器、并发执行、设备池或多设备编排，且明确不计划支持。
-- **有基线对比与回归门禁，无趋势。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；`perfstage gate` 按目标 run 的 `plan.json` 规则给出 `pass` / `fail` / `not-evaluated`，缺数据时 fail-closed。没有基线快照文件或趋势图；CI 托管明确不做，产品只提供本地 CLI 与退出码，由使用者自行接入 CI。绝对阈值门禁仍只对单次 Take 生效，两者互不替代。
+- **有基线对比、回归门禁与趋势视图。** `perfstage compare` 按「场景 + 设备 + iOS」派生多 Take 基线，给出中位数、波动范围、差值、方向与样本数；`perfstage gate` 按目标 run 的 `plan.json` 规则给出 `pass` / `fail` / `not-evaluated`，缺数据时 fail-closed；`perfstage trend` 用同一分组口径展示最近 N 次 Take 的指标走向（文本或离线 HTML/SVG），只纳入 `completed` / `partial`，不重算阈值、不影响 gate 与退出码。没有基线快照文件；CI 托管明确不做，产品只提供本地 CLI 与退出码，由使用者自行接入 CI。绝对阈值门禁仍只对单次 Take 生效。
 - **无 App 生命周期管理。** 不负责安装、卸载、签名与截图，只驱动已安装的 App。
 
 ### 路线图
@@ -947,7 +970,7 @@ GitHub Actions 片段：
 - [x] 阈值重标定（C4 `recalibrate-thresholds`，2 场景 × 5 Take，依据见 `docs/threshold-calibration.md`）
 - [x] HTML 报告导出（`perfstage report --format html`，离线单文件）
 - [x] JUnit XML 导出（`perfstage report --format junit`，供 CI 解析）
-- [ ] 趋势图
+- [x] 趋势视图（`perfstage trend`，按设备 + iOS 分组的文本视图与离线 HTML/SVG）
 - [ ] 阶段归因（动作区间 / 惯性 / 动作后 / unknown）
 
 ---

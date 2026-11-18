@@ -23,7 +23,7 @@ MVP 要证明三个假设：
 | H2 执行可独立 | 平台能自己完成动作、采集、收尾，Claude 退出执行链 | 无法稳定复跑，也无法 CI |
 | H3 报告可信 | 报告能回答「这次测试是否有效、指标是否达标」 | 重复测试没有决策价值 |
 
-**范围一句话：单设备、单场景、一键执行、可信报告、可脚本化的 CLI。不做趋势图、不做 CI 托管、不做多设备并发。**
+**范围一句话：单设备、单场景、一键执行、可信报告、可脚本化的 CLI。MVP 不做趋势图（已在 v1.0 的 M4 落地）、不做 CI 托管、不做多设备并发。**
 
 **时间：6 周，每周一个可演示节点。**
 
@@ -103,7 +103,7 @@ Week 6  验收、文档与 v0.1
 
 | 不做 | 原因 | 何时做 |
 | --- | --- | --- |
-| 趋势图 | 单次报告与基线对比已覆盖当前决策需求 | 未排期 |
+| 趋势图（MVP 范围） | MVP 内单次报告与基线对比已覆盖决策需求；后作为 v1.0 的 M4 项落地（见 §M4） | 已落地 |
 | CI 托管 / 调度服务 | 产品只提供本地 CLI 与退出码，用户自行接入 CI | 不做 |
 | 多设备池、并发、调度 | 用户明确不做；产品定位为单设备串行 | 不做 |
 | Android / Web / 桌面 | 产品明确 iOS-only | 不做 |
@@ -491,6 +491,7 @@ perfstage list
 perfstage run community-home-scroll --device <UDID> [--json] [--strict]
 perfstage report <runId>
 perfstage report <runId> --format html|junit
+perfstage trend <sceneId> [--limit <n>] [--device <udid>] [--format html]
 ```
 
 | 子命令 | 作用 | 关键参数 |
@@ -499,6 +500,7 @@ perfstage report <runId> --format html|junit
 | `list` | 列出场景与最近运行 | `--json` |
 | `run` | 执行一次 Take | `--device <udid>`、`--json`、`--strict` |
 | `report` | 打印已有报告，或按需导出 HTML / JUnit | `<runId>`、`--json`、`--format html\|junit` |
+| `trend` | 查看场景的多 Take 趋势（文本或离线 HTML/SVG） | `<sceneId>`、`--limit <n>`、`--device <udid>`、`--format html` |
 
 退出码是 CLI 的核心价值：
 
@@ -661,7 +663,7 @@ perfstage report <runId> --format html|junit
 - [x] CI 示例（README §9，消费退出码 `4`）
 - [x] 阈值重标定（C4 `recalibrate-thresholds`；2 场景 × 5 Take，样本与公式见 `docs/threshold-calibration.md`）
 - [x] HTML 报告与 JUnit XML 按需导出（`perfstage report --format html|junit`）
-- [ ] 趋势图
+- [x] 趋势视图（`perfstage trend`；按设备 + iOS 分组的文本视图与离线 HTML/SVG，只读、不参与 gate）
 
 **M2/M3 真机结论带入 M4：**
 

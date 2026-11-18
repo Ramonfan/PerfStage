@@ -1,4 +1,5 @@
 import type { JsonReport, ReportFinding } from "./json.js";
+import { REPORT_STYLE } from "./html-style.js";
 import type {
   CrashEvidence,
   DiagnosticEvidence,
@@ -49,7 +50,7 @@ const HTML_ESCAPES: Record<string, string> = {
   "'": "&#39;",
 };
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] ?? char);
 }
 
@@ -390,22 +391,6 @@ function renderFindings(report: JsonReport): string {
   );
 }
 
-const STYLE = [
-  ":root{color-scheme:light dark}",
-  "body{margin:0;padding:2rem 1rem;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f7f7f8;color:#1c1c1e}",
-  "main{max-width:60rem;margin:0 auto;background:#fff;padding:2rem;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}",
-  "h1{font-size:1.6rem;margin:0 0 .25rem}",
-  "h2{font-size:1.2rem;margin:2rem 0 .75rem;padding-bottom:.35rem;border-bottom:1px solid #e5e5ea}",
-  "h3{font-size:1rem;margin:1.25rem 0 .5rem}",
-  "p{margin:.35rem 0}",
-  "ul{margin:.35rem 0;padding-left:1.25rem}",
-  "table{width:100%;border-collapse:collapse;margin:.5rem 0}",
-  "th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #ececf0;vertical-align:top}",
-  "th{font-weight:600;background:#fafafc}",
-  "footer{margin-top:2rem;padding-top:1rem;border-top:1px solid #e5e5ea;color:#6e6e73;font-size:.85rem}",
-  "@media (prefers-color-scheme:dark){body{background:#111113;color:#f2f2f7}main{background:#1c1c1e;box-shadow:none}th{background:#2c2c2e}th,td{border-color:#3a3a3c}h2,footer{border-color:#3a3a3c}footer{color:#98989d}}",
-].join("");
-
 export function renderHtmlReport(report: JsonReport): string {
   const runId = text(report.run?.id);
   const generatedAt = text(report.generatedAt);
@@ -417,7 +402,7 @@ export function renderHtmlReport(report: JsonReport): string {
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>性能测试报告 — ${escapeHtml(runId)}</title>`,
-    `<style>${STYLE}</style>`,
+    `<style>${REPORT_STYLE}</style>`,
     "</head>",
     "<body>",
     "<main>",

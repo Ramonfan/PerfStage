@@ -15,7 +15,7 @@ import type { WorkspaceConfig } from "./model.js";
  * Subdirectory that holds all workspace-scoped state for a given project:
  * scenario files, run evidence, configuration, etc.
  */
-const WORKSPACE_DATA_DIR = ".performance-test";
+export const WORKSPACE_DATA_DIR = ".performance-test";
 
 /**
  * Absolute paths derived from a {@link WorkspaceConfig}. All paths are

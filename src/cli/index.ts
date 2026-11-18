@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   createWorkspaceManager,
   type WorkspaceManager,
 } from "../workspace/manager.js";
+import { assertNoSymlinkEscape, WORKSPACE_DATA_DIR } from "../workspace/paths.js";
 import { createRunStore } from "../storage/runs.js";
 import { initializePerformanceWorkspace } from "../tools/workspace.js";
 import { listPerformanceScenarios } from "../tools/scenarios.js";
@@ -23,6 +24,9 @@ import { runPerformanceTest } from "../tools/run.js";
 import type { RunTakeSummary } from "../runner/run.js";
 import { renderHtmlReport } from "../reports/html.js";
 import { renderJUnitReport } from "../reports/junit.js";
+import { renderTrendHtml } from "../reports/trend-html.js";
+import { renderTrendText } from "../reports/trend-text.js";
+import { buildSceneTrend } from "../tools/trend.js";
 import type { JsonReport } from "../reports/json.js";
 import type { TraceAnalyzer } from "../runner/execute.js";
 import type { DeviceDriver } from "../device/types.js";
@@ -66,6 +70,7 @@ const USAGE = `PerfStage — 一次定义，次次上演。
   perfstage compare <runId> [--against <runId>] [--samples <n>] [--json] [--dir <path>]
   perfstage gate <runId> [--against <runId>] [--samples <n>] [--allow-not-evaluated] [--json] [--dir <path>]
   perfstage report <runId> [--format html|junit] [--json] [--dir <path>]
+  perfstage trend <sceneId> [--limit <n>] [--device <udid>] [--format html] [--dir <path>]
   perfstage --version | --help
 
 退出码：
@@ -172,6 +177,8 @@ export async function main(
       return commandGate(values, positionals.slice(1), manager, ctx);
     case "report":
       return commandReport(values, positionals.slice(1), manager, ctx);
+    case "trend":
+      return commandTrend(values, positionals.slice(1), manager, ctx);
     default:
       io.err(`未知命令：${command}`);
       io.err(USAGE);
@@ -693,9 +700,97 @@ async function commandReport(
 }
 
 interface ReadyContext {
+  workspaceRoot: string;
   paths: { scenarioDirectory: string; runsDirectory: string };
   store: ReturnType<typeof createRunStore>;
 }
+
+async function commandTrend(
+  values: ParsedValues,
+  positionals: string[],
+  manager: WorkspaceManager,
+  ctx: CliContext,
+): Promise<ExitCode> {
+  const sceneId = positionals[0];
+  if (sceneId === undefined || sceneId.length === 0) {
+    return fail(ctx, "trend 需要 <sceneId>。用 `perfstage list` 查看可用场景。");
+  }
+  if (values.json === true) {
+    return fail(
+      ctx,
+      "trend 不支持 --json：默认输出文本视图，加 `--format html` 生成离线趋势文件。",
+    );
+  }
+  if (values.format !== undefined && values.format !== "html") {
+    return fail(
+      ctx,
+      `未知的趋势格式：${values.format}。可用格式：html。`,
+    );
+  }
+  if (values.device !== undefined && values.device.trim().length === 0) {
+    return fail(ctx, "--device 需要非空的设备 ID。");
+  }
+  const limit = parseLimit(values.limit);
+  if (limit === "invalid") {
+    return fail(ctx, `--limit 必须是 1–200 的整数：${values.limit}`);
+  }
+
+  const ready = await requireWorkspace(manager, ctx);
+  if (ready === null) return EXIT_ENVIRONMENT;
+
+  const trend = await buildSceneTrend(
+    {
+      sceneId,
+      ...(limit !== undefined ? { limit } : {}),
+      ...(values.device !== undefined ? { deviceId: values.device } : {}),
+    },
+    { runStore: ready.store, now: ctx.now },
+  );
+  if ("error" in trend) {
+    return fail(ctx, trend.error);
+  }
+
+  if (values.format === undefined) {
+    ctx.io.out(renderTrendText(trend));
+    // A trend is descriptive, not a verdict: recent failures keep exit 0.
+    return EXIT_OK;
+  }
+
+  if (!TREND_FILE_STEM.test(sceneId) || sceneId === "." || sceneId === "..") {
+    return fail(
+      ctx,
+      `场景 ID 不能用作文件名：${sceneId}。只允许字母、数字、点、下划线和连字符。`,
+    );
+  }
+
+  // Trends live at the workspace data root, not wherever the runs directory
+  // happens to be configured: the product path is always
+  // `<workspaceRoot>/.performance-test/trends`. Check the parent chain before
+  // creating anything so a symlinked directory cannot redirect the write
+  // outside the workspace.
+  const trendsDir = join(ready.workspaceRoot, WORKSPACE_DATA_DIR, "trends");
+  try {
+    await assertNoSymlinkEscape(ready.workspaceRoot, trendsDir);
+    await mkdir(trendsDir, { recursive: true });
+  } catch (error) {
+    return fail(ctx, `无法创建趋势目录 ${trendsDir}：${errorText(error)}`);
+  }
+
+  const target = join(trendsDir, `${sceneId}.html`);
+  const temporary = join(trendsDir, `.${sceneId}.html.tmp-${randomUUID()}`);
+  try {
+    await writeFile(temporary, renderTrendHtml(trend), "utf8");
+    await rename(temporary, target);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    return fail(ctx, `生成 ${target} 失败：${errorText(error)}`);
+  }
+
+  ctx.io.out(target);
+  return EXIT_OK;
+}
+
+const TREND_FILE_STEM = /^[A-Za-z0-9._-]+$/;
 
 const REPORT_EXPORT_FORMATS = {
   html: { fileName: "report.html", render: renderHtmlReport },
@@ -772,6 +867,7 @@ async function requireWorkspace(
   try {
     const ready = await manager.requireReady();
     return {
+      workspaceRoot: ready.workspaceRoot,
       paths: {
         scenarioDirectory: ready.paths.scenarioDirectory,
         runsDirectory: ready.paths.runsDirectory,
