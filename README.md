@@ -101,18 +101,36 @@ PerfStage 是**平台**，不是某个 App 的测试脚本集合。能力归属�
 
 PerfStage **不负责**：业务断言、UI 正确性、多设备调度与并发、CI 托管服务。
 
-### 命名约定
+### 关键术语
 
-沿用舞台隐喻，文档和 Skill 中使用同一套词汇：
+README 与工具输出中的术语按下面两张表理解；舞台隐喻只用于命名，不改变技术含义。
 
-| 概念 | 叫法 | 说明 |
-| --- | --- | --- |
-| 平台 | **PerfStage** | 提供通用能力 |
-| 项目场景 | **Scene** | 一个 YAML + 一个 Skill |
-| 一次运行 | **Take** | 一次完整的测试执行 |
-| 重复执行 | **Encore** | 复跑同一 Scene；绝对阈值门禁、基线对比与回归门禁已可用 |
-| 项目场景集合 | **Repertoire** | 一个项目的全部 Scene |
-| 报告 | **Scorecard** | `report.md` / `report.json` |
+**核心概念**
+
+| 术语 | 含义 |
+| --- | --- |
+| **PerfStage（平台）** | 提供 iOS 性能测试通用能力的平台级 MCP 服务与 CLI；不内置具体项目场景。 |
+| **MCP / CLI** | 两个调用面，共享同一套实现与输出契约：MCP 供 agent 调用，CLI 供人和脚本调用。 |
+| **Scene（场景）** | 一个 `.performance-test/scenarios/<id>.yaml`，描述 App、前置条件、动作、指标与阈值。 |
+| **Skill（项目场景 Skill）** | 项目里的 `.claude/skills/perf-<scene>/SKILL.md`，告诉 agent 如何调用一次工具；不是平台代码。 |
+| **Take（一次运行）** | 从解析场景到生成报告的一次完整测试执行，对应一个 `runId` 和一个独立运行目录。 |
+| **pass（录制轮次）** | 一次 `xctrace` 采集。`hitches` 与 `blockMs` 共用同一次采集，因此 4 个指标通常是 3 个 pass。不要与门禁结果 `gate=pass` 混淆。 |
+| **Runner** | 平台内建执行器：准备设备、按指标录制、回放动作、解析 trace、收尾并写报告。 |
+| **trace** | `xctrace` 产出的原始录制文件，是指标的来源证据；缺 trace 的指标不能算完整。 |
+
+**结果与判定**
+
+| 术语 | 含义 |
+| --- | --- |
+| **runId** | 一次 Take 的唯一标识，也是 `.performance-test/runs/` 下的目录名。 |
+| **metrics（指标）** | 规范指标名 `hitches` / `blockMs` / `launchMs` / `memoryMB`；旧名 `memory` / `launch` / `blockingMs` 会被自动归一化。 |
+| **status（状态）** | 这次 Take 的证据是否可信：终态为 `completed` / `partial` / `failed` / `invalid` / `cancelled`，执行中还有 `prepared` / `running`。与 `gate` 是独立问题，详见[第 10 节](#10-状态语义)。 |
+| **gate（阈值门禁）** | 单次 Take 的指标是否越过阈值：`pass` / `warn` / `fail` / `unknown`。超阈值是 `status=completed` + `gate=fail`。 |
+| **verdict** | 单个指标的阈值结论：`pass` / `warn` / `fail`；无法判定时为 `unknown` / `skipped`，汇总后得到 `gate`。 |
+| **baseline（基线）** | 与目标 Take 同场景、同设备、同 iOS 的更早终态 Take 集合，默认最近 3 次；`compare` 用它的中位数计算差值。 |
+| **regression gate（回归门禁）** | 按目标 run 的 `plan.json` 规则判断相对基线是否变差：`pass` / `fail` / `not-evaluated`；对应 `perfstage gate`，与单次 `gate` 是两条独立信号。 |
+
+> **舞台隐喻**：Scene = 项目场景，Take = 一次运行，Encore = 复跑同一 Scene，Repertoire = 一个项目的全部 Scene，Scorecard = `report.md` / `report.json`。隐喻只用于命名，技术含义以上表为准。
 
 > 兼容性说明：运行时标识保持原样，MCP server 名仍是 `performance-test`，数据目录仍是 `.performance-test/`。PerfStage 是品牌与架构层，不要求迁移已有项目数据。
 
@@ -952,6 +970,7 @@ GitHub Actions 片段：
 | 状态 | 含义 |
 | --- | --- |
 | `prepared` | 已创建运行与计划，尚未执行 |
+| `running` | 正在执行，尚未收尾 |
 | `completed` | 指标与诊断证据齐全，且无稳定性问题 |
 | `partial` | 部分指标、日志或证据缺失，或存在 warning |
 | `failed` | 流程中断、设备断连、Crash、watchdog、jetsam 等 |
