@@ -3,7 +3,7 @@
 **Define once. Perform every time.**
 **一次定义，次次上演。**
 
-PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用能力收敛成一个稳定的 MCP 服务；每个接入项目基于这套能力，定义自己的测试场景和 Scene Skill。场景定义一次，之后每次回归只需要执行同一个 Skill。
+PerfStage 是面向 iOS 的**平台级**性能测试能力。它把 iOS 性能测试的通用能力收敛成一个稳定的 MCP 服务，本身不内置任何具体项目的业务场景；每个接入项目基于这套能力，由 agent 生成自己的 Scene YAML 与项目场景 Skill。场景定义一次，之后每次回归只需要执行同一个 Skill。
 
 > 平台是舞台，项目是剧目。PerfStage 提供灯光、音响和后台，项目负责写好自己的一场戏。
 
@@ -41,6 +41,38 @@ PerfStage 是面向 iOS 的性能测试平台。它把 iOS 性能测试的通用
 
 - **平台不绑定业务。** 新增一个 App 或一个场景，不需要修改 PerfStage 内核。
 - **重复测试成本极低。** 场景稳定后，回归就是「再执行一次 Skill」，而不是重新向助手描述一遍测试步骤。
+
+### 使用模型：平台提供能力，agent 为项目生成 Skill
+
+**这是 PerfStage 的核心使用方式。** PerfStage MCP 是平台级能力，一次安装、所有项目复用；它不内置任何具体项目的业务场景。每个项目接入时，由 agent 读取项目与 App 信息，为该项目的真实业务场景生成两样项目资产：
+
+- **Scene YAML**：`.performance-test/scenarios/<scene>.yaml`，描述 App、前置条件、动作与指标阈值。
+- **项目场景 Skill**：`.claude/skills/perf-<scene>/SKILL.md`，告诉 agent 何时、用哪台设备、如何调用一次 `run_performance_test`。
+
+生成之后，日常回归就是让 agent 执行对应 Skill，或直接跑 CLI，不需要重新描述测试步骤，也不需要为这个项目修改平台代码。
+
+#### 推荐落地流程
+
+1. **安装平台。** 按 [3.2 构建与注册](#32-构建与注册) 以用户级方式注册 MCP；一次注册，本机所有项目共享同一个二进制入口。
+2. **初始化项目。** 在项目根目录执行 `perfstage init --app <bundleId> --name "<App 名>"`，创建 `.performance-test/`。`--copy-scenarios` 只植入两个起步模板，不代表平台已经有你的业务场景。
+3. **让 agent 读取项目与 App 信息。** 提供 bundleId、启动方式、关键页面与控件、性能关注点（卡顿 / 冷启动 / 内存）和目标设备；agent 需要据此判断场景边界，而不是套用通用脚本。
+4. **生成项目资产。** 由 agent 产出 Scene YAML 与项目 Skill（[`templates/SKILL.md`](templates/SKILL.md) 只作为形态模板），把场景 ID、动作与阈值落到项目里。
+5. **首跑与校准。** 在真机上执行一次，核对 `status`、`gate`、指标与证据；按报告调整 warmup、动作和阈值。首跑不通过通常说明场景描述需要收紧，不是平台失败。
+6. **日常回归。** 对 agent 说「执行 perf-<scene>」，或执行 `perfstage run <sceneId> --device <udid>`；需要基线对比、回归门禁或趋势时用对应 CLI 命令。
+
+生成后的项目结构：
+
+```text
+<project>/
+├── .claude/skills/perf-<scene>/
+│   └── SKILL.md                    # 项目资产：agent 的调用契约
+└── .performance-test/
+    ├── config.json
+    ├── scenarios/<scene>.yaml      # 项目资产：场景定义
+    └── runs/                       # 运行证据
+```
+
+**边界**：平台提供驱动、采集、解析、判定与报告；项目提供场景、Skill、阈值与业务结论。新增项目或新增场景只增加项目资产，不修改平台代码，也不新增 MCP 工具。`templates/`、`examples/` 与 `--copy-scenarios` 都是起步模板，不是平台内置的场景库或技能库。
 
 ### 产品定位与边界
 
@@ -182,13 +214,14 @@ perfstage init --app com.example.app --name "Example App" --copy-scenarios
     └── runs/
 ```
 
-`init` 只负责工作区与场景，**不会生成 Skill**。需要 Skill 时，从
-[`templates/SKILL.md`](templates/SKILL.md) 复制一份到项目的
-`.claude/skills/<name>/SKILL.md`（或等价位置），再把场景 ID 与设备参数改成自己的。
+`init` 只负责工作区与场景，**不会生成 Skill**。推荐按 [§1 使用模型](#使用模型平台提供能力agent-为项目生成-skill)
+让 agent 读取项目与 App 信息，生成 `.performance-test/scenarios/<scene>.yaml` 与
+`.claude/skills/perf-<scene>/SKILL.md`；也可以从 [`templates/SKILL.md`](templates/SKILL.md)
+手工复制一份作为回退，再把场景 ID 与设备参数改成自己的。
 
 ### 3.4 定义一个 Scene
 
-把场景写进 `.performance-test/scenarios/`（完整格式见[第 8 节](#8-场景-yaml-参考)），然后为它写一个 Skill（见[第 6 节](#6-项目-scene-skill-契约)）。
+把场景写进 `.performance-test/scenarios/`（完整格式见[第 8 节](#8-场景-yaml-参考)），再为它写一个 Skill（见[第 6 节](#6-项目-scene-skill-契约)）。两者通常都由 agent 在接入时生成，见 [§1 使用模型](#使用模型平台提供能力agent-为项目生成-skill)；修改场景时只改项目资产，不动平台。
 
 ### 3.5 执行
 
@@ -373,7 +406,7 @@ sceneId / adHocPlan
 
 ## 6. 项目 Scene Skill 契约
 
-Skill 是项目资产，不是平台资产。它应该足够短：只描述「测什么、在哪台设备上测、结果怎么算」，不重复平台的编排细节。
+Skill 是项目资产，不是平台资产。它应该足够短：只描述「测什么、在哪台设备上测、结果怎么算」，不重复平台的编排细节。每个项目的 Skill 由 agent 基于该项目的场景生成，生成流程见 [§1 使用模型](#使用模型平台提供能力agent-为项目生成-skill)；平台只提供下面的输入与输出契约。
 
 ### 6.1 目录约定
 
